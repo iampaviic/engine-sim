@@ -110,49 +110,51 @@ function component(net, inNode, kind, dia, x0, x1, y, opts = {}) {
     case 'straight':
       return chain([{ len: opts.len ?? 0.5, dia, frac: 1 }]);
     case 'cat':
-      // Catalytic converter: wide ceramic brick with viscous loss.
-      n = chain([
-        { len: 0.08, dia: dia * 1.6, frac: 0.2, hf: 0.1 },
-        { len: 0.22, dia: dia * 2.2, frac: 0.6, hf: 0.3, g: 0.985 },
-        { len: 0.08, dia: dia * 1.6, frac: 0.2, hf: 0.1 },
-      ]);
-      return n;
-    case 'resonator':
+      // Catalytic converter: gentle cones into a ceramic brick (fine channels
+      // -> viscous HF loss) - a few dB, mostly at high frequency.
       return chain([
-        { len: 0.1, dia, frac: 0.2 },
-        { len: 0.35, dia: dia * 1.5, frac: 0.6, hf: 0.3, g: 0.995 },
-        { len: 0.1, dia, frac: 0.2 },
+        { len: 0.07, dia: dia * 1.25, frac: 0.2, hf: 0.15, g: 0.99 },
+        { len: 0.2, dia: dia * 1.45, frac: 0.6, hf: 0.38, g: 0.965 },
+        { len: 0.07, dia: dia * 1.25, frac: 0.2, hf: 0.15, g: 0.99 },
+      ]);
+    case 'resonator':
+      // Short straight-through absorptive resonator.
+      return chain([
+        { len: 0.08, dia, frac: 0.2 },
+        { len: 0.3, dia: dia * 1.1, frac: 0.6, hf: 0.32, g: 0.975 },
+        { len: 0.08, dia, frac: 0.2 },
       ]);
     case 'glasspack':
+      // Perforated core wrapped in fibreglass: absorbs highs, passes the lows.
       return chain([
-        { len: 0.06, dia, frac: 0.15 },
-        { len: 0.42, dia: dia * 1.55, frac: 0.7, hf: 0.5, g: 0.99 },
-        { len: 0.06, dia, frac: 0.15 },
-      ]);
-    case 'chambered':
-      // Two-chamber reactive muffler: expansion chambers joined by a baffle tube.
-      return chain([
-        { len: 0.05, dia, frac: 0.1 },
-        { len: 0.13, dia: dia * 3.0, frac: 0.3, hf: 0.22, g: 0.995 },
-        { len: 0.09, dia: dia * 0.9, frac: 0.15, hf: 0.1 },
-        { len: 0.17, dia: dia * 3.0, frac: 0.35, hf: 0.3, g: 0.993 },
-        { len: 0.05, dia, frac: 0.1 },
+        { len: 0.05, dia, frac: 0.15 },
+        { len: 0.42, dia: dia * 1.15, frac: 0.7, hf: 0.55, g: 0.95 },
+        { len: 0.05, dia, frac: 0.15 },
       ]);
     case 'sport':
       // Straight-through perforated core with packing: loud, some damping.
       return chain([
         { len: 0.05, dia, frac: 0.15 },
-        { len: 0.2, dia: dia * 1.8, frac: 0.35, hf: 0.42, g: 0.99 },
-        { len: 0.2, dia: dia * 1.8, frac: 0.35, hf: 0.42, g: 0.99 },
+        { len: 0.22, dia: dia * 1.08, frac: 0.35, hf: 0.42, g: 0.97 },
+        { len: 0.22, dia: dia * 1.08, frac: 0.35, hf: 0.42, g: 0.97 },
         { len: 0.05, dia, frac: 0.15 },
       ]);
+    case 'chambered':
+      // Two-chamber reactive muffler (baffles): tonal, aggressive, ~10 dB.
+      return chain([
+        { len: 0.05, dia, frac: 0.1 },
+        { len: 0.14, dia: dia * 2.0, frac: 0.3, hf: 0.2, g: 0.98 },
+        { len: 0.08, dia: dia * 0.9, frac: 0.15, hf: 0.1 },
+        { len: 0.18, dia: dia * 2.0, frac: 0.35, hf: 0.28, g: 0.975 },
+        { len: 0.05, dia, frac: 0.1 },
+      ]);
     case 'stock': {
-      // Multi-chamber absorptive + reactive road muffler with a flow restriction.
+      // Road muffler: reactive chambers + packing + flow restriction.
       n = chain([
         { len: 0.05, dia, frac: 0.1 },
-        { len: 0.2, dia: dia * 3.4, frac: 0.3, hf: 0.55, g: 0.985 },
-        { len: 0.14, dia: dia * 0.8, frac: 0.15, hf: 0.2 },
-        { len: 0.24, dia: dia * 3.4, frac: 0.35, hf: 0.62, g: 0.985 },
+        { len: 0.2, dia: dia * 2.6, frac: 0.3, hf: 0.5, g: 0.96 },
+        { len: 0.14, dia: dia * 0.75, frac: 0.15, hf: 0.2 },
+        { len: 0.24, dia: dia * 2.6, frac: 0.35, hf: 0.58, g: 0.96 },
       ]);
       const r = net.node(NODE.RESISTOR, { x: mid(0.93), y, R: 0, K: opts.K ?? 900 / (dia * dia * 1e3), dyn: DYN.NONE });
       net.pipe(n, r, { len: 0.04, dia: dia * 0.9, temp, pts: [net.pt(n), net.pt(r)] });
@@ -161,35 +163,26 @@ function component(net, inNode, kind, dia, x0, x1, y, opts = {}) {
       return o;
     }
     case 'valved': {
-      // Road muffler with a bypass tube behind a flap valve (opens in sport mode
-      // or above a set rpm) - the classic modern supercar exhaust.
-      const split = net.junction(mid(0.06), y);
+      // Modern supercar silencer: a straight perforated core closed by a flap
+      // valve, plus an always-open muffled side path through a chamber. Valve
+      // shut -> sound takes the narrow chambered route; open -> straight through.
+      const split = net.junction(mid(0.08), y);
       net.pipe(n, split, { len: 0.05, dia, temp, pts: [net.pt(n), net.pt(split)] });
-      const yb = y + (opts.bypassDy ?? 0.07);
       const out = opts.out ?? net.junction(x1, y);
-      const merge = net.junction(mid(0.94), y);
-      // muffled path
-      let m = split;
-      const parts = [
-        { len: 0.18, dia: dia * 3.2, hf: 0.5, g: 0.988 },
-        { len: 0.12, dia: dia * 0.85, hf: 0.2 },
-        { len: 0.2, dia: dia * 3.2, hf: 0.55, g: 0.988 },
-      ];
-      let fx = 0.06;
-      for (let i = 0; i < parts.length; i++) {
-        fx += 0.88 / parts.length;
-        const nx = i === parts.length - 1 ? merge : net.junction(mid(fx), y);
-        net.pipe(m, nx, { ...parts[i], temp, pts: [net.pt(m), net.pt(nx)], label: 'muffler' });
-        m = nx;
-      }
-      // bypass path with valve
-      const b0 = net.junction(mid(0.2), yb);
-      const v = net.node(NODE.RESISTOR, { x: mid(0.5), y: yb, R: 0, K: 0, dyn: DYN.VALVE, closedK: 4e7 });
-      const b1 = net.junction(mid(0.8), yb);
-      net.pipe(split, b0, { len: 0.12, dia: dia * 0.9, temp, pts: [net.pt(split), [mid(0.2), y], net.pt(b0)] });
-      net.pipe(b0, v, { len: 0.16, dia: dia * 0.9, temp, pts: [net.pt(b0), net.pt(v)], label: 'bypass' });
-      net.pipe(v, b1, { len: 0.16, dia: dia * 0.9, temp, pts: [net.pt(v), net.pt(b1)], label: 'bypass' });
-      net.pipe(b1, merge, { len: 0.12, dia: dia * 0.9, temp, pts: [net.pt(b1), [mid(0.94), yb], net.pt(merge)] });
+      const merge = net.junction(mid(0.92), y);
+      // straight core with valve
+      const c1 = net.junction(mid(0.4), y);
+      net.pipe(split, c1, { len: 0.22, dia, temp, hf: 0.3, g: 0.975, pts: [net.pt(split), net.pt(c1)], label: 'core' });
+      const v = net.node(NODE.RESISTOR, { x: mid(0.62), y, R: 0, K: 0, dyn: DYN.VALVE, closedK: 4e7 });
+      net.pipe(c1, v, { len: 0.12, dia, temp, hf: 0.3, g: 0.975, pts: [net.pt(c1), net.pt(v)], label: 'core' });
+      net.pipe(v, merge, { len: 0.12, dia, temp, pts: [net.pt(v), net.pt(merge)], label: 'core' });
+      // muffled side path
+      const yb = y + (opts.bypassDy ?? 0.07);
+      const b0 = net.junction(mid(0.25), yb);
+      const b1 = net.junction(mid(0.75), yb);
+      net.pipe(split, b0, { len: 0.12, dia: dia * 0.6, temp, hf: 0.2, pts: [net.pt(split), [mid(0.08), yb], net.pt(b0)], label: 'muffler' });
+      net.pipe(b0, b1, { len: 0.3, dia: dia * 2.4, temp, hf: 0.55, g: 0.95, pts: [net.pt(b0), net.pt(b1)], label: 'muffler' });
+      net.pipe(b1, merge, { len: 0.12, dia: dia * 0.6, temp, hf: 0.2, pts: [net.pt(b1), [mid(0.92), yb], net.pt(merge)], label: 'muffler' });
       net.pipe(merge, out, { len: 0.05, dia, temp, pts: [net.pt(merge), net.pt(out)] });
       box.valve = true;
       return out;

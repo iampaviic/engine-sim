@@ -460,6 +460,8 @@ class EngineSim {
     this.tRtip = 0.024 * Math.sqrt(dPer / 2) * Math.sqrt(size);
     this.tChokeK = 0.00045 * Math.pow(dPer, 0.85) * size; // kg/s per (m/s) tip speed
     this.tA = 9e-4 * Math.pow(dPer / 2, 0.8) * size; // turbine effective area
+    this.tRestr = 4e5 / Math.pow(Math.max(this.nT, 1) * size, 2);
+    this.wgI = 0;
     this.blades = ind.blades;
     this.bovType = ind.bov;
     this.tPhase = 0;
@@ -602,6 +604,7 @@ class EngineSim {
     this.ctrlN = 0;
     this.lastRpm = 0;
     this.rpmRate = 0;
+    this.landing = 0;
 
     // Scope (angle domain) capture
     this.scopeBuf = new Float32Array(16384);
@@ -788,9 +791,10 @@ class EngineSim {
         this.bypass = this.bypassFF * clamp(0.9 + this.idleI, 0.5, 2.5) * clamp((0.8 * rpm) / this.idleTarget, 1, 4);
       } else {
         const pe = clamp(errP, -500, 800);
-        this.bypass = clamp(this.bypassFF * (1 + this.idleI + pe * 7e-4), this.bypassFF * 0.1, this.bypassFF * 5);
+        this.landing *= Math.exp(-dtc / 0.7);
+        this.bypass = clamp(this.bypassFF * (1 + this.idleI + pe * 7e-4 + 1.2 * this.landing), this.bypassFF * 0.1, this.bypassFF * 5);
       }
-      this.sparkTrim = clamp(errP * 0.05, -12, 14);
+      this.sparkTrim = clamp(errP * 0.05, -12, 18);
     } else {
       this.bypass += (this.bypassFF * (1 + this.idleI) - this.bypass) * Math.min(1, dtc * 3);
       this.sparkTrim *= 0.9;
@@ -803,7 +807,10 @@ class EngineSim {
     const resume = this.idleTarget + 250 + clamp(-this.rpmRate * 0.15, 0, 900);
     if (this.pedal < 0.03 && this.running && !this.launch) {
       if (this.dfco) {
-        if (rpm < resume) this.dfco = false;
+        if (rpm < resume) {
+          this.dfco = false;
+          this.landing = 1; // extra air for a soft landing on idle
+        }
       } else if (rpm > this.idleTarget + 700) this.dfco = true;
     } else this.dfco = false;
     // Overrun burble: a burst of crackles for a couple of seconds after lift-off.
@@ -814,7 +821,8 @@ class EngineSim {
       this.burble > 0 && this.dfco && rpm > 1900 && rpm < this.limitRpm * 0.85 && this.liftT < win && rnd() < 0.25 + 0.5 * this.burble * (1 - this.liftT / win);
 
     // Anti-lag: keep air & fuel flowing, retard spark massively
-    this.alsActive = this.antilag && this.isTurbo && this.pedal < 0.15 && rpm > 2500 && this.running;
+    this.alsActive =
+      this.antilag && this.isTurbo && this.pedal < 0.15 && rpm > 3000 && this.running && this.gear > 0 && (this.mode === 'drive' || this.mode === 'flyby');
 
     // Rev limiter with hysteresis
     const lim = this.launch && this.v < 1 ? this.launchRpm : this.limitRpm;
@@ -859,9 +867,14 @@ class EngineSim {
 
     // Boost control
     if (this.isTurbo || this.isCentri) {
+      // Electronic boost control: PI on wastegate duty.
       const over = this.pB - P_AMB - this.boostTarget;
-      let wgT = clamp(over / 25000 + 0.02, 0, 1);
-      if (this.alsActive) wgT = 0;
+      this.wgI = clamp(this.wgI + over * 1.2e-4 * dtc, 0, 1);
+      let wgT = clamp(this.wgI + over / 30000, 0, 1);
+      if (this.alsActive) {
+        wgT = 0;
+        this.wgI = 0;
+      }
       this.wg += (wgT - this.wg) * Math.min(1, dtc * 25);
       // Blow-off valve opens on closed throttle with pressure in the pipes
       const bovT = this.bovType !== 'none' && this.thr < 0.18 && this.pB - this.pPl > 30000 && !this.alsActive ? 1 : 0;
@@ -910,7 +923,7 @@ class EngineSim {
         ex.rK[i] = 1 / (2 * rho * this.tA * this.tA);
       } else if (d === DYN_WASTEGATE) {
         const rho = (P_AMB * 1.6) / (R * Math.max(600, this.egt));
-        const A = this.tA * 1.1 * this.wg + 1e-7;
+        const A = this.tA * 1.6 * this.wg + 1e-7;
         ex.rK[i] = Math.min(ex.rClosedK[i], 1 / (2 * rho * A * A));
       }
     }
@@ -1479,20 +1492,23 @@ class EngineSim {
         // Greitzer compressor + plenum model; compressor map is a speed line
         // with a peak (surge on its left), scaled with tip speed squared.
         const Ut = this.wt * this.tRtip;
-        const mChoke = this.tChokeK * Ut * this.nT + 1e-4;
+        const mChoke = this.tChokeK * Math.max(Ut, 80) * this.nT;
         const x = this.mc / mChoke;
         const PRm = Math.pow(1 + 2.17e-6 * Ut * Ut, 3.5);
         let g;
-        if (x >= 0.32) {
+        if (x >= 1) {
+          g = Math.max(-1.5, -2 * (x - 1));
+        } else if (x >= 0.32) {
           const y = (x - 0.32) / 0.68;
           g = 1 - y * y;
         } else if (x >= 0) {
           const y = (0.32 - x) / 0.32;
           g = 1 - 0.28 * y * y;
         } else {
-          g = 0.72 - 3 * x * x - 0.5 * x;
+          g = Math.max(-1.5, 0.72 - 3 * x * x + 0.5 * x);
         }
-        const pc = P_AMB * (1 + (PRm - 1) * g);
+        // a slow or stalled wheel is also just a restriction in the inlet
+        const pc = P_AMB * (1 + (PRm - 1) * g) - this.tRestr * this.mc * Math.abs(this.mc);
         const Lc = 0.35, Ac = 0.0016 * this.nT;
         this.mc += (Ac / Lc) * (pc - this.pB) * dt;
         // BOV vent
@@ -1503,7 +1519,9 @@ class EngineSim {
         }
         this.mdBov = mb;
         this.pB += ((R * this.TB) / this.Vb) * (this.mc - this.mdTh - mb) * dt;
-        if (this.pB < 0.5 * P_AMB) this.pB = 0.5 * P_AMB;
+        if (!(this.pB > 0.5 * P_AMB)) this.pB = 0.5 * P_AMB;
+        if (this.pB > 4.5 * P_AMB) this.pB = 4.5 * P_AMB;
+        if (!(Math.abs(this.mc) < 5)) this.mc = 0;
         // shaft
         const PR = this.pB / P_AMB;
         const Pc = this.mc > 0 ? (this.mc * 1005 * T_AMB * (Math.pow(PR, 0.2857) - 1)) / 0.7 : -this.mc * 1005 * 25;
@@ -1672,7 +1690,7 @@ class EngineSim {
 
       // ---- mechanical ----
       if (rpm > 30) {
-        const vk = snd.valvetrain === 'ohv' ? 1.5 : snd.valvetrain === 'pneumatic' ? 0.6 : 1;
+        const vk = snd.valvetrain === 'ohv' ? 1.5 : snd.valvetrain === 'pneumatic' ? 0.6 : snd.valvetrain === 'none' ? 0 : 1;
         this.vtExc += vtExc * (rpm / 6000) * (rpm / 6000 + 0.15) * vk * (0.7 + 0.6 * rnd());
       }
       const vtOut = this.valvetrain.tick(this.vtExc * (rnd() * 0.5 + 0.75));

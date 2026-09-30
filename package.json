@@ -1,0 +1,14 @@
+{
+  "name": "firing-order",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Physically modelled engine sound simulator for the browser",
+  "type": "module",
+  "scripts": {
+    "serve": "node tools/serve.mjs",
+    "render": "node tools/render.mjs",
+    "batch": "node tools/batch.mjs",
+    "test": "node tools/batch.mjs v8-ls v12-65"
+  },
+  "license": "MIT"
+}

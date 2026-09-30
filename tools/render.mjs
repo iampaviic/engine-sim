@@ -10,6 +10,7 @@ import path from 'node:path';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
 
+let loadCount = 0;
 export async function loadWorklet(fs = 48000) {
   const posted = [];
   globalThis.sampleRate = fs;
@@ -25,7 +26,7 @@ export async function loadWorklet(fs = 48000) {
   globalThis.registerProcessor = (name, cls) => {
     Proc = cls;
   };
-  await import(pathToFileURL(path.join(root, 'js/audio/engine-worklet.js')).href + '?t=' + Date.now());
+  await import(pathToFileURL(path.join(root, 'js/audio/engine-worklet.js')).href + '?n=' + ++loadCount);
   return { Proc, posted };
 }
 
