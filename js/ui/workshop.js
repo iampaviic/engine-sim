@@ -101,6 +101,18 @@ export class Workshop {
       (v) => app.setEnv(v)
     );
     range(g, 'Volume', 0, 1, 0.01, app.volume, (v) => `${Math.round(v * 100)}%`, (v) => app.setVolume(v));
+    seg(
+      g,
+      'Physics rate',
+      [
+        ['auto', 'Auto'],
+        ['full', 'Full'],
+        ['eco', 'Half'],
+      ],
+      app.quality,
+      (v) => app.setQuality(v),
+      'The whole engine is simulated once per audio sample. Half rate halves the CPU cost on slow phones and loses the very top of the spectrum.'
+    );
 
     // --- exhaust
     g = group('Exhaust');

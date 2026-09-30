@@ -269,6 +269,99 @@ class Net {
     }
   }
 
+  // Read the wave arriving at every pipe end (fractional delay + losses).
+  // Losses leave the mean (DC) untouched so no mass leaks out of the pipes.
+  read() {
+    const t = this.t, buf = this.buf, lo = this.lineOff, lm = this.lineMask, dl = this.delay;
+    const la1 = this.la1, lz = this.lz, lg = this.lg, ld = this.ld, ldA = this.ldA, inW = this.inW;
+    for (let l = 0, LL = this.L; l < LL; l++) {
+      const pos = t - dl[l];
+      const i0 = pos | 0;
+      const fr = pos - i0;
+      const o = lo[l], m = lm[l];
+      const a = buf[o + (i0 & m)];
+      const x = a + (buf[o + ((i0 + 1) & m)] - a) * fr;
+      const z = lz[l] + la1[l] * (x - lz[l]);
+      lz[l] = z;
+      const d = ld[l] + ldA * (z - ld[l]);
+      ld[l] = d;
+      inW[l ^ 1] = d + (z - d) * lg[l];
+    }
+    // a closed valve reflects: default outgoing wave at port ends
+    const pe = this.portEnds, outW = this.outW;
+    for (let i = 0; i < pe.length; i++) outW[pe[i]] = inW[pe[i]];
+  }
+
+  // Push the outgoing waves into the delay lines and advance time.
+  write() {
+    const t = this.t, buf = this.buf, lo = this.lineOff, lm = this.lineMask, outW = this.outW;
+    for (let l = 0, LL = this.L; l < LL; l++) buf[lo[l] + (t & lm[l])] = outW[l];
+    this.t = t + 1 > 0x3fffffff ? t + 1 - 0x20000000 : t + 1;
+  }
+
+  // Scattering at junctions, resistors (mufflers, turbine, wastegate, valve),
+  // closed ends and radiating open ends. Radiated d(mdot)/dt goes to src[ch].
+  scatter(src, turbP, fs) {
+    const inW = this.inW, outW = this.outW, Y = this.Y, Zm = this.Zm;
+    const es = this.es, ec = this.ec, ends = this.ends, nsrc = this.src;
+    const junc = this.junc;
+    for (let j = 0; j < junc.length; j++) {
+      const nd = junc[j];
+      const st = es[nd], cnt = ec[nd];
+      let sy = 0, sya = 0;
+      for (let k = 0; k < cnt; k++) {
+        const e = ends[st + k];
+        sy += Y[e];
+        sya += Y[e] * inW[e];
+      }
+      const pj = (2 * sya) / sy + nsrc[nd];
+      for (let k = 0; k < cnt; k++) {
+        const e = ends[st + k];
+        outW[e] = pj - inW[e];
+      }
+    }
+    const res = this.res, rR = this.rR, rK = this.rK, rU = this.rU, rDyn = this.rDyn, rIdx = this.rIdx;
+    for (let i = 0; i < res.length; i++) {
+      const nd = res[i];
+      const e1 = ends[es[nd]], e2 = ends[es[nd] + 1];
+      const a1 = inW[e1], a2 = inW[e2];
+      const Z1 = Zm[e1], Z2 = Zm[e2];
+      const B = rR[i] + Z1 + Z2;
+      const D = 2 * (a1 - a2);
+      const K = rK[i];
+      let Uf;
+      if (K > 0) {
+        const ad = D < 0 ? -D : D;
+        Uf = (2 * ad) / (B + Math.sqrt(B * B + 4 * K * ad));
+        if (D < 0) Uf = -Uf;
+      } else Uf = D / B;
+      outW[e1] = a1 - Z1 * Uf;
+      outW[e2] = a2 + Z2 * Uf;
+      rU[i] = Uf;
+      if (rDyn[i] === DYN_TURBINE) turbP[rIdx[i]] += (D - (Z1 + Z2) * Uf) * Uf;
+    }
+    const cl = this.closeds;
+    for (let i = 0; i < cl.length; i++) {
+      const e = ends[es[cl[i]]];
+      outW[e] = inW[e];
+    }
+    src[0] = 0;
+    src[1] = 0;
+    src[2] = 0;
+    const op = this.opens, oLp = this.oLp, oAl = this.oAl, oR = this.oR, oQ = this.oQ, oCh = this.oCh;
+    for (let i = 0; i < op.length; i++) {
+      const e = ends[es[op[i]]];
+      const a = inW[e];
+      const lp = oLp[i] + oAl[i] * (a - oLp[i]);
+      oLp[i] = lp;
+      const b = -oR[i] * lp;
+      outW[e] = b;
+      const q = (a - b) * Y[e];
+      src[oCh[i]] += (q - oQ[i]) * fs;
+      oQ[i] = q;
+    }
+  }
+
   // Sample the pressure distribution along segment k at nPts points (viz).
   sampleSeg(k, nPts, out, o) {
     const D = this.delay[2 * k];
@@ -314,6 +407,7 @@ class Listener {
     this.z2 = new Float64Array(T);
     this.active = new Uint8Array(N_SRC);
     this.cabin = 0;
+    this.moving = false;
     this.boom1 = 0;
     this.boom2 = 0;
     this.first = true;
@@ -524,6 +618,7 @@ class EngineSim {
     this.pedal = 0;
     this.thrCmd = 0;
     this.thr = 0;
+    this.thrArea = 0;
     this.brake = 0;
     this.clutchPedal = 0; // 1 = pressed (disengaged)
     this.blip = 0;
@@ -619,6 +714,28 @@ class EngineSim {
     this.scopeReady = null;
 
     this.lastPost = 0;
+    // per-sample constants
+    this.thrK = lpCoef(6, fs);
+    this.ibA = lpCoef(cfg.airbox === 'open' ? 5200 : cfg.airbox === 'ram' ? 2600 : 900, fs);
+    this.itbA = lpCoef(6500, fs);
+    this.itb = cfg.itb ? 1 : 0;
+    this.rasp26 = 26 * cfg.sound.rasp;
+    this.exG = INV4PI * cfg.sound.exhaust;
+    const vtt = cfg.sound.valvetrain;
+    this.vtK = vtt === 'ohv' ? 1.5 : vtt === 'pneumatic' ? 0.6 : vtt === 'none' ? 0 : 1;
+    this.gearK = cfg.sound.gear * (cfg.vehicle.straightCut ? 1 : 0.2);
+    this.starterTq = 55 * cfg.dispLitres + 40;
+    this.boosted = this.isTurbo || this.isSC || this.isCentri;
+    const vh = cfg.vehicle;
+    this.axleLoad = vh.mass * 9.81 * (vh.drive === 'awd' ? 1 : vh.rearBias);
+    this.loadTransfer = vh.drive === 'awd' ? 0 : vh.mass * 0.2;
+    this.brakeK = vh.brakeK ?? vh.mass * 9.81 * 0.95;
+    this.dragK = 0.5 * 1.2 * vh.cd * vh.area;
+    this.rollK = vh.mass * 9.81 * 0.012;
+    this.vtExcS = 0;
+    this.combExcS = 0;
+    this.turboSnd = 0;
+    this.scopePrevCA = 0;
     this.posts = [];
     this.fade = 0; // output fade in
   }
@@ -871,6 +988,8 @@ class EngineSim {
     if (this.alsActive) cmd = Math.max(cmd, 0.11);
     if (!this.ignition) cmd = this.pedal;
     this.thrCmd = cmd;
+    // butterfly area vs opening (evaluated at control rate)
+    this.thrArea = this.Ath * 0.82 * (this.thr < 1 ? Math.pow(Math.max(0, this.thr), 1.75) : 1);
 
     // Boost control
     if (this.isTurbo || this.isCentri) {
@@ -1084,35 +1203,10 @@ class EngineSim {
 
   render(outL, outR, nFrames, L) {
     const dt = this.dt;
-    const fs = this.fs;
-    const n = this.n;
     const cycle = this.cycle;
-    const tabScale = this.tabScale;
-    const vol = this.vol, dvd = this.dvd, off = this.off;
-    const cm = this.cm, cU = this.cU, cMb = this.cMb, cV = this.cV, cCA = this.cCA, cP = this.cP;
-    const cP1 = this.cP1, cP2 = this.cP2;
-    const cBurn = this.cBurn, cXb = this.cXb, cQ = this.cQ, cSpark = this.cSpark, cDur = this.cDur;
-    const cExEnd = this.cExEnd, cInEnd = this.cInEnd, cRunB = this.cRunB, cExB = this.cExB;
-    const ex = this.ex, inn = this.inn;
-    const exIn = ex.inW, exOut = ex.outW, exZ = ex.Zm, exY = ex.Y;
-    const inIn = inn.inW, inOut = inn.outW, inZ = inn.Zm, inY = inn.Y;
-    const snd = this.snd;
-    const lis = L;
-    const srcBuf = lis.buf;
-    const src = this.srcBuf;
-    const afNodes = this.afNodes;
-    const exSrc = ex.src;
-
-    const itb = this.cfg.itb ? 1 : 0;
-    const rasp = snd.rasp;
-    const ivcLo = this.cfg.ivc, evoLo = this.cfg.evo, evc = this.cfg.evc, ivcHi = this.cfg.ivcHi, evoHi = this.cfg.evoHi;
-    const thrK = lpCoef(6, fs);
-    const al200 = lpCoef(160, fs);
-    const ibA = lpCoef(this.cfg.airbox === 'open' ? 5200 : this.cfg.airbox === 'ram' ? 2600 : 900, fs);
-    const scTrim = 0.02 * snd.trim;
+    const thrK = this.thrK;
     let omega = this.omega;
     let crank = this.crank;
-
     for (let s = 0; s < nFrames; s++) {
       if (++this.ctrlN >= 32) {
         this.ctrlN = 0;
@@ -1121,9 +1215,8 @@ class EngineSim {
         this.control(32 * dt);
       }
       this.thr += (this.thrCmd - this.thr) * thrK;
-      const thr = this.thr;
 
-      // ---- crank advance ----
+      // crank advance
       const rpm = omega * 9.549296585513721;
       const crankPrev = crank;
       crank += omega * dt * RAD2DEG;
@@ -1134,552 +1227,20 @@ class EngineSim {
         this.cycN = 0;
       }
 
-      // ---- read waveguides ----
-      {
-        const t = ex.t, buf = ex.buf, lo = ex.lineOff, lm = ex.lineMask, dl = ex.delay, la1 = ex.la1, lz = ex.lz, lg = ex.lg, ld = ex.ld, ldA = ex.ldA;
-        for (let l = 0, LL = ex.L; l < LL; l++) {
-          const pos = t - dl[l];
-          const i0 = pos | 0;
-          const fr = pos - i0;
-          const o = lo[l], m = lm[l];
-          const a = buf[o + (i0 & m)];
-          const x = a + (buf[o + ((i0 + 1) & m)] - a) * fr;
-          const z = lz[l] + la1[l] * (x - lz[l]);
-          lz[l] = z;
-          const d = ld[l] + ldA * (z - ld[l]);
-          ld[l] = d;
-          exIn[l ^ 1] = d + (z - d) * lg[l];
-        }
-        const pe = ex.portEnds;
-        for (let i = 0; i < pe.length; i++) exOut[pe[i]] = exIn[pe[i]];
-      }
-      {
-        const t = inn.t, buf = inn.buf, lo = inn.lineOff, lm = inn.lineMask, dl = inn.delay, la1 = inn.la1, lz = inn.lz, lg = inn.lg, ld = inn.ld, ldA = inn.ldA;
-        for (let l = 0, LL = inn.L; l < LL; l++) {
-          const pos = t - dl[l];
-          const i0 = pos | 0;
-          const fr = pos - i0;
-          const o = lo[l], m = lm[l];
-          const a = buf[o + (i0 & m)];
-          const x = a + (buf[o + ((i0 + 1) & m)] - a) * fr;
-          const z = lz[l] + la1[l] * (x - lz[l]);
-          lz[l] = z;
-          const d = ld[l] + ldA * (z - ld[l]);
-          ld[l] = d;
-          inIn[l ^ 1] = d + (z - d) * lg[l];
-        }
-        const pe = inn.portEnds;
-        for (let i = 0; i < pe.length; i++) inOut[pe[i]] = inIn[pe[i]];
-      }
+      // pipes in -> cylinders -> pipe junctions -> pipes out
+      this.ex.read();
+      this.inn.read();
+      const torque = this.stepCylinders(crank, rpm);
+      this.stepAfterfireSources();
+      this.ex.scatter(this.srcBuf, this.turbP, this.fs);
+      this.stepIntake();
+      this.ex.write();
+      this.inn.write();
+      this.stepAfterfirePools();
+      const scTorque = this.stepBoost(omega);
+      omega = this.stepDrivetrain(omega, torque, scTorque);
 
-      // ---- cylinders ----
-      const exTab = this.camHi ? this.exTabHi : this.exTabLo;
-      const inTab = this.camHi ? this.inTabHi : this.inTabLo;
-      const ivc = this.camHi ? ivcHi : ivcLo;
-      const evo = this.camHi ? evoHi : evoLo;
-      const Tint = this.Tpl;
-      const sqTint = Math.sqrt(Tint);
-      const Tex = Math.max(450, this.egt * 0.85);
-      const sqTex = Math.sqrt(Tex);
-      let torque = 0;
-      let vtExc = 0;
-      let combExc = 0;
-      for (let c = 0; c < n; c++) {
-        let ca = crank + off[c];
-        if (ca >= cycle) ca -= cycle;
-        const caPrev = cCA[c];
-        cCA[c] = ca;
-        const fi = ca * tabScale;
-        const i0 = fi | 0;
-        const fr = fi - i0;
-        const V = vol[i0] + (vol[i0 + 1] - vol[i0]) * fr;
-        const dvdth = dvd[i0] + (dvd[i0 + 1] - dvd[i0]) * fr;
-
-        if (caPrev !== ca) {
-          if (crossed(caPrev, ca, ivc)) {
-            this.onIVC(c, rpm);
-            vtExc += 1;
-          }
-          if (cBurn[c] === 1 && crossed(caPrev, ca, cSpark[c])) cBurn[c] = 2;
-          if (crossed(caPrev, ca, evo)) this.onEVO(c);
-          if (crossed(caPrev, ca, evc)) vtExc += 1;
-        }
-
-        let m = cm[c];
-        let U = cU[c];
-        const Vo = cV[c];
-        const dV = V - Vo;
-        U = (U * (1 - (GM1 * 0.5 * dV) / Vo)) / (1 + (GM1 * 0.5 * dV) / V);
-
-        if (cBurn[c] === 2) {
-          let ph = ca - cSpark[c];
-          if (ph < 0) ph += cycle;
-          const x = ph / cDur[c];
-          let xb;
-          if (x >= 1) {
-            xb = 1;
-            cBurn[c] = 3;
-          } else {
-            xb = 1 - Math.exp(-5 * x * x * x);
-          }
-          U += cQ[c] * (xb - cXb[c]);
-          cXb[c] = xb;
-          if (xb === 1) cMb[c] = m;
-        }
-
-        let T = U / (m * CV);
-        let p = (GM1 * U) / V;
-
-        // exhaust valve
-        const ae = exTab[i0] + (exTab[i0 + 1] - exTab[i0]) * fr;
-        if (ae > 1e-9) {
-          const e = cExEnd[c];
-          const zm = exZ[e];
-          const zc = (GAM * R * T * dt) / V;
-          const D = p - P_AMB - 2 * exIn[e];
-          let md;
-          if (D >= 0) {
-            md = orifice(ae, D, p / (R * T), zm + zc, p, Math.sqrt(T), CHOKE);
-            // turbulent jet noise through the valve gap
-            const vj = md / ((p / (R * T)) * ae);
-            const nz = rnd() - 0.5;
-            exOut[e] += nz * md * (vj < 600 ? vj : 600) * 26 * rasp;
-          } else {
-            const pp = P_AMB + 2 * exIn[e];
-            md = -orifice(ae, -D, pp / (R * Tex), zm + zc, pp, sqTex, CHOKE);
-          }
-          exOut[e] += zm * md;
-          const dm = md * dt;
-          if (dm > 0) {
-            U -= dm * CP * T;
-            cMb[c] -= (cMb[c] * dm) / m;
-            m -= dm;
-          } else {
-            // backflow from the port: only as 'burned' as what went out
-            U -= dm * CP * Tex;
-            cMb[c] -= dm * cExB[c];
-            m -= dm;
-          }
-          if (m < 1e-7) m = 1e-7;
-          T = U / (m * CV);
-          p = (GM1 * U) / V;
-        }
-
-        // intake valve
-        const ai = inTab[i0] + (inTab[i0 + 1] - inTab[i0]) * fr;
-        if (ai > 1e-9) {
-          const e = cInEnd[c];
-          const zm = inZ[e];
-          const zc = (GAM * R * T * dt) / V;
-          const pu = P_AMB + 2 * inIn[e];
-          const D = pu - p;
-          let md;
-          if (D >= 0) {
-            md = orifice(ai, D, pu / (R * Tint), zm + zc, pu, sqTint, CHOKE_AIR);
-          } else {
-            md = -orifice(ai, -D, p / (R * T), zm + zc, p, Math.sqrt(T), CHOKE);
-          }
-          inOut[e] -= zm * md;
-          const dm = md * dt;
-          if (dm > 0) {
-            U += dm * CP * Tint;
-            // reverted exhaust gas comes back first and stays burned gas
-            const rb = cRunB[c];
-            if (rb > 0) {
-              const b = dm < rb ? dm : rb;
-              cMb[c] += b;
-              cRunB[c] = rb - b;
-            }
-            m += dm;
-          } else {
-            U += dm * CP * T;
-            const bOut = (cMb[c] * -dm) / m;
-            cMb[c] -= bOut;
-            cRunB[c] += bOut;
-            m += dm;
-          }
-          if (m < 1e-7) m = 1e-7;
-        }
-
-        // ring leakage (blow-by) toward crankcase
-        const leak = (p - P_AMB) * this.kLeak;
-        if (leak > 0 && leak * dt < m * 0.01) {
-          U -= leak * dt * CP * T;
-          m -= leak * dt;
-        }
-
-        const Tmin = m * CV * 180;
-        if (U < Tmin) U = Tmin;
-        cm[c] = m;
-        cU[c] = U;
-        cV[c] = V;
-        p = (GM1 * U) / V;
-        // combustion noise excitation: positive jerk of cylinder pressure
-        const jerk = p - 2 * cP1[c] + cP2[c];
-        if (jerk > 0) combExc += jerk;
-        cP2[c] = cP1[c];
-        cP1[c] = p;
-        cP[c] = p;
-        torque += (p - P_AMB) * dvdth;
-      }
-      this.torqueGas = torque;
-
-      // ---- exhaust network scattering ----
-      {
-        // afterfire pressure sources
-        for (let k = 0; k < afNodes.length; k++) {
-          const nd = afNodes[k];
-          let src0 = 0;
-          if (this.afEnv[nd] > 1e-4) {
-            const env = this.afEnv[nd];
-            this.afRise[nd] += (1 - this.afRise[nd]) * 0.35;
-            src0 = this.afAmp[nd] * env * this.afRise[nd] * (1 + 0.6 * (rnd() - 0.5));
-            this.afEnv[nd] = env * this.afDecay[nd];
-          }
-          exSrc[nd] = src0;
-        }
-        const junc = ex.junc, es = ex.es, ec = ex.ec, ends = ex.ends;
-        for (let j = 0; j < junc.length; j++) {
-          const nd = junc[j];
-          const st = es[nd], cnt = ec[nd];
-          let sy = 0, sya = 0;
-          for (let k = 0; k < cnt; k++) {
-            const e = ends[st + k];
-            sy += exY[e];
-            sya += exY[e] * exIn[e];
-          }
-          const pj = (2 * sya) / sy + exSrc[nd];
-          for (let k = 0; k < cnt; k++) {
-            const e = ends[st + k];
-            exOut[e] = pj - exIn[e];
-          }
-        }
-        // resistors
-        const res = ex.res, rR = ex.rR, rK = ex.rK;
-        for (let i = 0; i < res.length; i++) {
-          const nd = res[i];
-          const e1 = ends[es[nd]], e2 = ends[es[nd] + 1];
-          const a1 = exIn[e1], a2 = exIn[e2];
-          const Z1 = exZ[e1], Z2 = exZ[e2];
-          const B = rR[i] + Z1 + Z2;
-          const D = 2 * (a1 - a2);
-          const K = rK[i];
-          let Uf;
-          if (K > 0) {
-            const ad = D < 0 ? -D : D;
-            Uf = (2 * ad) / (B + Math.sqrt(B * B + 4 * K * ad));
-            if (D < 0) Uf = -Uf;
-          } else Uf = D / B;
-          exOut[e1] = a1 - Z1 * Uf;
-          exOut[e2] = a2 + Z2 * Uf;
-          ex.rU[i] = Uf;
-          if (ex.rDyn[i] === DYN_TURBINE) {
-            const dp = D - (Z1 + Z2) * Uf;
-            this.turbP[ex.rIdx[i]] += dp * Uf;
-          }
-        }
-        // closed ends
-        const cl = ex.closeds;
-        for (let i = 0; i < cl.length; i++) {
-          const e = ends[es[cl[i]]];
-          exOut[e] = exIn[e];
-        }
-        // open ends: reflection + radiation
-        src[0] = 0;
-        src[1] = 0;
-        src[2] = 0;
-        const op = ex.opens, oLp = ex.oLp, oAl = ex.oAl, oR = ex.oR, oQ = ex.oQ, oCh = ex.oCh;
-        for (let i = 0; i < op.length; i++) {
-          const e = ends[es[op[i]]];
-          const a = exIn[e];
-          const lp = oLp[i] + oAl[i] * (a - oLp[i]);
-          oLp[i] = lp;
-          const b = -oR[i] * lp;
-          exOut[e] = b;
-          const q = (a - b) * exY[e];
-          src[oCh[i]] += (q - oQ[i]) * fs;
-          oQ[i] = q;
-        }
-      }
-
-      // ---- intake network + plenum ----
-      {
-        const es = inn.es, ec = inn.ec, ends = inn.ends;
-        const junc = inn.junc;
-        for (let j = 0; j < junc.length; j++) {
-          const nd = junc[j];
-          const st = es[nd], cnt = ec[nd];
-          let sy = 0, sya = 0;
-          for (let k = 0; k < cnt; k++) {
-            const e = ends[st + k];
-            sy += inY[e];
-            sya += inY[e] * inIn[e];
-          }
-          const pj = (2 * sya) / sy;
-          for (let k = 0; k < cnt; k++) {
-            const e = ends[st + k];
-            inOut[e] = pj - inIn[e];
-          }
-        }
-        const pg = this.pPl - P_AMB;
-        let qr = 0;
-        const pls = inn.plenums;
-        for (let i = 0; i < pls.length; i++) {
-          const nd = pls[i];
-          const st = es[nd], cnt = ec[nd];
-          for (let k = 0; k < cnt; k++) {
-            const e = ends[st + k];
-            inOut[e] = pg - inIn[e];
-            qr += (pg - 2 * inIn[e]) * inY[e];
-          }
-        }
-        this.runnerFlow = qr;
-        // throttle (implicit against plenum compliance)
-        const pUp = this.isTurbo || this.isSC || this.isCentri ? this.pB : P_AMB;
-        const Tup = this.isTurbo || this.isSC || this.isCentri ? this.TB : T_AMB;
-        const kpl = (R * this.Tpl * dt) / this.Vpl;
-        const pPred = this.pPl - kpl * qr;
-        const fracA = thr < 1 ? Math.pow(thr, 1.75) : 1;
-        const A = this.Ath * 0.82 * fracA + this.bypass + 2e-6;
-        const D = pUp - pPred;
-        let md;
-        if (D >= 0) md = orifice(A, D, pUp / (R * Tup), kpl, pUp, Math.sqrt(Tup), CHOKE_AIR);
-        else md = -orifice(A, -D, this.pPl / (R * this.Tpl), kpl, this.pPl, Math.sqrt(this.Tpl), CHOKE_AIR);
-        this.mdTh = md;
-        this.mPl += (md - qr) * dt;
-        if (this.mPl < 1e-6) this.mPl = 1e-6;
-        this.pPl = (this.mPl * R * this.Tpl) / this.Vpl;
-      }
-
-      // ---- write waveguides ----
-      {
-        const t = ex.t, buf = ex.buf, lo = ex.lineOff, lm = ex.lineMask;
-        for (let l = 0, LL = ex.L; l < LL; l++) buf[lo[l] + (t & lm[l])] = exOut[l];
-        ex.t = t + 1;
-        if (ex.t > 0x3fffffff) ex.t -= 0x20000000;
-      }
-      {
-        const t = inn.t, buf = inn.buf, lo = inn.lineOff, lm = inn.lineMask;
-        for (let l = 0, LL = inn.L; l < LL; l++) buf[lo[l] + (t & lm[l])] = inOut[l];
-        inn.t = t + 1;
-        if (inn.t > 0x3fffffff) inn.t -= 0x20000000;
-      }
-
-      // ---- afterfire pools ----
-      for (let k = 0; k < afNodes.length; k++) {
-        const nd = afNodes[k];
-        const f = this.afFuel[nd];
-        if (f > (this.alsActive ? this.afMin * 4 : this.afMin)) {
-          const heat = this.afHeat[nd];
-          const air = this.afAir[nd];
-          const mix = air / (f * AFR_ST + 1e-9);
-          const rate = heat * 90 * (mix > 0.25 ? 1 : mix * 4) * (this.egt > 650 ? 1 : 0.3);
-          if (rnd() < rate * dt) {
-            const frac = 0.35 + 0.65 * rnd();
-            const burnt = Math.min(f, air / AFR_ST + f * 0.3) * frac;
-            const E = burnt * LHV;
-            this.afFuel[nd] -= burnt;
-            this.afAir[nd] = Math.max(0, air - burnt * AFR_ST);
-            const amp = Math.min(60000, 36 * Math.pow(E, 0.8)) * (0.7 + 0.6 * rnd());
-            this.afAmp[nd] = Math.max(this.afAmp[nd] * this.afEnv[nd], amp);
-            this.afEnv[nd] = 1;
-            this.afRise[nd] = 0;
-            this.afDecay[nd] = Math.exp(-1 / (fs * (0.0006 + 0.0022 * rnd())));
-            this.afEvents++;
-            this.afIntensity = Math.max(this.afIntensity, amp / 30000);
-            if (this.isTurbo && this.alsActive) this.wt += (0.07 * E) / (this.tJ * this.nT * Math.max(this.wt, 2000));
-          }
-          this.afFuel[nd] = f * (1 - dt * 7);
-          this.afHeat[nd] = heat * (1 - dt * 3);
-        } else if (this.afAir[nd] > 0) {
-          this.afAir[nd] *= 1 - dt * 7;
-        }
-      }
-
-      // ---- boost systems ----
-      let scTorque = 0;
-      let turboSnd = 0;
-      if (this.isTurbo || this.isCentri) {
-        // Greitzer compressor + plenum model; compressor map is a speed line
-        // with a peak (surge on its left), scaled with tip speed squared.
-        const Ut = this.wt * this.tRtip;
-        const mChoke = this.tChokeK * Math.max(Ut, 80) * this.nT;
-        const x = this.mc / mChoke;
-        const PRm = Math.pow(1 + 2.17e-6 * Ut * Ut, 3.5);
-        // Speed line with a peak (positive slope on its left = surge region).
-        // In reverse flow the spinning wheel resists like a restriction, so
-        // the pressure needed to push air backwards rises: that closes the
-        // deep-surge cycle (the "flutter").
-        let g;
-        if (x >= 1) {
-          g = Math.max(-0.6, -2 * (x - 1));
-        } else if (x >= 0.32) {
-          const y = (x - 0.32) / 0.68;
-          g = 1 - y * y;
-        } else if (x >= 0) {
-          const y = (0.32 - x) / 0.32;
-          g = 1 - 0.28 * y * y;
-        } else {
-          g = 0.72 + 3.5 * x * x;
-        }
-        let pc = P_AMB * (1 + (PRm - 1) * g) - this.tRestr * this.mc * Math.abs(this.mc);
-        if (pc < 0.4 * P_AMB) pc = 0.4 * P_AMB;
-        const Lc = 0.35, Ac = 0.0016 * this.nT;
-        this.mc += (Ac / Lc) * (pc - this.pB) * dt;
-        // BOV vent
-        let mb = 0;
-        if (this.bov > 0.01 && this.pB > P_AMB) {
-          const Ab = 4.5e-4 * this.bov;
-          mb = orifice(Ab, this.pB - P_AMB, this.pB / (R * this.TB), 0, this.pB, Math.sqrt(this.TB), CHOKE_AIR);
-        }
-        this.mdBov = mb;
-        this.pB += ((R * this.TB) / this.Vb) * (this.mc - this.mdTh - mb) * dt;
-        if (!(this.pB > 0.3 * P_AMB)) {
-          this.pB = 0.3 * P_AMB;
-          if (this.mc < 0) this.mc = 0;
-        }
-        if (this.pB > 4.5 * P_AMB) this.pB = 4.5 * P_AMB;
-        if (!(Math.abs(this.mc) < 5)) this.mc = 0;
-        // shaft
-        const PR = this.pB / P_AMB;
-        const Pc = this.mc > 0 ? (this.mc * 1005 * T_AMB * (Math.pow(PR, 0.2857) - 1)) / 0.7 : -this.mc * 1005 * 25;
-        let Pt = 0;
-        if (this.isTurbo) {
-          Pt = this.turbPsm;
-        } else {
-          // centrifugal supercharger: gear-driven impeller
-          this.wt = omega * this.scRatio * 3.2;
-          scTorque = Pc / Math.max(omega, 30);
-        }
-        if (this.isTurbo) {
-          const w = Math.max(this.wt, 300);
-          this.wt += ((Pt * 0.72 - Pc) / (this.tJ * this.nT * w) - this.wt * 0.08) * dt;
-          if (this.wt < 0) this.wt = 0;
-          const wMax = 560 / this.tRtip;
-          if (this.wt > wMax) this.wt = wMax;
-        }
-        const Tc = T_AMB * (1 + (Math.pow(Math.max(PR, 1), 0.2857) - 1) / 0.7);
-        this.TB = Tc - 0.72 * (Tc - T_AMB);
-        this.Tpl = this.TB;
-        // sound: blade-pass whistle, shaft whine, inlet whoosh, BOV hiss
-        const fShaft = this.wt / TAU;
-        this.tPhase += (fShaft * this.blades) / fs;
-        this.tPhase -= Math.floor(this.tPhase);
-        this.tPhase2 += fShaft / fs;
-        this.tPhase2 -= Math.floor(this.tPhase2);
-        const flow = Math.abs(this.mc);
-        const whistle = Math.sin(TAU * this.tPhase) * (fShaft * this.blades < 17000 ? 1 : 0.3);
-        const whine = Math.sin(TAU * this.tPhase2) + 0.3 * Math.sin(2 * TAU * this.tPhase2);
-        const nz = rnd() - 0.5;
-        this.nzState[0] += (nz - this.nzState[0]) * 0.35;
-        const whoosh = nz - this.nzState[0];
-        const Utn = Ut / 400;
-        turboSnd =
-          (whistle * 0.6 + whine * 0.25) * Utn * Utn * (0.15 + 3 * flow) * 0.8 +
-          whoosh * flow * Utn * 5 +
-          (rnd() - 0.5) * mb * Math.sqrt(Math.max(0, this.pB - P_AMB)) * 0.3;
-        // surge: flow reversal chuffs + the inlet 'thump' of each reversal
-        if (this.mc < 0) turboSnd += (rnd() - 0.5) * -this.mc * 90 * (0.3 + Utn);
-        const dmc = (this.mc - this.mcPrev) * fs;
-        this.mcPrev = this.mc;
-        this.mcLp += 0.05 * (dmc - this.mcLp);
-        turboSnd += this.mcLp * INV4PI * 0.6;
-      } else if (this.isSC) {
-        const wb = omega * this.scRatio;
-        const PR = this.pB / P_AMB;
-        const ev = clamp(1 - 0.12 * (PR - 1), 0.5, 1);
-        const vflow = (this.scDisp * wb) / TAU * ev;
-        const msc = (P_AMB / (R * T_AMB)) * vflow;
-        let mby = 0;
-        const Aby = 0.0018 * this.scBypass + 1e-6;
-        if (this.pB > P_AMB) mby = orifice(Aby, this.pB - P_AMB, this.pB / (R * this.TB), 0, this.pB, Math.sqrt(this.TB), CHOKE_AIR);
-        else mby = -orifice(Aby, P_AMB - this.pB, P_AMB / (R * T_AMB), 0, P_AMB, Math.sqrt(T_AMB), CHOKE_AIR);
-        this.pB += ((R * this.TB) / this.Vb) * (msc - this.mdTh - mby) * dt;
-        if (this.pB < 0.4 * P_AMB) this.pB = 0.4 * P_AMB;
-        const eta = this.fiType === 'twinscrew' ? 0.7 : 0.55;
-        const P = (msc * 1005 * T_AMB * (Math.pow(Math.max(PR, 1), 0.2857) - 1)) / eta + msc * 2000;
-        scTorque = P / Math.max(omega, 30);
-        const Tc = T_AMB * (1 + (Math.pow(Math.max(PR, 1), 0.2857) - 1) / eta);
-        this.TB = Tc - 0.65 * (Tc - T_AMB);
-        this.Tpl = this.TB;
-        // rotor whine
-        this.scPhase += ((wb / TAU) * this.scLobes) / fs;
-        this.scPhase -= Math.floor(this.scPhase);
-        const ph = TAU * this.scPhase;
-        const wv = Math.sin(ph) + 0.45 * Math.sin(2 * ph + 0.3) + 0.2 * Math.sin(3 * ph + 1.1);
-        turboSnd = wv * (wb / 1000) * (0.25 + 1.5 * Math.max(0, PR - 1) + 0.6 * msc) * 0.18;
-      }
-      if (this.isTurbo) {
-        // smoothed turbine power
-        let tp = 0;
-        for (let i = 0; i < this.turbP.length; i++) {
-          tp += this.turbP[i];
-          this.turbP[i] = 0;
-        }
-        const rhoT = (P_AMB * 1.6) / (R * Math.max(600, this.egt));
-        this.turbPs += (tp / rhoT - this.turbPs) * 0.002;
-        this.turbPsm = Math.max(0, this.turbPs) * 1.5;
-      }
-
-      // ---- crank dynamics ----
-      const w0 = omega;
-      let tq = torque - this.fric * ftanh(omega * 0.5) - scTorque;
-      if (this.starter) {
-        const Tst = 55 * this.cfg.dispLitres + 40;
-        tq += Tst * Math.max(0, 1 - omega / 48);
-      }
-      // clutch / load
-      let load = 0;
-      if (this.mode === 'dyno') {
-        load = this.dynoLoad;
-      } else if (this.gear > 0 && this.clutchCap > 0) {
-        const v = this.veh;
-        const G = v.gears[this.gear - 1] * v.final;
-        const slipW = omega - this.ww * G;
-        const Jwe = this.Jw + 0.04 * G * G;
-        const kmax = 0.45 / (this.clutchCap * dt * (1 / this.J + (G * G) / Jwe) + 1e-9);
-        const k = Math.min(0.6, kmax);
-        load = this.clutchCap * ftanh(slipW * k);
-        this.clutchT = load;
-        // wheel & car
-        const vv = this.v;
-        const slipV = this.ww * v.tire - vv;
-        const Nz = v.mass * 9.81 * (v.drive === 'awd' ? 1 : v.rearBias) + v.mass * (v.drive === 'awd' ? 0 : 0.2) * Math.max(0, this.accel || 0);
-        const as = Math.abs(slipV);
-        const mu = v.mu * ftanh(slipV / 0.55) * (1 - 0.22 * clamp((as - 1.5) / 8, 0, 1));
-        const Fx = Nz * mu;
-        const brakeT = this.brake * v.mass * 9.81 * 0.95 * v.tire * 0.45 * ftanh(this.ww * 4);
-        this.ww += ((load * G * 0.92 - Fx * v.tire - brakeT) / Jwe) * dt;
-        const drag = 0.5 * 1.2 * v.cd * v.area * vv * vv + v.mass * 9.81 * 0.012 * ftanh(vv * 2);
-        const brakeF = this.brake * v.mass * 9.81 * 0.95 * 0.55 * ftanh(vv * 3);
-        const acc = (Fx - drag - brakeF) / v.mass;
-        this.accel = acc;
-        this.v = vv + acc * dt;
-        if (this.v < 0 && this.brake > 0.05) this.v = 0;
-        this.slip = slipV;
-        this.gearTorque = load;
-      } else if (this.mode === 'drive' || this.mode === 'flyby') {
-        // coasting in neutral / clutch open
-        const v = this.veh;
-        const vv = this.v;
-        const drag = 0.5 * 1.2 * v.cd * v.area * vv * vv + v.mass * 9.81 * 0.012 * ftanh(vv * 2);
-        const brakeF = this.brake * v.mass * 9.81 * 0.95 * ftanh(vv * 3);
-        this.accel = (-drag - brakeF) / v.mass;
-        this.v = Math.max(0, vv + this.accel * dt);
-        this.ww = this.v / v.tire;
-        this.slip = 0;
-        this.clutchT = 0;
-        this.gearTorque = 0;
-      }
-      this.pos += this.v * dt;
-      omega = w0 + ((tq - load) / this.J) * dt;
-      if (omega < 0) omega = 0;
-      this.telTq += torque - this.fric - scTorque;
-      this.telN++;
-      this.cycTq += torque - this.fric - scTorque;
-      this.cycN++;
-
-      // ---- strobe snapshot for the visualiser ----
+      // strobe snapshot for the visualiser
       if (this.snapWait > 0) this.snapWait--;
       else if (!this.snapReady) {
         if (!this.strobeOn || omega < 3 || crossed(crankPrev, crank, this.strobeAngle)) {
@@ -1690,100 +1251,567 @@ class EngineSim {
         }
       }
 
-      // ---- intake radiation ----
-      // Snorkel/airbox: d/dt of throttle mass flow through a low-pass airbox;
-      // ITB/velocity stacks radiate the runner mouths directly.
-      const dq = (this.mdTh - this.mdThPrev) * fs;
-      this.mdThPrev = this.mdTh;
-      this.ibLp1 += ibA * (dq - this.ibLp1);
-      this.ibLp2 += ibA * (this.ibLp1 - this.ibLp2);
-      let intake = this.ibLp2 * (1 - itb * 0.6);
-      if (itb) {
-        const dr = (this.runnerFlow - this.runnerFlowPrev) * fs;
-        this.itbLp += lpCoef(6500, fs) * (dr - this.itbLp);
-        intake += this.itbLp * 0.55;
-      }
-      this.runnerFlowPrev = this.runnerFlow;
-      // throttle hiss at part throttle (high velocity across the plate)
-      if (this.pPl < P_AMB * 0.8 && this.mdTh > 0) {
-        const nz = rnd() - 0.5;
-        this.hissLp += 0.5 * (nz - this.hissLp);
-        intake += (nz - this.hissLp) * this.mdTh * 30 * (1 - this.pPl / P_AMB);
-      }
-      intake = intake * INV4PI * snd.intake + turboSnd;
-
-      // ---- mechanical ----
-      if (rpm > 30) {
-        const vk = snd.valvetrain === 'ohv' ? 1.5 : snd.valvetrain === 'pneumatic' ? 0.6 : snd.valvetrain === 'none' ? 0 : 1;
-        this.vtExc += vtExc * (rpm / 6000) * (rpm / 6000 + 0.15) * vk * (0.7 + 0.6 * rnd());
-      }
-      const vtOut = this.valvetrain.tick(this.vtExc * (rnd() * 0.5 + 0.75));
-      this.vtExc *= 0.2;
-      const cb = this.block.tick(combExc * 1e-4);
-      let mech = (vtOut * 7 + cb * 0.04) * snd.mech;
-      // straight-cut / gearbox whine
-      if (this.gear > 0 && this.clutch > 0.5) {
-        const G = this.veh.gears[this.gear - 1];
-        const fin = (this.ww * this.veh.final) / TAU;
-        this.gearPhase += (fin * 29) / fs;
-        this.gearPhase -= Math.floor(this.gearPhase);
-        const amp = snd.gear * (this.veh.straightCut ? 1 : 0.2) * (0.02 + Math.abs(this.gearTorque) / 400) * Math.min(1, fin / 20);
-        mech += Math.sin(TAU * this.gearPhase) * amp + Math.sin(2 * TAU * this.gearPhase + 1) * amp * 0.4;
-        void G;
-      }
-      // starter motor
-      if (this.starter) {
-        const fr = (omega / TAU) * 138;
-        this.starterPhase += (fr + 40) / fs;
-        this.starterPhase -= Math.floor(this.starterPhase);
-        const ph = this.starterPhase;
-        mech += ((ph < 0.5 ? 1 : -1) * 0.35 + Math.sin(TAU * ph * 3) * 0.25 + (rnd() - 0.5) * 0.3) * 0.8;
-      }
-
-      // ---- chassis: road, wind, tyre squeal ----
-      let chassis = 0;
-      if (this.v > 0.3) {
-        const vv = this.v;
-        const nz = rnd() - 0.5;
-        this.roadLp += 0.02 * (nz - this.roadLp);
-        this.windLp1 += 0.15 * (nz - this.windLp1);
-        this.windLp2 += 0.03 * (this.windLp1 - this.windLp2);
-        chassis += this.roadLp * vv * 0.35 + (this.windLp1 - this.windLp2) * vv * vv * 0.0025;
-      }
-      const sl = Math.abs(this.slip);
-      if (sl > 1.2 && this.gear > 0) {
-        this.sqPhase += (820 + 180 * Math.sin(this.pos * 3) + (rnd() - 0.5) * 300) / fs;
-        this.sqPhase -= Math.floor(this.sqPhase);
-        chassis += Math.sin(TAU * this.sqPhase) * Math.min(1, (sl - 1.2) / 4) * 1.4;
-      }
-
-      // ---- assemble sources (Pa at 1 m) ----
-      const exG = INV4PI * snd.exhaust;
-      const w = lis.w;
-      srcBuf[w] = src[0] * exG;
-      srcBuf[SRC_BUF + w] = src[1] * exG;
-      srcBuf[2 * SRC_BUF + w] = src[2] * exG;
-      srcBuf[3 * SRC_BUF + w] = intake;
-      srcBuf[4 * SRC_BUF + w] = mech;
-      srcBuf[5 * SRC_BUF + w] = chassis;
-      lis.w = (w + 1) & SRC_MASK;
-
-      // scope capture (tail pipe sum, cylinder 1 pressure & volume)
-      const sw = this.scopeW;
-      this.scopeBuf[sw] = (src[0] + src[1] + src[2]) * exG;
-      this.scopeP[sw] = cP[0];
-      this.scopeV[sw] = cV[0];
-      this.scopeW = (sw + 1) & 16383;
-      if (crossed(this.scopePrevCA ?? 0, cCA[0], this.tdcFire)) this.onScopeCycle();
-      this.scopePrevCA = cCA[0];
-
-      // ---- listener ----
-      const out = this.listen(lis);
+      this.stepSources(rpm, omega, L);
+      const out = this.listen(L);
       outL[s] = out[0];
       outR[s] = out[1];
     }
     this.omega = omega;
     this.crank = crank;
+  }
+
+  // One time step of every cylinder: volume change, combustion, valve flows
+  // (coupled implicitly to the pipe waves), blow-by. Returns gas torque.
+  stepCylinders(crank, rpm) {
+    const dt = this.dt;
+    const n = this.n;
+    const cycle = this.cycle;
+    const tabScale = this.tabScale;
+    const vol = this.vol, dvd = this.dvd, off = this.off;
+    const cm = this.cm, cU = this.cU, cMb = this.cMb, cV = this.cV, cCA = this.cCA, cP = this.cP;
+    const cP1 = this.cP1, cP2 = this.cP2;
+    const cBurn = this.cBurn, cXb = this.cXb, cQ = this.cQ, cSpark = this.cSpark, cDur = this.cDur;
+    const cExEnd = this.cExEnd, cInEnd = this.cInEnd, cRunB = this.cRunB, cExB = this.cExB;
+    const ex = this.ex, inn = this.inn;
+    const exIn = ex.inW, exOut = ex.outW, exZ = ex.Zm;
+    const inIn = inn.inW, inOut = inn.outW, inZ = inn.Zm;
+    const hi = this.camHi;
+    const exTab = hi ? this.exTabHi : this.exTabLo;
+    const inTab = hi ? this.inTabHi : this.inTabLo;
+    const ivc = hi ? this.cfg.ivcHi : this.cfg.ivc;
+    const evo = hi ? this.cfg.evoHi : this.cfg.evo;
+    const evc = this.cfg.evc;
+    const rasp = this.rasp26;
+    const kLeak = this.kLeak;
+    const Tint = this.Tpl;
+    const sqTint = Math.sqrt(Tint);
+    const Tex = Math.max(450, this.egt * 0.85);
+    const sqTex = Math.sqrt(Tex);
+    let torque = 0;
+    let vtExc = 0;
+    let combExc = 0;
+    for (let c = 0; c < n; c++) {
+      let ca = crank + off[c];
+      if (ca >= cycle) ca -= cycle;
+      const caPrev = cCA[c];
+      cCA[c] = ca;
+      const fi = ca * tabScale;
+      const i0 = fi | 0;
+      const fr = fi - i0;
+      const V = vol[i0] + (vol[i0 + 1] - vol[i0]) * fr;
+      const dvdth = dvd[i0] + (dvd[i0 + 1] - dvd[i0]) * fr;
+
+      if (caPrev !== ca) {
+        if (crossed(caPrev, ca, ivc)) {
+          this.onIVC(c, rpm);
+          vtExc += 1;
+        }
+        if (cBurn[c] === 1 && crossed(caPrev, ca, cSpark[c])) cBurn[c] = 2;
+        if (crossed(caPrev, ca, evo)) this.onEVO(c);
+        if (crossed(caPrev, ca, evc)) vtExc += 1;
+      }
+
+      let m = cm[c];
+      let U = cU[c];
+      const Vo = cV[c];
+      const dV = V - Vo;
+      U = (U * (1 - (GM1 * 0.5 * dV) / Vo)) / (1 + (GM1 * 0.5 * dV) / V);
+
+      if (cBurn[c] === 2) {
+        let ph = ca - cSpark[c];
+        if (ph < 0) ph += cycle;
+        const x = ph / cDur[c];
+        let xb;
+        if (x >= 1) {
+          xb = 1;
+          cBurn[c] = 3;
+        } else {
+          xb = 1 - Math.exp(-5 * x * x * x);
+        }
+        U += cQ[c] * (xb - cXb[c]);
+        cXb[c] = xb;
+        if (xb === 1) cMb[c] = m;
+      }
+
+      let T = U / (m * CV);
+      let p = (GM1 * U) / V;
+
+      // exhaust valve
+      const ae = exTab[i0] + (exTab[i0 + 1] - exTab[i0]) * fr;
+      if (ae > 1e-9) {
+        const e = cExEnd[c];
+        const zm = exZ[e];
+        const zc = (GAM * R * T * dt) / V;
+        const D = p - P_AMB - 2 * exIn[e];
+        let md;
+        if (D >= 0) {
+          const rho = p / (R * T);
+          md = orifice(ae, D, rho, zm + zc, p, Math.sqrt(T), CHOKE);
+          // turbulent jet noise through the valve gap
+          const vj = md / (rho * ae);
+          exOut[e] += (rnd() - 0.5) * md * (vj < 600 ? vj : 600) * rasp;
+        } else {
+          const pp = P_AMB + 2 * exIn[e];
+          md = -orifice(ae, -D, pp / (R * Tex), zm + zc, pp, sqTex, CHOKE);
+        }
+        exOut[e] += zm * md;
+        const dm = md * dt;
+        if (dm > 0) {
+          U -= dm * CP * T;
+          cMb[c] -= (cMb[c] * dm) / m;
+        } else {
+          // backflow from the port: only as 'burned' as what went out
+          U -= dm * CP * Tex;
+          cMb[c] -= dm * cExB[c];
+        }
+        m -= dm;
+        if (m < 1e-7) m = 1e-7;
+        T = U / (m * CV);
+        p = (GM1 * U) / V;
+      }
+
+      // intake valve
+      const ai = inTab[i0] + (inTab[i0 + 1] - inTab[i0]) * fr;
+      if (ai > 1e-9) {
+        const e = cInEnd[c];
+        const zm = inZ[e];
+        const zc = (GAM * R * T * dt) / V;
+        const pu = P_AMB + 2 * inIn[e];
+        const D = pu - p;
+        let md;
+        if (D >= 0) md = orifice(ai, D, pu / (R * Tint), zm + zc, pu, sqTint, CHOKE_AIR);
+        else md = -orifice(ai, -D, p / (R * T), zm + zc, p, Math.sqrt(T), CHOKE);
+        inOut[e] -= zm * md;
+        const dm = md * dt;
+        if (dm > 0) {
+          U += dm * CP * Tint;
+          // reverted exhaust gas comes back first and stays burned gas
+          const rb = cRunB[c];
+          if (rb > 0) {
+            const b = dm < rb ? dm : rb;
+            cMb[c] += b;
+            cRunB[c] = rb - b;
+          }
+        } else {
+          U += dm * CP * T;
+          const bOut = (cMb[c] * -dm) / m;
+          cMb[c] -= bOut;
+          cRunB[c] += bOut;
+        }
+        m += dm;
+        if (m < 1e-7) m = 1e-7;
+      }
+
+      // ring leakage (blow-by) toward crankcase
+      const leak = (p - P_AMB) * kLeak;
+      if (leak > 0 && leak * dt < m * 0.01) {
+        U -= leak * dt * CP * T;
+        m -= leak * dt;
+      }
+
+      const Tmin = m * CV * 180;
+      if (U < Tmin) U = Tmin;
+      cm[c] = m;
+      cU[c] = U;
+      cV[c] = V;
+      p = (GM1 * U) / V;
+      // combustion noise excitation: positive jerk of cylinder pressure
+      const jerk = p - 2 * cP1[c] + cP2[c];
+      if (jerk > 0) combExc += jerk;
+      cP2[c] = cP1[c];
+      cP1[c] = p;
+      cP[c] = p;
+      torque += (p - P_AMB) * dvdth;
+    }
+    this.torqueGas = torque;
+    this.vtExcS = vtExc;
+    this.combExcS = combExc;
+    return torque;
+  }
+
+  // Afterfire pressure sources at exhaust junctions (decaying bangs).
+  stepAfterfireSources() {
+    const afNodes = this.afNodes;
+    const exSrc = this.ex.src;
+    for (let k = 0; k < afNodes.length; k++) {
+      const nd = afNodes[k];
+      let src0 = 0;
+      const env = this.afEnv[nd];
+      if (env > 1e-4) {
+        this.afRise[nd] += (1 - this.afRise[nd]) * 0.35;
+        src0 = this.afAmp[nd] * env * this.afRise[nd] * (1 + 0.6 * (rnd() - 0.5));
+        this.afEnv[nd] = env * this.afDecay[nd];
+      }
+      exSrc[nd] = src0;
+    }
+  }
+
+  // Unburned fuel pools in the exhaust: random ignition -> bang.
+  stepAfterfirePools() {
+    const afNodes = this.afNodes;
+    const dt = this.dt;
+    const thresh = this.alsActive ? this.afMin * 4 : this.afMin;
+    for (let k = 0; k < afNodes.length; k++) {
+      const nd = afNodes[k];
+      const f = this.afFuel[nd];
+      if (f > thresh) {
+        const heat = this.afHeat[nd];
+        const air = this.afAir[nd];
+        const mix = air / (f * AFR_ST + 1e-9);
+        const rate = heat * 90 * (mix > 0.25 ? 1 : mix * 4) * (this.egt > 650 ? 1 : 0.3);
+        if (rnd() < rate * dt) {
+          const frac = 0.35 + 0.65 * rnd();
+          const burnt = Math.min(f, air / AFR_ST + f * 0.3) * frac;
+          const E = burnt * LHV;
+          this.afFuel[nd] -= burnt;
+          this.afAir[nd] = Math.max(0, air - burnt * AFR_ST);
+          const amp = Math.min(60000, 36 * Math.pow(E, 0.8)) * (0.7 + 0.6 * rnd());
+          this.afAmp[nd] = Math.max(this.afAmp[nd] * this.afEnv[nd], amp);
+          this.afEnv[nd] = 1;
+          this.afRise[nd] = 0;
+          this.afDecay[nd] = Math.exp(-1 / (this.fs * (0.0006 + 0.0022 * rnd())));
+          this.afEvents++;
+          this.afIntensity = Math.max(this.afIntensity, amp / 30000);
+          if (this.isTurbo && this.alsActive) this.wt += (0.07 * E) / (this.tJ * this.nT * Math.max(this.wt, 2000));
+        }
+        this.afFuel[nd] = f * (1 - dt * 7);
+        this.afHeat[nd] = heat * (1 - dt * 3);
+      } else if (this.afAir[nd] > 0) {
+        this.afAir[nd] *= 1 - dt * 7;
+      }
+    }
+  }
+
+  // Intake runner junctions, plenum boundary and throttle flow.
+  stepIntake() {
+    const inn = this.inn;
+    const inIn = inn.inW, inOut = inn.outW, inY = inn.Y;
+    const es = inn.es, ec = inn.ec, ends = inn.ends;
+    const junc = inn.junc;
+    for (let j = 0; j < junc.length; j++) {
+      const nd = junc[j];
+      const st = es[nd], cnt = ec[nd];
+      let sy = 0, sya = 0;
+      for (let k = 0; k < cnt; k++) {
+        const e = ends[st + k];
+        sy += inY[e];
+        sya += inY[e] * inIn[e];
+      }
+      const pj = (2 * sya) / sy;
+      for (let k = 0; k < cnt; k++) {
+        const e = ends[st + k];
+        inOut[e] = pj - inIn[e];
+      }
+    }
+    const pg = this.pPl - P_AMB;
+    let qr = 0;
+    const pls = inn.plenums;
+    for (let i = 0; i < pls.length; i++) {
+      const nd = pls[i];
+      const st = es[nd], cnt = ec[nd];
+      for (let k = 0; k < cnt; k++) {
+        const e = ends[st + k];
+        inOut[e] = pg - inIn[e];
+        qr += (pg - 2 * inIn[e]) * inY[e];
+      }
+    }
+    this.runnerFlow = qr;
+    // throttle (implicit against plenum compliance)
+    const dt = this.dt;
+    const boosted = this.boosted;
+    const pUp = boosted ? this.pB : P_AMB;
+    const Tup = boosted ? this.TB : T_AMB;
+    const kpl = (R * this.Tpl * dt) / this.Vpl;
+    const pPred = this.pPl - kpl * qr;
+    const A = this.thrArea + this.bypass + 2e-6;
+    const D = pUp - pPred;
+    let md;
+    if (D >= 0) md = orifice(A, D, pUp / (R * Tup), kpl, pUp, Math.sqrt(Tup), CHOKE_AIR);
+    else md = -orifice(A, -D, this.pPl / (R * this.Tpl), kpl, this.pPl, Math.sqrt(this.Tpl), CHOKE_AIR);
+    this.mdTh = md;
+    this.mPl += (md - qr) * dt;
+    if (this.mPl < 1e-6) this.mPl = 1e-6;
+    this.pPl = (this.mPl * R * this.Tpl) / this.Vpl;
+  }
+
+  // Turbocharger / supercharger dynamics and their sounds. Returns the torque
+  // the crank spends driving a supercharger.
+  stepBoost(omega) {
+    this.turboSnd = 0;
+    if (this.isTurbo || this.isCentri) return this.stepTurbo(omega);
+    if (this.isSC) return this.stepBlower(omega);
+    return 0;
+  }
+
+  stepTurbo(omega) {
+    const dt = this.dt, fs = this.fs;
+    let scTorque = 0;
+    // Greitzer compressor + plenum model; compressor map is a speed line with
+    // a peak (surge on its left), scaled with tip speed squared.
+    const Ut = this.wt * this.tRtip;
+    const mChoke = this.tChokeK * Math.max(Ut, 80) * this.nT;
+    const x = this.mc / mChoke;
+    const PRm = Math.pow(1 + 2.17e-6 * Ut * Ut, 3.5);
+    // Speed line with a peak (positive slope on its left = surge region). In
+    // reverse flow the spinning wheel resists like a restriction, so the
+    // pressure needed to push air backwards rises: that closes the deep-surge
+    // cycle (the "flutter").
+    let g;
+    if (x >= 1) g = Math.max(-0.6, -2 * (x - 1));
+    else if (x >= 0.32) {
+      const y = (x - 0.32) / 0.68;
+      g = 1 - y * y;
+    } else if (x >= 0) {
+      const y = (0.32 - x) / 0.32;
+      g = 1 - 0.28 * y * y;
+    } else g = 0.72 + 3.5 * x * x;
+    let pc = P_AMB * (1 + (PRm - 1) * g) - this.tRestr * this.mc * Math.abs(this.mc);
+    if (pc < 0.4 * P_AMB) pc = 0.4 * P_AMB;
+    const Lc = 0.35, Ac = 0.0016 * this.nT;
+    this.mc += (Ac / Lc) * (pc - this.pB) * dt;
+    // BOV vent
+    let mb = 0;
+    if (this.bov > 0.01 && this.pB > P_AMB) {
+      const Ab = 4.5e-4 * this.bov;
+      mb = orifice(Ab, this.pB - P_AMB, this.pB / (R * this.TB), 0, this.pB, Math.sqrt(this.TB), CHOKE_AIR);
+    }
+    this.mdBov = mb;
+    this.pB += ((R * this.TB) / this.Vb) * (this.mc - this.mdTh - mb) * dt;
+    if (!(this.pB > 0.3 * P_AMB)) {
+      this.pB = 0.3 * P_AMB;
+      if (this.mc < 0) this.mc = 0;
+    }
+    if (this.pB > 4.5 * P_AMB) this.pB = 4.5 * P_AMB;
+    if (!(Math.abs(this.mc) < 5)) this.mc = 0;
+    // shaft
+    const PR = this.pB / P_AMB;
+    const Pc = this.mc > 0 ? (this.mc * 1005 * T_AMB * (Math.pow(PR, 0.2857) - 1)) / 0.7 : -this.mc * 1005 * 25;
+    if (this.isTurbo) {
+      // smoothed turbine power from the exhaust network's turbine resistor
+      let tp = 0;
+      for (let i = 0; i < this.turbP.length; i++) {
+        tp += this.turbP[i];
+        this.turbP[i] = 0;
+      }
+      const rhoT = (P_AMB * 1.6) / (R * Math.max(600, this.egt));
+      this.turbPs += (tp / rhoT - this.turbPs) * 0.002;
+      this.turbPsm = Math.max(0, this.turbPs) * 1.5;
+      const w = Math.max(this.wt, 300);
+      this.wt += ((this.turbPsm * 0.72 - Pc) / (this.tJ * this.nT * w) - this.wt * 0.08) * dt;
+      if (this.wt < 0) this.wt = 0;
+      const wMax = 560 / this.tRtip;
+      if (this.wt > wMax) this.wt = wMax;
+    } else {
+      // centrifugal supercharger: gear-driven impeller
+      this.wt = omega * this.scRatio * 3.2;
+      scTorque = Pc / Math.max(omega, 30);
+    }
+    const Tc = T_AMB * (1 + (Math.pow(Math.max(PR, 1), 0.2857) - 1) / 0.7);
+    this.TB = Tc - 0.72 * (Tc - T_AMB);
+    this.Tpl = this.TB;
+    // sound: blade-pass whistle, shaft whine, inlet whoosh, BOV hiss
+    const fShaft = this.wt / TAU;
+    this.tPhase += (fShaft * this.blades) / fs;
+    this.tPhase -= Math.floor(this.tPhase);
+    this.tPhase2 += fShaft / fs;
+    this.tPhase2 -= Math.floor(this.tPhase2);
+    const flow = Math.abs(this.mc);
+    const whistle = Math.sin(TAU * this.tPhase) * (fShaft * this.blades < 17000 ? 1 : 0.3);
+    const whine = Math.sin(TAU * this.tPhase2) + 0.3 * Math.sin(2 * TAU * this.tPhase2);
+    const nz = rnd() - 0.5;
+    this.nzState[0] += (nz - this.nzState[0]) * 0.35;
+    const whoosh = nz - this.nzState[0];
+    const Utn = Ut / 400;
+    let snd =
+      (whistle * 0.6 + whine * 0.25) * Utn * Utn * (0.15 + 3 * flow) * 0.8 +
+      whoosh * flow * Utn * 5 +
+      (rnd() - 0.5) * mb * Math.sqrt(Math.max(0, this.pB - P_AMB)) * 0.3;
+    // surge: flow reversal chuffs + the inlet 'thump' of each reversal
+    if (this.mc < 0) snd += (rnd() - 0.5) * -this.mc * 90 * (0.3 + Utn);
+    const dmc = (this.mc - this.mcPrev) * fs;
+    this.mcPrev = this.mc;
+    this.mcLp += 0.05 * (dmc - this.mcLp);
+    this.turboSnd = snd + this.mcLp * INV4PI * 0.6;
+    return scTorque;
+  }
+
+  stepBlower(omega) {
+    const dt = this.dt, fs = this.fs;
+    const wb = omega * this.scRatio;
+    const PR = this.pB / P_AMB;
+    const ev = clamp(1 - 0.12 * (PR - 1), 0.5, 1);
+    const vflow = ((this.scDisp * wb) / TAU) * ev;
+    const msc = (P_AMB / (R * T_AMB)) * vflow;
+    let mby = 0;
+    const Aby = 0.0018 * this.scBypass + 1e-6;
+    if (this.pB > P_AMB) mby = orifice(Aby, this.pB - P_AMB, this.pB / (R * this.TB), 0, this.pB, Math.sqrt(this.TB), CHOKE_AIR);
+    else mby = -orifice(Aby, P_AMB - this.pB, P_AMB / (R * T_AMB), 0, P_AMB, Math.sqrt(T_AMB), CHOKE_AIR);
+    this.pB += ((R * this.TB) / this.Vb) * (msc - this.mdTh - mby) * dt;
+    if (this.pB < 0.4 * P_AMB) this.pB = 0.4 * P_AMB;
+    const eta = this.fiType === 'twinscrew' ? 0.7 : 0.55;
+    const P = (msc * 1005 * T_AMB * (Math.pow(Math.max(PR, 1), 0.2857) - 1)) / eta + msc * 2000;
+    const Tc = T_AMB * (1 + (Math.pow(Math.max(PR, 1), 0.2857) - 1) / eta);
+    this.TB = Tc - 0.65 * (Tc - T_AMB);
+    this.Tpl = this.TB;
+    // rotor whine at the lobe-passing frequency
+    this.scPhase += ((wb / TAU) * this.scLobes) / fs;
+    this.scPhase -= Math.floor(this.scPhase);
+    const ph = TAU * this.scPhase;
+    const wv = Math.sin(ph) + 0.45 * Math.sin(2 * ph + 0.3) + 0.2 * Math.sin(3 * ph + 1.1);
+    this.turboSnd = wv * (wb / 1000) * (0.25 + 1.5 * Math.max(0, PR - 1) + 0.6 * msc) * 0.18;
+    return P / Math.max(omega, 30);
+  }
+
+  // Crank, clutch, wheels and car. Returns the new crank speed.
+  stepDrivetrain(omega, torque, scTorque) {
+    const dt = this.dt;
+    let tq = torque - this.fric * ftanh(omega * 0.5) - scTorque;
+    if (this.starter) tq += this.starterTq * Math.max(0, 1 - omega / 48);
+    let load = 0;
+    if (this.mode === 'dyno') {
+      load = this.dynoLoad;
+    } else if (this.gear > 0 && this.clutchCap > 0) {
+      const v = this.veh;
+      const G = v.gears[this.gear - 1] * v.final;
+      const slipW = omega - this.ww * G;
+      const Jwe = this.Jw + 0.04 * G * G;
+      const kmax = 0.45 / (this.clutchCap * dt * (1 / this.J + (G * G) / Jwe) + 1e-9);
+      const k = kmax < 0.6 ? kmax : 0.6;
+      load = this.clutchCap * ftanh(slipW * k);
+      this.clutchT = load;
+      // wheel & car
+      const vv = this.v;
+      const slipV = this.ww * v.tire - vv;
+      const Nz = this.axleLoad + this.loadTransfer * Math.max(0, this.accel);
+      const as = slipV < 0 ? -slipV : slipV;
+      const mu = v.mu * ftanh(slipV / 0.55) * (1 - 0.22 * clamp((as - 1.5) / 8, 0, 1));
+      const Fx = Nz * mu;
+      const brakeT = this.brake * this.brakeK * v.tire * 0.45 * ftanh(this.ww * 4);
+      this.ww += ((load * G * 0.92 - Fx * v.tire - brakeT) / Jwe) * dt;
+      const drag = this.dragK * vv * vv + this.rollK * ftanh(vv * 2);
+      const brakeF = this.brake * this.brakeK * 0.55 * ftanh(vv * 3);
+      const acc = (Fx - drag - brakeF) / v.mass;
+      this.accel = acc;
+      this.v = vv + acc * dt;
+      if (this.v < 0 && this.brake > 0.05) this.v = 0;
+      this.slip = slipV;
+      this.gearTorque = load;
+    } else if (this.mode === 'drive' || this.mode === 'flyby') {
+      // coasting in neutral / clutch open
+      const v = this.veh;
+      const vv = this.v;
+      const drag = this.dragK * vv * vv + this.rollK * ftanh(vv * 2);
+      const brakeF = this.brake * this.brakeK * ftanh(vv * 3);
+      this.accel = (-drag - brakeF) / v.mass;
+      this.v = Math.max(0, vv + this.accel * dt);
+      this.ww = this.v / v.tire;
+      this.slip = 0;
+      this.clutchT = 0;
+      this.gearTorque = 0;
+    }
+    this.pos += this.v * dt;
+    const net = torque - this.fric - scTorque;
+    this.telTq += net;
+    this.telN++;
+    this.cycTq += net;
+    this.cycN++;
+    const w = omega + ((tq - load) / this.J) * dt;
+    return w > 0 ? w : 0;
+  }
+
+  // Intake, mechanical and chassis sources; write all sources (Pa at 1 m)
+  // into the listener's delay lines; scope capture.
+  stepSources(rpm, omega, lis) {
+    const fs = this.fs;
+    const snd = this.snd;
+    const src = this.srcBuf;
+
+    // Snorkel/airbox: d/dt of throttle mass flow through a low-pass airbox;
+    // ITB/velocity stacks radiate the runner mouths directly.
+    const dq = (this.mdTh - this.mdThPrev) * fs;
+    this.mdThPrev = this.mdTh;
+    const ibA = this.ibA;
+    this.ibLp1 += ibA * (dq - this.ibLp1);
+    this.ibLp2 += ibA * (this.ibLp1 - this.ibLp2);
+    let intake = this.ibLp2 * (1 - this.itb * 0.6);
+    if (this.itb) {
+      const dr = (this.runnerFlow - this.runnerFlowPrev) * fs;
+      this.itbLp += this.itbA * (dr - this.itbLp);
+      intake += this.itbLp * 0.55;
+    }
+    this.runnerFlowPrev = this.runnerFlow;
+    // throttle hiss at part throttle (high velocity across the plate)
+    if (this.pPl < P_AMB * 0.8 && this.mdTh > 0) {
+      const nz = rnd() - 0.5;
+      this.hissLp += 0.5 * (nz - this.hissLp);
+      intake += (nz - this.hissLp) * this.mdTh * 30 * (1 - this.pPl / P_AMB);
+    }
+    intake = intake * INV4PI * snd.intake + this.turboSnd;
+
+    // mechanical: valve seating ticks + combustion knock through the block
+    if (rpm > 30 && this.vtExcS > 0) {
+      const r6 = rpm / 6000;
+      this.vtExc += this.vtExcS * r6 * (r6 + 0.15) * this.vtK * (0.7 + 0.6 * rnd());
+    }
+    const vtOut = this.valvetrain.tick(this.vtExc * (rnd() * 0.5 + 0.75));
+    this.vtExc *= 0.2;
+    const cb = this.block.tick(this.combExcS * 1e-4);
+    let mech = (vtOut * 7 + cb * 0.04) * snd.mech;
+    // straight-cut / gearbox whine
+    if (this.gear > 0 && this.clutch > 0.5) {
+      const fin = (this.ww * this.veh.final) / TAU;
+      this.gearPhase += (fin * 29) / fs;
+      this.gearPhase -= Math.floor(this.gearPhase);
+      const amp = this.gearK * (0.02 + Math.abs(this.gearTorque) / 400) * Math.min(1, fin / 20);
+      mech += Math.sin(TAU * this.gearPhase) * amp + Math.sin(2 * TAU * this.gearPhase + 1) * amp * 0.4;
+    }
+    // starter motor
+    if (this.starter) {
+      const fr = (omega / TAU) * 138;
+      this.starterPhase += (fr + 40) / fs;
+      this.starterPhase -= Math.floor(this.starterPhase);
+      const ph = this.starterPhase;
+      mech += ((ph < 0.5 ? 1 : -1) * 0.35 + Math.sin(TAU * ph * 3) * 0.25 + (rnd() - 0.5) * 0.3) * 0.8;
+    }
+
+    // chassis: road, wind, tyre squeal
+    let chassis = 0;
+    if (this.v > 0.3) {
+      const vv = this.v;
+      const nz = rnd() - 0.5;
+      this.roadLp += 0.02 * (nz - this.roadLp);
+      this.windLp1 += 0.15 * (nz - this.windLp1);
+      this.windLp2 += 0.03 * (this.windLp1 - this.windLp2);
+      chassis += this.roadLp * vv * 0.35 + (this.windLp1 - this.windLp2) * vv * vv * 0.0025;
+    }
+    const sl = Math.abs(this.slip);
+    if (sl > 1.2 && this.gear > 0) {
+      this.sqPhase += (820 + 180 * Math.sin(this.pos * 3 + sl) + (rnd() - 0.5) * 300) / fs;
+      this.sqPhase -= Math.floor(this.sqPhase);
+      chassis += Math.sin(TAU * this.sqPhase) * Math.min(1, (sl - 1.2) / 4) * 1.4;
+    }
+
+    // assemble sources (Pa at 1 m)
+    const exG = this.exG;
+    const buf = lis.buf;
+    const w = lis.w;
+    buf[w] = src[0] * exG;
+    buf[SRC_BUF + w] = src[1] * exG;
+    buf[2 * SRC_BUF + w] = src[2] * exG;
+    buf[3 * SRC_BUF + w] = intake;
+    buf[4 * SRC_BUF + w] = mech;
+    buf[5 * SRC_BUF + w] = chassis;
+    lis.w = (w + 1) & SRC_MASK;
+
+    // scope capture (tail pipe sum, cylinder 1 pressure & volume)
+    const sw = this.scopeW;
+    this.scopeBuf[sw] = (src[0] + src[1] + src[2]) * exG;
+    this.scopeP[sw] = this.cP[0];
+    this.scopeV[sw] = this.cV[0];
+    this.scopeW = (sw + 1) & 16383;
+    const ca0 = this.cCA[0];
+    if (crossed(this.scopePrevCA, ca0, this.tdcFire)) this.onScopeCycle();
+    this.scopePrevCA = ca0;
   }
 
   // Snapshot of cylinders + pressure along every exhaust pipe (visualiser).
@@ -1864,19 +1892,22 @@ class EngineSim {
         const d = dC[t];
         dC[t] = d + dI[t];
         if (g === 0) continue;
-        // cubic Hermite fractional read
         const pos = w - d;
         const fl = Math.floor(pos);
         const f = pos - fl;
         const i1 = fl & SRC_MASK;
-        const y0 = buf[base + ((i1 - 1) & SRC_MASK)];
         const y1 = buf[base + i1];
         const y2 = buf[base + ((i1 + 1) & SRC_MASK)];
-        const y3 = buf[base + ((i1 + 2) & SRC_MASK)];
-        const c1 = 0.5 * (y2 - y0);
-        const c2 = y0 - 2.5 * y1 + 2 * y2 - 0.5 * y3;
-        const c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
-        const x = ((c3 * f + c2) * f + c1) * f + y1;
+        let x;
+        if (L.moving) {
+          // cubic Hermite for clean Doppler
+          const y0 = buf[base + ((i1 - 1) & SRC_MASK)];
+          const y3 = buf[base + ((i1 + 2) & SRC_MASK)];
+          const c1 = 0.5 * (y2 - y0);
+          const c2 = y0 - 2.5 * y1 + 2 * y2 - 0.5 * y3;
+          const c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
+          x = ((c3 * f + c2) * f + c1) * f + y1;
+        } else x = y1 + (y2 - y1) * f;
         let y = z1[t] + al[t] * (x - z1[t]);
         z1[t] = y;
         y = z2[t] + al[t] * (y - z2[t]);
@@ -1959,48 +1990,26 @@ class EngineProcessor extends AudioWorkletProcessor {
     this.telCount = 0;
     this.frames = 0;
     this.pending = [];
+    this.eco = false;
+    this.quality = 'auto';
+    this.busyMs = 0;
+    this.loadFrames = 0;
+    this.load = 0;
+    this.hot = 0;
+    this.upL = this.upR = this.upZL = this.upZR = 0;
     this.port.onmessage = (e) => this.onMessage(e.data);
   }
 
   onMessage(m) {
     switch (m.type) {
-      case 'config': {
-        const old = this.sim;
-        const sim = new EngineSim(m.cfg, this.fs);
-        if (old) {
-          sim.mode = old.mode;
-          sim.valveMode = old.valveMode;
-          sim.autoShift = old.autoShift;
-          sim.strobeOn = old.strobeOn;
-          sim.tc = old.tc;
-          sim.strobeStep = old.strobeStep;
-        }
-        if (m.tune) this.applyTune(sim, m.tune);
-        if (m.hot && old) {
-          // Same car, new hardware: carry the running state across.
-          for (const k of ['omega', 'ignition', 'running', 'gear', 'v', 'ww', 'pos', 'clutch', 'pedal', 'thr', 'thrCmd', 'brake', 'idleI', 'egt', 'egtInst', 'launch', 'dyno', 'dynoI', 'dynoLoad', 'mode', 'flare', 'coldT', 'accel'])
-            sim[k] = old[k];
-          sim.crank = old.crank % sim.cycle;
-          for (let c = 0; c < sim.n; c++) sim.cCA[c] = (sim.crank + sim.off[c]) % sim.cycle;
-          sim.pPl = old.pPl;
-          sim.mPl = (sim.pPl * sim.Vpl) / (R * sim.Tpl);
-          sim.fade = 1;
-        }
-        if (old) {
-          // keep rendering the old engine briefly and crossfade
-          this.xOld = old;
-          this.xL = this.L;
-          this.xN = m.hot ? 1600 : 4800;
-          this.xT = 0;
-          this.L = new Listener(this.fs);
-          this.tmpL ??= new Float32Array(128);
-          this.tmpR ??= new Float32Array(128);
-        }
-        this.sim = sim;
-        this.L.first = true;
-        this.updateScene(0);
+      case 'config':
+        this.cfgMsg = m.cfg;
+        this.installSim(m.cfg, m.tune, !!m.hot);
         break;
-      }
+      case 'quality':
+        this.quality = m.quality;
+        this.setEco(m.quality === 'eco');
+        break;
       case 'input':
         if (!this.sim) return;
         if (m.pedal != null) this.sim.pedal = clamp(m.pedal, 0, 1);
@@ -2113,7 +2122,7 @@ class EngineProcessor extends AudioWorkletProcessor {
     const cam = CAMERAS[this.camera] ?? CAMERAS.rear;
     const flyby = sim.mode === 'flyby' && this.flyby;
     const srcs = sourcePositions(sim.cfg);
-    const fs = this.fs;
+    const fs = sim.fs;
     let carX = 0, carZ = 0;
     let lisPos, lisRight;
     if (flyby) {
@@ -2133,6 +2142,7 @@ class EngineProcessor extends AudioWorkletProcessor {
     }
     const cabin = !flyby && cam.cabin;
     L.cabin = cabin ? 1 : 0;
+    L.moving = !!flyby;
     const active = [
       sim.ex.opens.some((_, i) => sim.ex.oCh[i] === 0),
       sim.ex.opens.some((_, i) => sim.ex.oCh[i] === 1),
@@ -2213,6 +2223,89 @@ class EngineProcessor extends AudioWorkletProcessor {
     L.first = false;
   }
 
+  // Build a simulation for cfg; hot = same car with new hardware (keep the
+  // running state). The previous engine keeps rendering briefly for a
+  // crossfade.
+  installSim(cfg, tune, hot) {
+    const old = this.sim;
+    const rate = this.eco ? this.fs / 2 : this.fs;
+    const sim = new EngineSim(cfg, rate);
+    if (old) {
+      sim.mode = old.mode;
+      sim.valveMode = old.valveMode;
+      sim.autoShift = old.autoShift;
+      sim.strobeOn = old.strobeOn;
+      sim.tc = old.tc;
+      sim.strobeStep = old.strobeStep;
+      for (const k of ['limitRpm', 'limiterType', 'burble', 'antilag', 'boostTarget', 'launchRpm', 'bovType']) if (!tune) sim[k] = old[k];
+    }
+    if (tune) this.applyTune(sim, tune);
+    if (hot && old) {
+      // Same car, new hardware: carry the running state across.
+      for (const k of ['omega', 'ignition', 'running', 'gear', 'v', 'ww', 'pos', 'clutch', 'pedal', 'thr', 'thrCmd', 'brake', 'idleI', 'egt', 'egtInst', 'launch', 'dyno', 'dynoI', 'dynoLoad', 'mode', 'flare', 'coldT', 'accel'])
+        sim[k] = old[k];
+      sim.crank = old.crank % sim.cycle;
+      for (let c = 0; c < sim.n; c++) sim.cCA[c] = (sim.crank + sim.off[c]) % sim.cycle;
+      sim.pPl = old.pPl;
+      sim.mPl = (sim.pPl * sim.Vpl) / (R * sim.Tpl);
+      sim.fade = 1;
+    }
+    if (old && old.fs === sim.fs) {
+      this.xOld = old;
+      this.xL = this.L;
+      this.xN = hot ? 1600 : 4800;
+      this.xT = 0;
+    } else this.xOld = null;
+    this.L = new Listener(sim.fs);
+    this.tmpL ??= new Float32Array(128);
+    this.tmpR ??= new Float32Array(128);
+    this.sim = sim;
+    this.L.first = true;
+    this.updateScene(0);
+  }
+
+  // Half-rate physics for slow devices (output upsampled x2).
+  setEco(on) {
+    if (on === this.eco) return;
+    this.eco = on;
+    if (this.cfgMsg && this.sim) this.installSim(this.cfgMsg, null, true);
+    this.port.postMessage({ type: 'quality', eco: on });
+  }
+
+  // Render a sim into n output frames, upsampling if it runs at half rate.
+  renderSim(sim, lis, L, R, n) {
+    if (sim.fs === this.fs) {
+      sim.render(L, R, n, lis);
+      return;
+    }
+    const h = n >> 1;
+    if (!this.hL || this.hL.length < h) {
+      this.hL = new Float32Array(h);
+      this.hR = new Float32Array(h);
+    }
+    const hL = this.hL, hR = this.hR;
+    sim.render(hL, hR, h, lis);
+    let pl = this.upL, pr = this.upR, zl = this.upZL, zr = this.upZR;
+    const a = 0.72;
+    for (let i = 0; i < h; i++) {
+      const l = hL[i], r = hR[i];
+      zl += a * ((pl + l) * 0.5 - zl);
+      zr += a * ((pr + r) * 0.5 - zr);
+      L[2 * i] = zl;
+      R[2 * i] = zr;
+      zl += a * (l - zl);
+      zr += a * (r - zr);
+      L[2 * i + 1] = zl;
+      R[2 * i + 1] = zr;
+      pl = l;
+      pr = r;
+    }
+    this.upL = pl;
+    this.upR = pr;
+    this.upZL = zl;
+    this.upZR = zr;
+  }
+
   process(inputs, outputs) {
     const out = outputs[0];
     const L = out[0], Rr = out[1] ?? out[0];
@@ -2225,12 +2318,14 @@ class EngineProcessor extends AudioWorkletProcessor {
     }
     // flyby script
     if (sim.mode === 'flyby' && this.flyby) this.flybyStep(nF / this.fs);
-    if (sim.mode === 'flyby') this.updateScene(nF);
-    sim.render(L, Rr, nF, this.L);
+    if (sim.mode === 'flyby') this.updateScene(sim.fs === this.fs ? nF : nF >> 1);
+    const t0 = Date.now();
+    const Rw = Rr !== L ? Rr : this.monoR || (this.monoR = new Float32Array(nF));
+    this.renderSim(sim, this.L, L, Rw, nF);
     if (this.xOld) {
       const tl = this.tmpL.length >= nF ? this.tmpL : (this.tmpL = new Float32Array(nF));
       const tr = this.tmpR.length >= nF ? this.tmpR : (this.tmpR = new Float32Array(nF));
-      this.xOld.render(tl, tr, nF, this.xL);
+      this.renderSim(this.xOld, this.xL, tl, tr, nF);
       for (let i = 0; i < nF; i++) {
         const k = Math.max(0, 1 - (this.xT + i) / this.xN);
         const kn = 1 - k;
@@ -2241,6 +2336,19 @@ class EngineProcessor extends AudioWorkletProcessor {
       if (this.xT >= this.xN) {
         this.xOld = null;
         this.xL = null;
+      }
+    }
+    // CPU load estimate -> automatic half-rate fallback
+    this.busyMs += Date.now() - t0;
+    this.loadFrames += nF;
+    if (this.loadFrames >= this.fs) {
+      const load = this.busyMs / 1000;
+      this.load = load;
+      this.busyMs = 0;
+      this.loadFrames = 0;
+      if (this.quality === 'auto' && !this.eco) {
+        this.hot = load > 0.62 ? this.hot + 1 : 0;
+        if (this.hot >= 2) this.setEco(true);
       }
     }
     this.frames += nF;
@@ -2320,6 +2428,8 @@ class EngineProcessor extends AudioWorkletProcessor {
       bov: s.bov,
       dfco: s.dfco,
       launch: s.launchCut,
+      load: this.load,
+      eco: this.eco,
     };
     s.afEvents = 0;
     s.afIntensity = 0;

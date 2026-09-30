@@ -110,79 +110,55 @@ function component(net, inNode, kind, dia, x0, x1, y, opts = {}) {
     case 'straight':
       return chain([{ len: opts.len ?? 0.5, dia, frac: 1 }]);
     case 'cat':
-      // Catalytic converter: gentle cones into a ceramic brick (fine channels
-      // -> viscous HF loss) - a few dB, mostly at high frequency.
-      return chain([
-        { len: 0.07, dia: dia * 1.25, frac: 0.2, hf: 0.15, g: 0.99 },
-        { len: 0.2, dia: dia * 1.45, frac: 0.6, hf: 0.38, g: 0.965 },
-        { len: 0.07, dia: dia * 1.25, frac: 0.2, hf: 0.15, g: 0.99 },
-      ]);
+      // Catalytic converter: widened ceramic brick, viscous HF loss.
+      return chain([{ len: 0.34, dia: dia * 1.4, frac: 1, hf: 0.4, g: 0.955 }]);
     case 'resonator':
-      // Short straight-through absorptive resonator.
-      return chain([
-        { len: 0.08, dia, frac: 0.2 },
-        { len: 0.3, dia: dia * 1.1, frac: 0.6, hf: 0.32, g: 0.975 },
-        { len: 0.08, dia, frac: 0.2 },
-      ]);
+      return chain([{ len: 0.45, dia: dia * 1.1, frac: 1, hf: 0.34, g: 0.975 }]);
     case 'glasspack':
       // Perforated core wrapped in fibreglass: absorbs highs, passes the lows.
-      return chain([
-        { len: 0.05, dia, frac: 0.15 },
-        { len: 0.42, dia: dia * 1.15, frac: 0.7, hf: 0.55, g: 0.95 },
-        { len: 0.05, dia, frac: 0.15 },
-      ]);
+      return chain([{ len: 0.52, dia: dia * 1.15, frac: 1, hf: 0.55, g: 0.95 }]);
     case 'sport':
       // Straight-through perforated core with packing: loud, some damping.
-      return chain([
-        { len: 0.05, dia, frac: 0.15 },
-        { len: 0.22, dia: dia * 1.08, frac: 0.35, hf: 0.42, g: 0.97 },
-        { len: 0.22, dia: dia * 1.08, frac: 0.35, hf: 0.42, g: 0.97 },
-        { len: 0.05, dia, frac: 0.15 },
-      ]);
+      return chain([{ len: 0.5, dia: dia * 1.06, frac: 1, hf: 0.44, g: 0.965 }]);
     case 'chambered':
-      // Two-chamber reactive muffler (baffles): tonal, aggressive, ~10 dB.
+      // Two-chamber reactive muffler (baffles): tonal, aggressive.
       return chain([
-        { len: 0.05, dia, frac: 0.1 },
-        { len: 0.14, dia: dia * 2.0, frac: 0.3, hf: 0.2, g: 0.98 },
-        { len: 0.08, dia: dia * 0.9, frac: 0.15, hf: 0.1 },
-        { len: 0.18, dia: dia * 2.0, frac: 0.35, hf: 0.28, g: 0.975 },
-        { len: 0.05, dia, frac: 0.1 },
+        { len: 0.15, dia: dia * 2.0, frac: 0.38, hf: 0.2, g: 0.98 },
+        { len: 0.08, dia: dia * 0.9, frac: 0.2, hf: 0.1 },
+        { len: 0.19, dia: dia * 2.0, frac: 0.42, hf: 0.28, g: 0.975 },
       ]);
     case 'stock': {
       // Road muffler: reactive chambers + packing + flow restriction.
       n = chain([
-        { len: 0.05, dia, frac: 0.1 },
-        { len: 0.2, dia: dia * 2.6, frac: 0.3, hf: 0.5, g: 0.96 },
-        { len: 0.14, dia: dia * 0.75, frac: 0.15, hf: 0.2 },
-        { len: 0.24, dia: dia * 2.6, frac: 0.35, hf: 0.58, g: 0.96 },
+        { len: 0.22, dia: dia * 2.6, frac: 0.4, hf: 0.5, g: 0.96 },
+        { len: 0.14, dia: dia * 0.75, frac: 0.2, hf: 0.2 },
+        { len: 0.26, dia: dia * 2.6, frac: 0.4, hf: 0.58, g: 0.96 },
       ]);
-      const r = net.node(NODE.RESISTOR, { x: mid(0.93), y, R: 0, K: opts.K ?? 900 / (dia * dia * 1e3), dyn: DYN.NONE });
+      const r = net.node(NODE.RESISTOR, { x: mid(0.96), y, R: 0, K: opts.K ?? 900 / (dia * dia * 1e3), dyn: DYN.NONE });
       net.pipe(n, r, { len: 0.04, dia: dia * 0.9, temp, pts: [net.pt(n), net.pt(r)] });
       const o = opts.out ?? net.junction(x1, y);
       net.pipe(r, o, { len: 0.06, dia, temp, pts: [net.pt(r), net.pt(o)] });
       return o;
     }
     case 'valved': {
-      // Modern supercar silencer: a straight perforated core closed by a flap
-      // valve, plus an always-open muffled side path through a chamber. Valve
-      // shut -> sound takes the narrow chambered route; open -> straight through.
-      const split = net.junction(mid(0.08), y);
-      net.pipe(n, split, { len: 0.05, dia, temp, pts: [net.pt(n), net.pt(split)] });
+      // Modern supercar silencer: a straight perforated core behind a flap
+      // valve, plus an always-open narrow, heavily damped side path. Valve shut
+      // -> sound squeezes through the lossy route; open -> straight through.
       const out = opts.out ?? net.junction(x1, y);
-      const merge = net.junction(mid(0.92), y);
-      // straight core with valve
-      const c1 = net.junction(mid(0.4), y);
-      net.pipe(split, c1, { len: 0.22, dia, temp, hf: 0.3, g: 0.975, pts: [net.pt(split), net.pt(c1)], label: 'core' });
-      const v = net.node(NODE.RESISTOR, { x: mid(0.62), y, R: 0, K: 0, dyn: DYN.VALVE, closedK: 4e7 });
-      net.pipe(c1, v, { len: 0.12, dia, temp, hf: 0.3, g: 0.975, pts: [net.pt(c1), net.pt(v)], label: 'core' });
-      net.pipe(v, merge, { len: 0.12, dia, temp, pts: [net.pt(v), net.pt(merge)], label: 'core' });
-      // muffled side path
+      const merge = net.junction(mid(0.9), y);
+      const v = net.node(NODE.RESISTOR, { x: mid(0.55), y, R: 0, K: 0, dyn: DYN.VALVE, closedK: 4e7 });
+      net.pipe(n, v, { len: 0.3, dia, temp, hf: 0.3, g: 0.975, pts: [net.pt(n), net.pt(v)], label: 'core' });
+      net.pipe(v, merge, { len: 0.16, dia, temp, hf: 0.3, g: 0.975, pts: [net.pt(v), net.pt(merge)], label: 'core' });
       const yb = y + (opts.bypassDy ?? 0.07);
-      const b0 = net.junction(mid(0.25), yb);
-      const b1 = net.junction(mid(0.75), yb);
-      net.pipe(split, b0, { len: 0.12, dia: dia * 0.6, temp, hf: 0.2, pts: [net.pt(split), [mid(0.08), yb], net.pt(b0)], label: 'muffler' });
-      net.pipe(b0, b1, { len: 0.3, dia: dia * 2.4, temp, hf: 0.55, g: 0.95, pts: [net.pt(b0), net.pt(b1)], label: 'muffler' });
-      net.pipe(b1, merge, { len: 0.12, dia: dia * 0.6, temp, hf: 0.2, pts: [net.pt(b1), [mid(0.92), yb], net.pt(merge)], label: 'muffler' });
+      net.pipe(n, merge, {
+        len: 0.62,
+        dia: dia * 0.58,
+        temp,
+        hf: 0.62,
+        g: 0.9,
+        pts: [net.pt(n), [mid(0.1), yb], [mid(0.8), yb], net.pt(merge)],
+        label: 'muffler',
+      });
       net.pipe(merge, out, { len: 0.05, dia, temp, pts: [net.pt(merge), net.pt(out)] });
       box.valve = true;
       return out;
@@ -192,32 +168,15 @@ function component(net, inNode, kind, dia, x0, x1, y, opts = {}) {
   }
 }
 
-// Add radiating tail pipe(s). ch: 0 = left, 1 = right. Returns nothing.
-function tails(net, inNode, { tips = 1, len = 0.5, dia = 0.07, ch = 0, x1 = 0.985, spreadY = 0.06, temp = 0.4 }) {
+// Add a radiating tail pipe. ch: 0 = left, 1 = right, 2 = centre. Several
+// tips on one side are acoustically one pipe; they are only drawn separately.
+function tails(net, inNode, { tips = 1, len = 0.5, dia = 0.07, ch = 0, x1 = 0.985, temp = 0.4 }) {
   const [x0, y0] = net.pt(inNode);
-  if (tips <= 1) {
-    const o = net.node(NODE.OPEN, { x: x1, y: y0, ch, radius: dia / 2 });
-    net.pipe(inNode, o, { len: len + 0.6 * dia / 2, dia, temp, pts: [[x0, y0], [x1, y0]], label: 'tail' });
-    return [o];
-  }
-  // Split into several tips on one side.
-  const split = net.junction(x0 + (x1 - x0) * 0.35, y0);
-  net.pipe(inNode, split, { len: len * 0.35, dia, temp, pts: [[x0, y0], net.pt(split)] });
-  const outs = [];
-  for (let i = 0; i < tips; i++) {
-    const dy = (i - (tips - 1) / 2) * spreadY;
-    const o = net.node(NODE.OPEN, { x: x1, y: y0 + dy, ch, radius: dia * 0.4 });
-    const tl = len * 0.65 + 0.6 * dia * 0.4;
-    net.pipe(split, o, {
-      len: tl,
-      dia: dia * 0.8,
-      temp,
-      pts: [net.pt(split), [x0 + (x1 - x0) * 0.55, y0 + dy], [x1, y0 + dy]],
-      label: 'tail',
-    });
-    outs.push(o);
-  }
-  return outs;
+  const area = tips * Math.pow(tips > 1 ? dia * 0.8 : dia, 2);
+  const d = Math.sqrt(area);
+  const o = net.node(NODE.OPEN, { x: x1, y: y0, ch, radius: d / 2, tips });
+  net.pipe(inNode, o, { len: len + 0.6 * d / 2, dia: d, temp, pts: [[x0, y0], [x1, y0]], label: 'tail' });
+  return [o];
 }
 
 // ---------------------------------------------------------------------------
@@ -391,21 +350,14 @@ function buildExhaust(spec) {
 
   const xStart = turbo ? 0.53 : 0.4;
   // cats
-  sides.forEach((s) => {
-    const j = net.junction(xStart + 0.02, s.y);
-    net.pipe(s.n, j, { len: 0.15, dia: midDia, temp: 0.9, pts: elbow(net, s.n, j, 'straight') });
-    s.n = j;
-    if (ex.cat) {
-      s.n = component(net, s.n, 'cat', midDia, xStart + 0.03, xStart + 0.12, s.y, { temp: 0.85 });
-    }
-  });
+  if (ex.cat) sides.forEach((s) => (s.n = component(net, s.n, 'cat', midDia, xStart + 0.01, xStart + 0.12, s.y, { temp: 0.85 })));
   const xMidEnd = 0.7;
   const merge = ex.merge ?? 'dual';
   if (merge === 'y' || merge === 'y-dual') {
     // Both banks merge into a single pipe (maybe split again at the back).
     const m = net.junction(0.6, 0.5);
-    sides.forEach((s) => {
-      net.pipe(s.n, m, { len: midLen * 0.6, dia: midDia, temp: 0.75, pts: elbow(net, s.n, m, 'hv'), label: 'mid' });
+    sides.forEach((s, i) => {
+      net.pipe(s.n, m, { len: midLen * 0.6 + (i ? ex.asym ?? 0.18 : 0), dia: midDia, temp: 0.75, pts: elbow(net, s.n, m, 'hv'), label: 'mid' });
     });
     let n = m;
     const mf = net.junction(0.68, 0.5);
@@ -418,20 +370,21 @@ function buildExhaust(spec) {
       const jl = net.junction(0.9, yl), jr = net.junction(0.9, yr);
       net.pipe(n, jl, { len: 0.25, dia: tailDia, temp: 0.45, pts: [net.pt(n), [0.88, 0.5], [0.88, yl], [0.9, yl]] });
       net.pipe(n, jr, { len: 0.25, dia: tailDia, temp: 0.45, pts: [net.pt(n), [0.88, 0.5], [0.88, yr], [0.9, yr]] });
-      tails(net, jl, { tips: tipsPerSide, len: tailLen, dia: tailDia, ch: 0, spreadY: 0.05 });
-      tails(net, jr, { tips: tipsPerSide, len: tailLen, dia: tailDia, ch: 1, spreadY: 0.05 });
+      tails(net, jl, { tips: tipsPerSide, len: tailLen, dia: tailDia, ch: 0 });
+      tails(net, jr, { tips: tipsPerSide, len: tailLen, dia: tailDia, ch: 1 });
     } else {
       if (muff !== 'none') n = component(net, n, muff, midDia * 1.25, 0.69, 0.88, 0.5, { temp: 0.55 });
-      tails(net, n, { tips, len: tailLen, dia: tailDia, ch: 2, spreadY: 0.06 });
+      tails(net, n, { tips, len: tailLen, dia: tailDia, ch: 2 });
     }
     return finishNet(net, lay);
   }
 
   // Mid pipes with optional crossover
   const xc = 0.56;
-  const cx = sides.map((s) => {
+  const cx = sides.map((s, i) => {
     const j = net.junction(xc, s.y);
-    net.pipe(s.n, j, { len: midLen * 0.5, dia: midDia, temp: 0.75, pts: elbow(net, s.n, j, 'straight'), label: 'mid' });
+    // the second bank's pipe is routed a little longer, as under a real car
+    net.pipe(s.n, j, { len: midLen * 0.5 + (i ? ex.asym ?? 0.18 : 0), dia: midDia, temp: 0.75, pts: elbow(net, s.n, j, 'straight'), label: 'mid' });
     return j;
   });
   if (merge === 'x') {
@@ -454,7 +407,7 @@ function buildExhaust(spec) {
     if (muff !== 'none') {
       n = component(net, n, muff, midDia, 0.67, 0.86, s.y, { temp: 0.55, bypassDy: i === 0 ? -0.07 : 0.07 });
     }
-    tails(net, n, { tips: tipsPerSide, len: tailLen, dia: tailDia, ch: i === 0 ? 0 : 1, spreadY: 0.045 });
+    tails(net, n, { tips: tipsPerSide, len: tailLen, dia: tailDia, ch: i === 0 ? 0 : 1 });
   });
   return finishNet(net, lay);
 }
@@ -483,14 +436,8 @@ function buildSingleTail(net, spec, n, y) {
   const tailDia = mm(ex.tailDia ?? ex.pipeDia ?? 63);
   const muff = ex.muffler ?? 'sport';
   const [x0] = net.pt(n);
-  let x = Math.max(x0 + 0.03, 0.46);
-  const j0 = net.junction(x, y);
-  net.pipe(n, j0, { len: 0.15, dia: midDia, temp: 0.9, pts: [net.pt(n), [x, y]] });
-  n = j0;
-  if (ex.cat) {
-    n = component(net, n, 'cat', midDia, x + 0.01, x + 0.1, y, { temp: 0.85 });
-    x += 0.11;
-  }
+  const x = Math.max(x0 + 0.03, 0.46);
+  if (ex.cat) n = component(net, n, 'cat', midDia, x, x + 0.1, y, { temp: 0.85 });
   const j1 = net.junction(0.66, y);
   net.pipe(n, j1, { len: ex.midLen ?? 1.2, dia: midDia, temp: 0.7, pts: [net.pt(n), [0.66, y]], label: 'mid' });
   n = j1;
@@ -503,8 +450,8 @@ function buildSingleTail(net, spec, n, y) {
     net.pipe(n, jl, { len: 0.3, dia: tailDia * 0.85, temp: 0.45, pts: [net.pt(n), [0.88, y], [0.88, yl], [0.9, yl]] });
     net.pipe(n, jr, { len: 0.3, dia: tailDia * 0.85, temp: 0.45, pts: [net.pt(n), [0.88, y], [0.88, yr], [0.9, yr]] });
     const per = Math.max(1, Math.round(tips / 2));
-    tails(net, jl, { tips: per, len: ex.tailLen ?? 0.35, dia: tailDia * 0.85, ch: 0, spreadY: 0.05 });
-    tails(net, jr, { tips: per, len: ex.tailLen ?? 0.35, dia: tailDia * 0.85, ch: 1, spreadY: 0.05 });
+    tails(net, jl, { tips: per, len: ex.tailLen ?? 0.35, dia: tailDia * 0.85, ch: 0 });
+    tails(net, jr, { tips: per, len: ex.tailLen ?? 0.35, dia: tailDia * 0.85, ch: 1 });
   } else {
     tails(net, n, { tips: 1, len: ex.tailLen ?? 0.4, dia: tailDia, ch: 2 });
   }

@@ -194,6 +194,12 @@ app.setEnv = (e) => {
   $('envSel').value = e;
   app.audio.setEnvironment(e);
 };
+app.quality = store.get('quality', 'auto');
+app.setQuality = (q) => {
+  app.quality = q;
+  store.set('quality', q);
+  if (app.started) app.audio.post({ type: 'quality', quality: q });
+};
 app.setVolume = (v) => {
   app.volume = v;
   store.set('volume', v);
@@ -314,6 +320,7 @@ async function start() {
   app.starting = false;
   app.audio.post({ type: 'config', cfg: workletConfig(app.compiled), tune: app.tune });
   app.audio.post({ type: 'camera', camera: app.camera });
+  if (app.quality !== 'auto') app.audio.post({ type: 'quality', quality: app.quality });
   app.audio.post({ type: 'ignition', on: true, crank: true, cold: true });
   $('intro').hidden = true;
   try {
@@ -351,6 +358,9 @@ function onMessage(m) {
       app.mode = 'rev';
       document.querySelectorAll('.modes button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.mode === 'rev')));
       app.audio.post({ type: 'mode', mode: 'rev' });
+      break;
+    case 'quality':
+      toast(m.eco ? 'Busy device: physics now runs at half rate' : 'Full-rate physics');
       break;
     case 'flyby-done':
       setTimeout(() => {
