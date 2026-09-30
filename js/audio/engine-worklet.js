@@ -446,6 +446,10 @@ class EngineSim {
     this.nT = this.isTurbo ? Math.max(1, ind.count) : this.isCentri ? 1 : 0;
     this.wt = 0; // turbo shaft speed (rad/s), aggregated over turbos
     this.mc = 0; // compressor mass flow (Greitzer state)
+    this.mcPrev = 0;
+    this.mcLp = 0;
+    this.pBrate = 0;
+    this.pBprev = P_AMB;
     this.wg = 0; // wastegate opening 0..1
     this.bov = 0;
     this.mdBov = 0;
@@ -658,6 +662,7 @@ class EngineSim {
       afr = 10.5;
     }
     if (this.launchCut) afr = 11.5;
+    if (this.tcCut > 0.45 && rnd() < (this.tcCut - 0.45) * 1.6) fuelOn = false; // TC cuts fuel
     const fuel = fuelOn ? fresh / afr : 0;
     const burnable = Math.min(fuel, fresh / AFR_ST);
     this.cFuel[c] = fuel;
@@ -675,7 +680,7 @@ class EngineSim {
     if (this.limCut && this.limiterType === 'spark') spark = false;
     if (this.shiftCut > 0) spark = false;
     if (this.launchCut && rnd() < 0.55) spark = false;
-    if (this.tcCut > 0.45 && rnd() < (this.tcCut - 0.45) * 1.6) spark = false;
+
 
     // Combustion variability grows with residual gas and light load.
     const sig = 0.016 + 0.45 * Math.max(0, xr - 0.14) + 0.04 * Math.max(0, 0.4 - load);
@@ -698,10 +703,12 @@ class EngineSim {
     let adv = 0.5 * dur - 9 + this.sparkTrim + this.ecu.sparkBase;
     if (cranking) adv = 5;
     if (this.dfco && this.burbleActive) adv = -18 - 22 * rnd() * this.burble;
-    if (this.alsActive) adv = -28 - 12 * rnd();
+    if (this.alsActive) adv = -38 - 16 * rnd();
     if (this.launchCut) adv = -15 - 10 * rnd();
     if (this.shiftRetard > 0) adv -= 25 * this.shiftRetard;
     if (this.tcCut > 0) adv -= 28 * Math.min(1, this.tcCut * 2);
+    // A flame lit after TDC burns into an expanding, cooling charge: slower.
+    if (adv < 0) dur *= 1 + -adv / 16;
     const q = burnable * LHV * this.cfg.combustion * Math.max(0.2, 1 + sig * gauss());
     this.cQ[c] = q;
     this.cDur[c] = dur;
@@ -726,7 +733,7 @@ class EngineSim {
     const node = this.cAf[c];
     if (node >= 0) {
       this.afFuel[node] += unburnt;
-      this.afAir[node] += airLeft;
+      this.afAir[node] += airLeft + (this.alsActive ? fresh * 0.8 : 0); // ALS secondary air
       const T = this.cU[c] / (this.cm[c] * CV);
       // a charge still burning at EVO carries flame into the pipe
       const heat = st === 2 ? 1 : st === 3 ? 0.12 : 0.05;
@@ -861,7 +868,7 @@ class EngineSim {
       cmd = Math.max(cmd, 0.55);
       this.blip -= dtc;
     }
-    if (this.alsActive) cmd = Math.max(cmd, 0.22);
+    if (this.alsActive) cmd = Math.max(cmd, 0.11);
     if (!this.ignition) cmd = this.pedal;
     this.thrCmd = cmd;
 
@@ -869,15 +876,19 @@ class EngineSim {
     if (this.isTurbo || this.isCentri) {
       // Electronic boost control: PI on wastegate duty.
       const over = this.pB - P_AMB - this.boostTarget;
+      this.pBrate += ((this.pB - this.pBprev) / dtc - this.pBrate) * Math.min(1, dtc * 40);
+      this.pBprev = this.pB;
       this.wgI = clamp(this.wgI + over * 1.2e-4 * dtc, 0, 1);
-      let wgT = clamp(this.wgI + over / 30000, 0, 1);
-      if (this.alsActive) {
-        wgT = 0;
-        this.wgI = 0;
-      }
+      // derivative action catches the spool-up surge before it overshoots
+      const near = this.pB - P_AMB > 0.55 * this.boostTarget ? 1 : 0;
+      let wgT = clamp(this.wgI + over / 30000 + near * Math.max(0, this.pBrate) * 2.5e-6, 0, 1);
+      if (this.alsActive) wgT = Math.max(0, wgT - 0.1);
       this.wg += (wgT - this.wg) * Math.min(1, dtc * 25);
       // Blow-off valve opens on closed throttle with pressure in the pipes
-      const bovT = this.bovType !== 'none' && this.thr < 0.18 && this.pB - this.pPl > 30000 && !this.alsActive ? 1 : 0;
+      // Blow-off valve opens on closed throttle with pressure in the pipes; with
+      // anti-lag it doubles as a pressure relief above the boost target.
+      const relief = this.alsActive && this.pB - P_AMB > this.boostTarget * 0.9;
+      const bovT = (this.bovType !== 'none' && this.thr < 0.18 && this.pB - this.pPl > 30000 && !this.alsActive) || relief ? 1 : 0;
       if (bovT) this.bov = Math.min(1, this.bov + dtc * 120);
       else if (this.pB - P_AMB < 12000 || this.thr > 0.3) this.bov = Math.max(0, this.bov - dtc * 25);
     }
@@ -1458,7 +1469,7 @@ class EngineSim {
       for (let k = 0; k < afNodes.length; k++) {
         const nd = afNodes[k];
         const f = this.afFuel[nd];
-        if (f > this.afMin) {
+        if (f > (this.alsActive ? this.afMin * 4 : this.afMin)) {
           const heat = this.afHeat[nd];
           const air = this.afAir[nd];
           const mix = air / (f * AFR_ST + 1e-9);
@@ -1476,7 +1487,7 @@ class EngineSim {
             this.afDecay[nd] = Math.exp(-1 / (fs * (0.0006 + 0.0022 * rnd())));
             this.afEvents++;
             this.afIntensity = Math.max(this.afIntensity, amp / 30000);
-            if (this.alsActive) this.wt += Math.sqrt(E) * 3;
+            if (this.isTurbo && this.alsActive) this.wt += (0.07 * E) / (this.tJ * this.nT * Math.max(this.wt, 2000));
           }
           this.afFuel[nd] = f * (1 - dt * 7);
           this.afHeat[nd] = heat * (1 - dt * 3);
@@ -1495,9 +1506,13 @@ class EngineSim {
         const mChoke = this.tChokeK * Math.max(Ut, 80) * this.nT;
         const x = this.mc / mChoke;
         const PRm = Math.pow(1 + 2.17e-6 * Ut * Ut, 3.5);
+        // Speed line with a peak (positive slope on its left = surge region).
+        // In reverse flow the spinning wheel resists like a restriction, so
+        // the pressure needed to push air backwards rises: that closes the
+        // deep-surge cycle (the "flutter").
         let g;
         if (x >= 1) {
-          g = Math.max(-1.5, -2 * (x - 1));
+          g = Math.max(-0.6, -2 * (x - 1));
         } else if (x >= 0.32) {
           const y = (x - 0.32) / 0.68;
           g = 1 - y * y;
@@ -1505,10 +1520,10 @@ class EngineSim {
           const y = (0.32 - x) / 0.32;
           g = 1 - 0.28 * y * y;
         } else {
-          g = Math.max(-1.5, 0.72 - 3 * x * x + 0.5 * x);
+          g = 0.72 + 3.5 * x * x;
         }
-        // a slow or stalled wheel is also just a restriction in the inlet
-        const pc = P_AMB * (1 + (PRm - 1) * g) - this.tRestr * this.mc * Math.abs(this.mc);
+        let pc = P_AMB * (1 + (PRm - 1) * g) - this.tRestr * this.mc * Math.abs(this.mc);
+        if (pc < 0.4 * P_AMB) pc = 0.4 * P_AMB;
         const Lc = 0.35, Ac = 0.0016 * this.nT;
         this.mc += (Ac / Lc) * (pc - this.pB) * dt;
         // BOV vent
@@ -1519,7 +1534,10 @@ class EngineSim {
         }
         this.mdBov = mb;
         this.pB += ((R * this.TB) / this.Vb) * (this.mc - this.mdTh - mb) * dt;
-        if (!(this.pB > 0.5 * P_AMB)) this.pB = 0.5 * P_AMB;
+        if (!(this.pB > 0.3 * P_AMB)) {
+          this.pB = 0.3 * P_AMB;
+          if (this.mc < 0) this.mc = 0;
+        }
         if (this.pB > 4.5 * P_AMB) this.pB = 4.5 * P_AMB;
         if (!(Math.abs(this.mc) < 5)) this.mc = 0;
         // shaft
@@ -1537,6 +1555,8 @@ class EngineSim {
           const w = Math.max(this.wt, 300);
           this.wt += ((Pt * 0.72 - Pc) / (this.tJ * this.nT * w) - this.wt * 0.08) * dt;
           if (this.wt < 0) this.wt = 0;
+          const wMax = 560 / this.tRtip;
+          if (this.wt > wMax) this.wt = wMax;
         }
         const Tc = T_AMB * (1 + (Math.pow(Math.max(PR, 1), 0.2857) - 1) / 0.7);
         this.TB = Tc - 0.72 * (Tc - T_AMB);
@@ -1558,8 +1578,12 @@ class EngineSim {
           (whistle * 0.6 + whine * 0.25) * Utn * Utn * (0.15 + 3 * flow) * 0.8 +
           whoosh * flow * Utn * 5 +
           (rnd() - 0.5) * mb * Math.sqrt(Math.max(0, this.pB - P_AMB)) * 0.3;
-        // surge: flow reversal chuffs
-        if (this.mc < 0) turboSnd += (rnd() - 0.5) * -this.mc * 60 * Utn;
+        // surge: flow reversal chuffs + the inlet 'thump' of each reversal
+        if (this.mc < 0) turboSnd += (rnd() - 0.5) * -this.mc * 90 * (0.3 + Utn);
+        const dmc = (this.mc - this.mcPrev) * fs;
+        this.mcPrev = this.mc;
+        this.mcLp += 0.05 * (dmc - this.mcLp);
+        turboSnd += this.mcLp * INV4PI * 0.6;
       } else if (this.isSC) {
         const wb = omega * this.scRatio;
         const PR = this.pB / P_AMB;

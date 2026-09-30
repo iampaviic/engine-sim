@@ -53,6 +53,14 @@ export const SCENARIOS = {
     [2.0, { type: 'input', pedal: 1 }],
     [14.0, { type: 'input', pedal: 0 }],
   ],
+  boost: [
+    [0.0, { type: 'ignition', on: true, crank: true }],
+    [1.5, { type: 'mode', mode: 'drive' }],
+    [2.0, { type: 'input', pedal: 1 }],
+    [9.0, { type: 'input', pedal: 0 }],
+    [11.0, { type: 'input', pedal: 1 }],
+    [13.5, { type: 'input', pedal: 0 }],
+  ],
   flyby: [
     [0.0, { type: 'ignition', on: true, crank: true }],
     [1.5, { type: 'camera', camera: 'flyby' }],
@@ -127,7 +135,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
     else pos.push(args[i]);
   }
   const [id = 'v8-ls', scen = 'rev', out = `/tmp/${id}-${scen}.wav`] = pos;
-  const r = await render(id, scen, { camera: flags.camera, duration: flags.dur ? +flags.dur : undefined });
+  const r = await render(id, scen, { camera: flags.camera, duration: flags.dur ? +flags.dur : undefined, tune: flags.tune ? JSON.parse(flags.tune) : undefined });
   let peak = 0, nan = 0;
   for (let i = 0; i < r.L.length; i++) {
     const a = Math.abs(r.L[i]);
@@ -135,9 +143,9 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
     else if (a > peak) peak = a;
   }
   writeWav(out, r.L, r.R, r.fs);
-  const csv = ['t,rpm,tq,thr,map,boost,egt,gear,speed,spl,lim,af'];
+  const csv = ['t,rpm,tq,thr,map,boost,egt,gear,speed,spl,lim,af,turbo,bov'];
   for (const m of r.tel)
-    csv.push([m.t.toFixed(3), m.rpm.toFixed(0), m.tq.toFixed(1), m.thr.toFixed(2), (m.map / 1e5).toFixed(3), (m.boost / 1e5).toFixed(3), m.egt.toFixed(0), m.gear, (m.speed * 3.6).toFixed(1), m.spl.toFixed(4), m.lim ? 1 : 0, m.af].join(','));
+    csv.push([m.t.toFixed(3), m.rpm.toFixed(0), m.tq.toFixed(1), m.thr.toFixed(2), (m.map / 1e5).toFixed(3), (m.boost / 1e5).toFixed(3), m.egt.toFixed(0), m.gear, (m.speed * 3.6).toFixed(1), m.spl.toFixed(4), m.lim ? 1 : 0, m.af, (m.turbo / 1000).toFixed(0), m.bov.toFixed(2)].join(','));
   writeFileSync(out.replace(/\.wav$/, '.csv'), csv.join('\n'));
   console.log(`${id}/${scen}: ${r.dur.toFixed(1)}s rendered, cpu ${(r.cpu * 100).toFixed(1)}% realtime, peak ${peak.toFixed(3)}, NaN ${nan}`);
 }
