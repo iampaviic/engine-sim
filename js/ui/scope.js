@@ -135,7 +135,7 @@ export class Scope {
     g.moveTo(l, (t + b) / 2);
     g.lineTo(r, (t + b) / 2);
     g.stroke();
-    this.text(`${this.waveScale.toFixed(2)} Pa`, l - 4 * dpr, t + 8 * dpr, 'right', 0.4, 8);
+    this.text(`±${this.waveScale.toFixed(1)} Pa at the mic`, l + 4 * dpr, t + 9 * dpr, 'left', 0.45, 8);
   }
 
   drawSpectrum(analyser) {
