@@ -55,7 +55,7 @@ const V12_65 = {
     layout: 'front',
     shiftTime: 0.1,
   },
-  sound: { exhaust: 1, intake: 1.2, mech: 0.8, valvetrain: 'dohc', trim: 0.3 },
+  sound: { exhaust: 1, intake: 1.2, mech: 0.8, valvetrain: 'dohc', trim: 0.25 },
 };
 
 const V12_60 = {
@@ -108,7 +108,7 @@ const V12_60 = {
     drive: 'awd',
     shiftTime: 0.06,
   },
-  sound: { exhaust: 1.1, intake: 1.1, mech: 0.8, valvetrain: 'dohc', trim: 0.33 },
+  sound: { exhaust: 1.1, intake: 1.1, mech: 0.8, valvetrain: 'dohc', trim: 0.31 },
 };
 
 const V8_LS = {
@@ -159,7 +159,7 @@ const V8_LS = {
     layout: 'front',
     shiftTime: 0.22,
   },
-  sound: { exhaust: 1, intake: 0.8, mech: 1, valvetrain: 'ohv', trim: 1.55 },
+  sound: { exhaust: 1, intake: 0.8, mech: 1, valvetrain: 'ohv', trim: 1.34 },
 };
 
 const V8_BIGBLOCK = {
@@ -211,7 +211,7 @@ const V8_BIGBLOCK = {
     shiftTime: 0.3,
     mu: 1.0,
   },
-  sound: { exhaust: 1.1, intake: 1.3, mech: 1.3, valvetrain: 'ohv', trim: 0.85 },
+  sound: { exhaust: 1.1, intake: 1.3, mech: 1.3, valvetrain: 'ohv', trim: 0.77 },
 };
 
 const V8_BLOWER = {
@@ -262,7 +262,7 @@ const V8_BLOWER = {
     layout: 'front',
     shiftTime: 0.16,
   },
-  sound: { exhaust: 1, intake: 1, mech: 1, valvetrain: 'ohv', gear: 0.2, trim: 1 },
+  sound: { exhaust: 1, intake: 1, mech: 1, valvetrain: 'ohv', gear: 0.2, trim: 0.74 },
 };
 
 const V8_FLAT = {
@@ -314,7 +314,7 @@ const V8_FLAT = {
     layout: 'mid',
     shiftTime: 0.08,
   },
-  sound: { exhaust: 1, intake: 1.2, mech: 0.8, valvetrain: 'dohc', trim: 0.62 },
+  sound: { exhaust: 1, intake: 1.2, mech: 0.8, valvetrain: 'dohc', trim: 0.45 },
 };
 
 const I6_TURBO = {
@@ -361,7 +361,7 @@ const I6_TURBO = {
     layout: 'front',
     shiftTime: 0.2,
   },
-  sound: { exhaust: 1.1, intake: 1, mech: 0.9, valvetrain: 'dohc', trim: 0.75 },
+  sound: { exhaust: 1.1, intake: 1, mech: 0.9, valvetrain: 'dohc', trim: 0.58 },
 };
 
 const F6_GT = {
@@ -413,7 +413,7 @@ const F6_GT = {
     shiftTime: 0.07,
     mu: 1.3,
   },
-  sound: { exhaust: 1, intake: 1.5, mech: 1, valvetrain: 'dohc', trim: 0.55 },
+  sound: { exhaust: 1, intake: 1.5, mech: 1, valvetrain: 'dohc', trim: 0.48 },
 };
 
 const V10_72 = {
@@ -464,7 +464,7 @@ const V10_72 = {
     layout: 'front',
     shiftTime: 0.1,
   },
-  sound: { exhaust: 1, intake: 1.4, mech: 0.8, valvetrain: 'dohc', trim: 0.78 },
+  sound: { exhaust: 1, intake: 1.4, mech: 0.8, valvetrain: 'dohc', trim: 0.76 },
 };
 
 const F1_V10 = {
@@ -520,7 +520,7 @@ const F1_V10 = {
     shiftTime: 0.04,
     mu: 1.9,
   },
-  sound: { exhaust: 1, intake: 1.2, mech: 1, valvetrain: 'pneumatic', gear: 0.8, trim: 0.21 },
+  sound: { exhaust: 1, intake: 1.2, mech: 1, valvetrain: 'pneumatic', gear: 0.8, trim: 0.13 },
 };
 
 const I4_RALLY = {
@@ -570,7 +570,7 @@ const I4_RALLY = {
     shiftTime: 0.05,
     mu: 1.05,
   },
-  sound: { exhaust: 1.1, intake: 1, mech: 1, valvetrain: 'dohc', gear: 0.7, trim: 0.96 },
+  sound: { exhaust: 1.1, intake: 1, mech: 1, valvetrain: 'dohc', gear: 0.7, trim: 0.85 },
 };
 
 const I4_VTEC = {
@@ -618,7 +618,7 @@ const I4_VTEC = {
     layout: 'front',
     shiftTime: 0.22,
   },
-  sound: { exhaust: 1, intake: 1.4, mech: 1.1, valvetrain: 'dohc', trim: 0.59 },
+  sound: { exhaust: 1, intake: 1.4, mech: 1.1, valvetrain: 'dohc', trim: 0.69 },
 };
 
 const F4_TURBO = {
@@ -669,7 +669,7 @@ const F4_TURBO = {
     layout: 'front',
     shiftTime: 0.2,
   },
-  sound: { exhaust: 1.1, intake: 1, mech: 1, valvetrain: 'dohc', trim: 0.55 },
+  sound: { exhaust: 1.1, intake: 1, mech: 1, valvetrain: 'dohc', trim: 0.5 },
 };
 
 const ROTARY = {
@@ -721,7 +721,7 @@ const ROTARY = {
     layout: 'front',
     shiftTime: 0.2,
   },
-  sound: { exhaust: 1.1, intake: 1.2, mech: 0.5, valvetrain: 'none', trim: 0.39 },
+  sound: { exhaust: 1.1, intake: 1.2, mech: 0.5, valvetrain: 'none', trim: 0.41 },
 };
 
 const VTWIN = {

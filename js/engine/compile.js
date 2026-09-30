@@ -569,8 +569,15 @@ function camLift(u, shape) {
     if (u > 1 - r) return s((1 - u) / r);
     return 1;
   }
-  const s = Math.sin(Math.PI * u);
-  return s * s * (1.35 - 0.35 * s * s) * 1.0; // cosine bell with fuller nose
+  // Real lobes open and close on a constant-velocity ramp (~0.3 mm), so the
+  // flow starts with a kink rather than a smooth tangent. Main event is a
+  // cosine bell with a fuller nose.
+  const ur = 0.07, hr = 0.028;
+  if (u < ur) return (hr * u) / ur;
+  if (u > 1 - ur) return (hr * (1 - u)) / ur;
+  const v = (u - ur) / (1 - 2 * ur);
+  const s = Math.sin(Math.PI * v);
+  return hr + (1 - hr) * s * s * (1.35 - 0.35 * s * s);
 }
 
 function valveAreaFromLift(lift, d, n, cd) {

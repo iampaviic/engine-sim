@@ -168,6 +168,9 @@ class Net {
 
     this.inW = new Float64Array(L);
     this.outW = new Float64Array(L);
+    // Finite-amplitude propagation: pressure crests travel faster
+    // (c + (g+1)/2 u), so strong pulses steepen into near-shocks.
+    // (nlLines is built below, once line ends are known.)
 
     // Node bookkeeping.
     this.N = d.N;
@@ -180,6 +183,8 @@ class Net {
     for (let i = 0; i < d.N; i++) {
       for (let k = 0; k < d.nodeEndCount[i]; k++) this.endNode[d.ends[d.nodeEndStart[i] + k]] = i;
     }
+    // Steepening applies to the outgoing blowdown pulses (lines leaving a port).
+    this.nlLines = Int32Array.from([...Array(L).keys()].filter((l) => d.segNl[l >> 1] && d.nodeType[this.endNode[l]] === NODE_PORT));
     const lists = { j: [], p: [], o: [], c: [], r: [], pl: [] };
     for (let i = 0; i < d.N; i++) {
       switch (d.nodeType[i]) {
@@ -235,8 +240,38 @@ class Net {
     this.rClosedK = new Float64Array(nr);
     for (let i = 0; i < nr; i++) this.rClosedK[i] = this.closedK[this.res[i]] || 3e8;
 
+    this.nlAdv = new Float64Array(L);
+    // (g+1)/(2g p0) per Pa of wave pressure, derated for the large-amplitude
+    // overshoot of the linearised form and for wall friction smearing fronts.
+    this.nlBeta = hot ? (0.55 * 2.33) / (2 * 1.33 * P_AMB) : 0;
+    // Turbulence and cycle-to-cycle gas temperature swings make each pipe's
+    // transit time wander by a fraction of a percent. Inaudible for the low
+    // harmonics, it keeps the highs from repeating identically every cycle.
+    this.wOff = new Float64Array(L);
+    this.wA = new Float64Array(S);
+    this.wB = new Float64Array(S);
+    this.wAmt = hot ? 0.0025 : 0.001;
     this.t = 1 << 20;
     this.setGasTemp(hot ? 700 : T_AMB);
+  }
+
+  // Transit-time wander (control rate): an Ornstein-Uhlenbeck process per
+  // segment, ~12 ms correlation, smoothed so the read heads glide.
+  wander(dtc) {
+    const S = this.S, a = this.wA, b = this.wB, dl = this.delay, wo = this.wOff;
+    const k = dtc / 0.012;
+    const g = this.wAmt * Math.sqrt(2 * k);
+    const kb = Math.min(1, dtc * 400);
+    for (let s = 0; s < S; s++) {
+      a[s] += -a[s] * k + g * gauss();
+      b[s] += (a[s] - b[s]) * kb;
+      const D = dl[2 * s];
+      let o = b[s] * D;
+      if (o > 0.05 * D) o = 0.05 * D;
+      else if (o < -0.05 * D) o = -0.05 * D;
+      wo[2 * s] = o;
+      wo[2 * s + 1] = o;
+    }
   }
 
   // Update sound speed per segment from the gas temperature (EGT for exhaust).
@@ -274,8 +309,23 @@ class Net {
   read() {
     const t = this.t, buf = this.buf, lo = this.lineOff, lm = this.lineMask, dl = this.delay;
     const la1 = this.la1, lz = this.lz, lg = this.lg, ld = this.ld, ldA = this.ldA, inW = this.inW;
+    const nl = this.nlLines, adv = this.nlAdv, wo = this.wOff, B = this.nlBeta;
+    // Finite-amplitude steepening: the crest of a strong pulse travels faster
+    // than its foot, so the front arrives early and sharpens toward a shock.
+    for (let j = 0; j < nl.length; j++) {
+      const l = nl[j];
+      const D = dl[l];
+      const o = lo[l], m = lm[l];
+      let sh = (buf[o + ((t - D) & m)] - ld[l]) * B * D;
+      const lim = 0.3 * D;
+      if (sh > lim) sh = lim;
+      else if (sh < -lim) sh = -lim;
+      // a front may steepen into a shock but never overturn
+      if (sh < adv[l] - 0.98) sh = adv[l] - 0.98;
+      adv[l] = sh;
+    }
     for (let l = 0, LL = this.L; l < LL; l++) {
-      const pos = t - dl[l];
+      const pos = t - dl[l] + adv[l] + wo[l];
       const i0 = pos | 0;
       const fr = pos - i0;
       const o = lo[l], m = lm[l];
@@ -590,6 +640,9 @@ class EngineSim {
     this.ignition = false;
     this.starter = false;
     this.starterT = 0;
+    this.crankRevs = 99;
+    this.syncRevs = 0;
+    this.rpmAvg = 0;
     this.running = false;
     this.idleTarget = e.idle;
     this.idleI = 0;
@@ -629,7 +682,7 @@ class EngineSim {
     this.fric = 0;
 
     // Feed-forward idle air
-    const needed = 1.18 * cfg.displacement * (e.idle / 120) * 0.14;
+    const needed = 1.18 * cfg.displacement * (e.idle / 120) * 0.092;
     this.bypassFF = needed / ((CHOKE_AIR * P_AMB) / Math.sqrt(T_AMB)) / 0.8;
 
     // Vehicle / drivetrain
@@ -724,7 +777,8 @@ class EngineSim {
     const vtt = cfg.sound.valvetrain;
     this.vtK = vtt === 'ohv' ? 1.5 : vtt === 'pneumatic' ? 0.6 : vtt === 'none' ? 0 : 1;
     this.gearK = cfg.sound.gear * (cfg.vehicle.straightCut ? 1 : 0.2);
-    this.starterTq = 55 * cfg.dispLitres + 40;
+    // big single cylinders need a strong starter to crank past compression
+    this.starterTq = 55 * cfg.dispLitres + 40 + 160 * (cfg.dispLitres / cfg.nCyl);
     this.boosted = this.isTurbo || this.isSC || this.isCentri;
     const vh = cfg.vehicle;
     this.axleLoad = vh.mass * 9.81 * (vh.drive === 'awd' ? 1 : vh.rearBias);
@@ -765,7 +819,7 @@ class EngineSim {
     this.telAir += fresh;
 
     const cranking = rpm < 350;
-    let fuelOn = this.ignition && !this.dfco;
+    let fuelOn = this.ignition && !this.dfco && this.crankRevs >= this.syncRevs;
     if (this.limCut && this.limiterType === 'fuel') fuelOn = false;
     let afr = this.afrTarget;
     if (cranking) afr = 11;
@@ -881,11 +935,15 @@ class EngineSim {
     // Starter & running detection
     if (this.starter) {
       this.starterT += dtc;
+      this.crankRevs += (rpm / 60) * dtc;
       if (!this.ignition || (this.running && rpm > e.idle * 0.7) || this.starterT > 4) {
         this.starter = false;
       }
     }
-    if (!this.running && this.ignition && rpm > Math.min(500, e.idle * 0.6)) {
+    // cycle-averaged speed: cranking a big twin swings the instantaneous rpm
+    // far more than the threshold
+    this.rpmAvg += (rpm - this.rpmAvg) * Math.min(1, dtc * 6);
+    if (!this.running && this.ignition && this.rpmAvg > Math.min(500, e.idle * 0.6)) {
       this.running = true;
       this.flare = e.startFlare;
       this.idleI = 0;
@@ -899,7 +957,6 @@ class EngineSim {
     this.idleTarget = e.idle + this.flare + 250 * this.coldT;
 
     // Idle speed control (bypass air PI + fast spark trim)
-    const err = this.idleTarget - rpm;
     const idleActive = this.ignition && this.pedal < 0.03;
     // rpm rate for predictive fuel resume / dashpot
     const dRpm = (rpm - this.lastRpm) / dtc;
@@ -909,13 +966,18 @@ class EngineSim {
       // integrate unless coasting down fast (anti-windup)
       // act on where the revs are heading, not just where they are
       const errP = this.idleTarget - (rpm + this.rpmRate * 0.25);
-      if (!this.dfco) this.idleI = clamp(this.idleI + err * 4e-4 * dtc, -0.9, 2.5);
+      // Learn only once the revs have landed: integrating the overshoot of a
+      // blip or lift-off would leave the idle sagging for seconds afterwards.
+      if (!this.dfco && this.landing < 0.15 && this.liftT > 1.2) {
+        const ei = clamp(errP, -250, 400);
+        this.idleI = clamp(this.idleI + ei * (ei > 60 ? 9e-4 : 4e-4) * dtc, -0.9, 2.5);
+      }
       if (this.dfco) {
         // dashpot: hold air proportional to speed while coasting down
         this.bypass = this.bypassFF * clamp(0.9 + this.idleI, 0.5, 2.5) * clamp((0.8 * rpm) / this.idleTarget, 1, 4);
       } else {
         const pe = clamp(errP, -500, 800);
-        this.landing *= Math.exp(-dtc / 0.7);
+        this.landing *= Math.exp(-dtc / 0.5);
         this.bypass = clamp(this.bypassFF * (1 + this.idleI + pe * 7e-4 + 1.2 * this.landing), this.bypassFF * 0.1, this.bypassFF * 5);
       }
       this.sparkTrim = clamp(errP * 0.05, -12, 18);
@@ -933,9 +995,10 @@ class EngineSim {
       if (this.dfco) {
         if (rpm < resume) {
           this.dfco = false;
-          this.landing = 1; // extra air for a soft landing on idle
+          // extra air for a soft landing, in proportion to how fast the revs fall
+          this.landing = clamp(-this.rpmRate / 2500, 0, 1);
         }
-      } else if (rpm > this.idleTarget + 700) this.dfco = true;
+      } else if (rpm > this.idleTarget + 700 && (this.liftT < 2 || rpm > this.idleTarget + 1400)) this.dfco = true;
     } else this.dfco = false;
     // Overrun burble: a burst of crackles for a couple of seconds after lift-off.
     if (this.pedal > 0.25) this.liftT = 0;
@@ -1031,6 +1094,8 @@ class EngineSim {
       this.egtInst += (T_AMB + 40 - this.egtInst) * dtc * 0.3;
     }
     this.egt += (this.egtInst - this.egt) * Math.min(1, dtc * 1.3);
+    this.ex.wander(dtc);
+    this.inn.wander(dtc);
     if (++this.tempCounter >= 8) {
       this.tempCounter = 0;
       this.ex.setGasTemp(clamp(this.egt, 320, 1250));
@@ -1666,7 +1731,7 @@ class EngineSim {
   stepDrivetrain(omega, torque, scTorque) {
     const dt = this.dt;
     let tq = torque - this.fric * ftanh(omega * 0.5) - scTorque;
-    if (this.starter) tq += this.starterTq * Math.max(0, 1 - omega / 48);
+    if (this.starter) tq += this.starterTq * Math.max(0, 1 - omega / 32);
     let load = 0;
     if (this.mode === 'dyno') {
       load = this.dynoLoad;
@@ -2024,6 +2089,11 @@ class EngineProcessor extends AudioWorkletProcessor {
           this.sim.starter = true;
           this.sim.starterT = 0;
           this.sim.coldT = m.cold ? 1 : 0;
+          // the ECU fires only once it has seen the cam and crank signals
+          if (!this.sim.running) {
+            this.sim.crankRevs = 0;
+            this.sim.syncRevs = 1.6 + 1.4 * rnd();
+          }
         }
         if (!m.on) this.sim.starter = false;
         break;
