@@ -1952,6 +1952,26 @@ class EngineProcessor extends AudioWorkletProcessor {
           sim.strobeStep = old.strobeStep;
         }
         if (m.tune) this.applyTune(sim, m.tune);
+        if (m.hot && old) {
+          // Same car, new hardware: carry the running state across.
+          for (const k of ['omega', 'ignition', 'running', 'gear', 'v', 'ww', 'pos', 'clutch', 'pedal', 'thr', 'thrCmd', 'brake', 'idleI', 'egt', 'egtInst', 'launch', 'dyno', 'dynoI', 'dynoLoad', 'mode', 'flare', 'coldT', 'accel'])
+            sim[k] = old[k];
+          sim.crank = old.crank % sim.cycle;
+          for (let c = 0; c < sim.n; c++) sim.cCA[c] = (sim.crank + sim.off[c]) % sim.cycle;
+          sim.pPl = old.pPl;
+          sim.mPl = (sim.pPl * sim.Vpl) / (R * sim.Tpl);
+          sim.fade = 1;
+        }
+        if (old) {
+          // keep rendering the old engine briefly and crossfade
+          this.xOld = old;
+          this.xL = this.L;
+          this.xN = m.hot ? 1600 : 4800;
+          this.xT = 0;
+          this.L = new Listener(this.fs);
+          this.tmpL ??= new Float32Array(128);
+          this.tmpR ??= new Float32Array(128);
+        }
         this.sim = sim;
         this.L.first = true;
         this.updateScene(0);
@@ -2183,6 +2203,22 @@ class EngineProcessor extends AudioWorkletProcessor {
     if (sim.mode === 'flyby' && this.flyby) this.flybyStep(nF / this.fs);
     if (sim.mode === 'flyby') this.updateScene(nF);
     sim.render(L, Rr, nF, this.L);
+    if (this.xOld) {
+      const tl = this.tmpL.length >= nF ? this.tmpL : (this.tmpL = new Float32Array(nF));
+      const tr = this.tmpR.length >= nF ? this.tmpR : (this.tmpR = new Float32Array(nF));
+      this.xOld.render(tl, tr, nF, this.xL);
+      for (let i = 0; i < nF; i++) {
+        const k = Math.max(0, 1 - (this.xT + i) / this.xN);
+        const kn = 1 - k;
+        L[i] = L[i] * kn + tl[i] * k;
+        if (Rr !== L) Rr[i] = Rr[i] * kn + tr[i] * k;
+      }
+      this.xT += nF;
+      if (this.xT >= this.xN) {
+        this.xOld = null;
+        this.xL = null;
+      }
+    }
     this.frames += nF;
     this.telCount += nF;
     this.postSnap();

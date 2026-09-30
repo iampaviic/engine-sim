@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0f0e0c" />
+    <title>Firing Order</title>
+    <meta name="description" content="A physically modelled engine sound simulator: cylinders, valves and exhaust pressure waves computed live in your browser." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=B612+Mono:wght@400;700&family=Barlow+Semi+Condensed:ital,wght@0,400;0,500;0,600;0,700;1,600&family=Big+Shoulders+Display:wght@600;800&display=swap"
+    />
+    <link rel="stylesheet" href="css/style.css" />
+  </head>
+  <body>
+    <div class="app" id="app">
+      <header class="topbar">
+        <div class="brand" aria-label="Firing Order"><span class="brand-mark">FIRING</span><span class="brand-sub">ORDER</span></div>
+        <button class="engine-pick" id="pickEngine" aria-haspopup="dialog" title="Choose an engine (G)">
+          <span class="ep-name" id="epName">Berlinetta V12</span>
+          <span class="ep-tag" id="epTag">6.5 L 65° V12</span>
+          <svg class="chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 6l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" /></svg>
+        </button>
+        <div class="top-actions">
+          <label class="sel"><span>Mic</span><select id="camSel" aria-label="Microphone position"></select></label>
+          <label class="sel"><span>Place</span><select id="envSel" aria-label="Environment"></select></label>
+          <button class="btn" id="workshopBtn" title="Tune the engine (T)">Workshop</button>
+          <label class="vol" title="Volume">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4z" fill="currentColor" /><path d="M16 8.5a5 5 0 010 7M18.5 6a8.5 8.5 0 010 12" fill="none" stroke="currentColor" stroke-width="1.6" /></svg>
+            <input type="range" id="vol" min="0" max="1" step="0.01" value="0.8" aria-label="Volume" />
+          </label>
+          <button class="icon-btn" id="menuBtn" aria-label="Sound and tuning">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="2" /></svg>
+          </button>
+        </div>
+      </header>
+
+      <main class="stage">
+        <section class="cluster" aria-label="Instruments">
+          <div class="tach-wrap"><canvas id="tach" aria-label="Tachometer"></canvas></div>
+          <p class="listen" id="engineNote"></p>
+          <dl class="readouts">
+            <div><dt>Torque</dt><dd id="roTq">—<small> Nm</small></dd></div>
+            <div><dt>Power</dt><dd id="roHp">—<small> hp</small></dd></div>
+            <div><dt id="roMapLbl">Manifold</dt><dd id="roMap">—<small> bar</small></dd></div>
+            <div class="opt"><dt>Exhaust gas</dt><dd id="roEgt">—<small> °C</small></dd></div>
+            <div class="opt"><dt>At the mic</dt><dd id="roSpl">—<small> dB</small></dd></div>
+            <div class="opt"><dt id="roTimeLbl">0–100</dt><dd id="roTime">—<small> s</small></dd></div>
+          </dl>
+        </section>
+
+        <section class="lab" aria-label="Lab">
+          <div class="panel schem-panel">
+            <div class="panel-head">
+              <span class="eyebrow" id="schemLbl">Exhaust pressure · <b>strobe</b></span>
+              <button class="link-btn" id="strobeBtn" aria-pressed="true" title="Slow-motion strobe or real time">Slow-mo</button>
+            </div>
+            <canvas id="schem" aria-label="Engine and exhaust schematic with live pressure waves"></canvas>
+            <canvas class="flyby-strip" id="flybyStrip" hidden></canvas>
+          </div>
+          <div class="panel instr-panel">
+            <div class="tabs" role="tablist" aria-label="Instruments">
+              <button role="tab" data-mode="wave" aria-selected="true">Pressure</button>
+              <button role="tab" data-mode="spec" aria-selected="false">Spectrum</button>
+              <button role="tab" data-mode="pv" aria-selected="false">p–V</button>
+              <button role="tab" data-mode="dyno" aria-selected="false">Dyno</button>
+              <button class="btn" id="dynoRun" hidden>Run dyno</button>
+            </div>
+            <canvas id="scope"></canvas>
+          </div>
+        </section>
+      </main>
+
+      <footer class="deck">
+        <div class="pedal brake" id="brake" role="slider" aria-label="Brake" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="pedal-fill"></div><span>BRAKE</span></div>
+        <div class="deck-mid">
+          <div class="deck-row">
+            <div class="modes" role="radiogroup" aria-label="Mode">
+              <button role="radio" data-mode="rev" aria-checked="true" title="Free-rev in neutral (1)">Rev</button>
+              <button role="radio" data-mode="drive" aria-checked="false" title="Drive (2)">Drive</button>
+              <button role="radio" data-mode="flyby" aria-checked="false" title="Roadside flyby (3)">Flyby</button>
+            </div>
+            <div class="chips">
+              <button class="chip" id="launchBtn" title="Hold with full throttle, release to launch (L)">Launch</button>
+              <button class="chip" id="tcBtn" aria-pressed="true" title="Traction control">TC</button>
+              <button class="chip" id="blipBtn" title="Throttle blip (Space)">Blip</button>
+            </div>
+          </div>
+          <div class="deck-row">
+            <button class="paddle" id="shiftDown" aria-label="Shift down" title="Shift down (Q)">−</button>
+            <button class="start" id="startBtn" aria-label="Engine start / stop" title="Start / stop (Enter)"><span>ENGINE</span><strong>START</strong><span>STOP</span></button>
+            <button class="paddle" id="shiftUp" aria-label="Shift up" title="Shift up (E)">+</button>
+          </div>
+          <div class="keys"><kbd>W</kbd>/<kbd>↑</kbd> throttle · <kbd>A</kbd> part · <kbd>Space</kbd> blip · <kbd>S</kbd> brake · <kbd>Q</kbd> <kbd>E</kbd> shift · <kbd>C</kbd> mic · <kbd>Enter</kbd> start · scroll = hand throttle</div>
+        </div>
+        <div class="pedal gas" id="gas" role="slider" aria-label="Throttle" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="pedal-fill"></div><span class="pedal-val" id="gasVal"></span><span>THROTTLE</span></div>
+      </footer>
+    </div>
+
+    <div class="intro" id="intro">
+      <div class="intro-card">
+        <h1>Firing<span>Order</span></h1>
+        <p>Every sound here is computed from physics: gas in each cylinder, valves opening, and pressure waves bouncing through headers, collectors and mufflers to the tail pipe.</p>
+        <div class="fo">1 · 7 · 5 · 11 · 3 · 9 · 6 · 12 · 2 · 8 · 4 · 10</div>
+        <button class="key-btn" id="keyBtn"><span>PUSH</span><strong>START</strong></button>
+        <small>Headphones or a proper speaker recommended. Sound starts when you press.</small>
+      </div>
+    </div>
+
+    <div class="sheet" id="garage" role="dialog" aria-modal="true" aria-labelledby="garageTitle" hidden>
+      <div class="sheet-inner">
+        <div class="sheet-head">
+          <h2 id="garageTitle">Garage</h2>
+          <p>Fifteen engines, each defined by its geometry, cams, firing order and pipes.</p>
+          <button class="btn" id="garageClose">Close</button>
+        </div>
+        <div class="filters" id="garageFilters"></div>
+        <div class="cards" id="garageCards"></div>
+      </div>
+    </div>
+
+    <aside class="drawer" id="workshop" aria-labelledby="wsTitle" hidden>
+      <div class="drawer-head">
+        <h2 id="wsTitle">Workshop</h2>
+        <button class="btn" id="wsReset" title="Back to factory spec">Factory</button>
+        <button class="btn" id="wsClose">Done</button>
+      </div>
+      <div class="drawer-body" id="wsBody"></div>
+    </aside>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="js/main.js"></script>
+  </body>
+</html>
