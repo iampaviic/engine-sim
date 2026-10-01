@@ -125,6 +125,38 @@ class ResBank {
   }
 }
 
+// Struck structural modes: a unit impulse sets mode i ringing at amplitude
+// g[i], dying away with time constant tau[i] (s).
+class Modes {
+  constructor(freqs, taus, gains, fs) {
+    const n = freqs.length;
+    this.n = n;
+    this.a1 = new Float64Array(n);
+    this.a2 = new Float64Array(n);
+    this.b = new Float64Array(n);
+    this.y1 = new Float64Array(n);
+    this.y2 = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      const w = (TAU * Math.min(freqs[i], fs * 0.45)) / fs;
+      const r = Math.exp(-1 / (taus[i] * fs));
+      this.a1[i] = 2 * r * Math.cos(w);
+      this.a2[i] = -r * r;
+      this.b[i] = gains[i] * Math.sin(w);
+    }
+  }
+  tick(x) {
+    let out = 0;
+    const { a1, a2, b, y1, y2 } = this;
+    for (let i = 0; i < this.n; i++) {
+      const y = a1[i] * y1[i] + a2[i] * y2[i] + b[i] * x;
+      y2[i] = y1[i];
+      y1[i] = y;
+      out += y;
+    }
+    return out;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Waveguide pipe network
 // ---------------------------------------------------------------------------
@@ -703,10 +735,12 @@ class EngineSim {
     const e = cfg.ecu;
     this.ecu = e;
     this.ignition = false;
-    this.starter = false;
+    this.starter = false; // key held at START (or the ECU's start request)
     this.starterT = 0;
+    this.stHold = 0;
     this.crankRevs = 99;
     this.syncRevs = 0;
+    this.filmLeft = 0; // injections a cold port wall still soaks up
     this.rpmAvg = 0;
     this.running = false;
     this.idleTarget = e.idle;
@@ -793,7 +827,6 @@ class EngineSim {
     this.itbLp = 0;
     this.hissLp = 0;
     this.nzState = new Float64Array(8);
-    this.starterPhase = 0;
     this.roadLp = 0;
     this.windLp1 = 0;
     this.windLp2 = 0;
@@ -842,8 +875,7 @@ class EngineSim {
     const vtt = cfg.sound.valvetrain;
     this.vtK = vtt === 'ohv' ? 1.5 : vtt === 'pneumatic' ? 0.6 : vtt === 'none' ? 0 : 1;
     this.gearK = cfg.sound.gear * (cfg.vehicle.straightCut ? 1 : 0.2);
-    // big single cylinders need a strong starter to crank past compression
-    this.starterTq = 55 * cfg.dispLitres + 40 + 160 * (cfg.dispLitres / cfg.nCyl);
+    this.initStarter(cfg);
     this.boosted = this.isTurbo || this.isSC || this.isCentri;
     const vh = cfg.vehicle;
     this.axleLoad = vh.mass * 9.81 * (vh.drive === 'awd' ? 1 : vh.rearBias);
@@ -884,6 +916,220 @@ class EngineSim {
   }
 
   // -------------------------------------------------------------------------
+  // Starter motor
+  // -------------------------------------------------------------------------
+  //
+  // A DC motor on the battery turns the flywheel through its pinion and a
+  // one-way clutch. Every compression stroke loads it: the current climbs,
+  // the armature slows and the gear teeth carry the load. Past top centre the
+  // compressed charge pushes back and the engine runs ahead of the starter
+  // until the next compression catches it up. Multiplied by the gear ratio
+  // the armature's inertia is as large as the engine's, so many cylinders
+  // crank at a steady speed while a twin nearly stops on every compression.
+  // Everything is referred to the crank: N·m, crank rad/s, kg·m².
+
+  initStarter(cfg) {
+    const st = cfg.starter;
+    const fs = this.fs;
+    this.st = st;
+    const Ist = st.volts / st.ohms;
+    this.stTst = st.sat > 0 ? (st.K * Ist * Ist) / (Ist + st.sat) : st.K * Ist; // stall torque
+    this.stIref = 0.35 * Ist;
+    // brushes, bearings and gears: a free armature runs down in under a second
+    this.stLoss0 = 0.035 * this.stTst;
+    this.stLoss1 = (0.05 * this.stTst * st.K) / st.volts;
+    this.stJ = st.inertia;
+    this.stGa = (st.ring / st.pinion) * st.gearing; // armature turns per crank turn
+    this.stV = st.volts;
+    this.stR = st.ohms;
+    this.stW = 0; // armature speed
+    this.stI = 0; // motor current (A)
+    this.stTc = 0; // torque through the one-way clutch
+    this.stLock = false;
+    this.stEng = false; // pinion in mesh, main contacts closed
+    this.stNear = 1; // set by the listener
+    this.alpha = 0; // crank angular acceleration
+    const e = cfg.ecu;
+    // A starter alone can't spin the engine past runRpm; it lets go once the
+    // engine has caught and holds offRpm on its own.
+    this.runRpm = Math.max(Math.min(500, e.idle * 0.6), (1.15 * 9.5493 * st.volts) / st.K);
+    this.offRpm = Math.max(this.runRpm, clamp(e.idle * 0.6, 450, 900));
+
+    // sound
+    this.stActive = false;
+    this.stQuiet = 0;
+    this.stTooth = -1;
+    this.stPin = 0;
+    this.stArm = 0;
+    this.stPlan = 0;
+    this.stKickG = 0;
+    this.stKickC = 0;
+    this.stEnv = 0;
+    this.stEnvK = Math.exp(-1 / (0.7 * fs));
+    this.rkA = lpCoef(110, fs);
+    this.rkB = lpCoef(16, fs);
+    this.rk1 = 0;
+    this.rk2 = 0;
+    this.rkH = 0;
+    // Every pinion tooth and commutator bar is a little different, and the
+    // ring gear is worn where the engine comes to rest between compressions.
+    this.stPinW = Float64Array.from({ length: st.pinion }, (_, k) => clamp(1 + 0.3 * Math.sin((TAU * k) / st.pinion + 1.3) + 0.18 * gauss(), 0.35, 1.9));
+    const rests = Math.max(1, Math.round((this.n * 360) / this.cycle));
+    this.stRingW = Float64Array.from({ length: st.ring }, (_, k) => {
+      const wear = Math.pow(Math.max(0, Math.cos(TAU * ((k / st.ring) * rests + 0.25))), 12);
+      return clamp(1 + 0.08 * gauss() + 0.5 * wear, 0.7, 1.8);
+    });
+    this.stBarW = Float64Array.from({ length: st.bars }, () => clamp(1 + 0.2 * gauss(), 0.5, 1.6));
+    // flywheel, bell housing and starter case modes; sound.starter sets
+    // the level against the engine's own (presets are matched to their idle)
+    const sz = 0.63 * Math.sqrt(st.kw / 1.5) * (cfg.sound.starter ?? 1);
+    const big = Math.pow(2.5 / Math.max(0.6, cfg.dispLitres), 0.12);
+    this.stGear = new Modes(
+      [310 * big, 560 * big, 880 * big, 1330 * big, 2050 * big],
+      [0.014, 0.01, 0.007, 0.005, 0.0035],
+      [0.15 * sz, 0.25 * sz, 0.21 * sz, 0.14 * sz, 0.075 * sz],
+      fs
+    );
+    const small = Math.pow(1.5 / st.kw, 0.15);
+    this.stCase = new Modes([780 * small, 1450 * small, 2350 * small, 3500 * small], [0.006, 0.005, 0.004, 0.003], [0.05 * sz, 0.08 * sz, 0.065 * sz, 0.04 * sz], fs);
+    this.stMagG = 0.02 * sz;
+    this.stPlanG = 0.025 * sz;
+    this.rockG = 0.0013 * (cfg.sound.starter ?? 1);
+
+    // Cranking slowly, compression leaks past the rings, and no two
+    // cylinders seal quite alike.
+    this.cLeak = new Float64Array(this.n).fill(1);
+    this.cLeakVar = Float64Array.from({ length: this.n }, () => clamp(0.6 * gauss(), -0.9, 1.5));
+  }
+
+  // Key to START: the solenoid clicks in, and ~40 ms later the pinion is in
+  // mesh and the main contacts close.
+  crankStart(cold) {
+    this.coldT = cold ? 1 : 0;
+    if (this.starter) return;
+    this.starter = true;
+    this.starterT = 0;
+    this.stHold = 0;
+    // a cold battery sags further under the cranking current
+    this.stV = this.st.volts * (cold ? 0.98 : 1);
+    this.stR = this.st.ohms * (cold ? 1.06 : 1);
+    this.stKickC += 0.35;
+    this.rk1 = this.rk2 = this.rkH = this.J * this.alpha;
+    this.stActive = true;
+    if (!this.running) {
+      // The ECU fires only once it has seen the cam and crank signals (a
+      // dry-sump race engine is spun up for oil pressure first), and a cold
+      // port wall soaks up the first squirts of fuel.
+      this.crankRevs = 0;
+      this.syncRevs = (this.st.type === 'external' ? 7 : 1.1) + 1.3 * rnd();
+      this.filmLeft = cold ? Math.round(this.n * (0.3 + 0.4 * rnd())) + 1 : 0;
+    }
+  }
+
+  // Armature current at crank-referred speed w. A series field saturates
+  // (flux ~ I / (I + sat)), which gives a closed form; sat = 0 is a
+  // permanent-magnet motor.
+  motorCurrent(w) {
+    const V = this.stV, R = this.stR, K = this.st.K, S = this.st.sat;
+    if (S <= 0) {
+      const I = (V - K * w) / R;
+      return I > 0 ? I : 0;
+    }
+    const b = V - R * S - K * w;
+    return (b + Math.sqrt(b * b + 4 * R * V * S)) / (2 * R);
+  }
+
+  motorTorque(I) {
+    const S = this.st.sat;
+    return S > 0 ? (this.st.K * I * I) / (I + S) : this.st.K * I;
+  }
+
+  // Engine and starter for one sample with the pinion in mesh. net: every
+  // other torque on the crank. Returns the new crank speed.
+  stepStarter(omega, net, dt) {
+    const J = this.J, Ja = this.stJ;
+    let wa = this.stW;
+    const I = this.motorCurrent(wa);
+    const Tm = this.motorTorque(I) - this.stLoss0 - this.stLoss1 * wa;
+    this.stI = I;
+    if (this.stLock) {
+      const a = (net + Tm) / (J + Ja);
+      const Tc = Tm - Ja * a; // what the clutch passes on
+      if (Tc >= 0) {
+        this.stTc = Tc;
+        const w = omega + a * dt;
+        this.stW = w > 0 ? w : 0;
+        return this.stW;
+      }
+      // the engine runs ahead: the rollers let go and the teeth unload
+      this.stLock = false;
+      this.stKickG += 0.12;
+    }
+    this.stTc = 0;
+    let w = omega + (net / J) * dt;
+    if (w < 0) w = 0;
+    wa += (Tm / Ja) * dt;
+    if (wa < 0) wa = 0;
+    if (wa >= w) {
+      // caught up: the rollers wedge and the two turn together
+      w = wa = (J * w + Ja * wa) / (J + Ja);
+      this.stLock = true;
+    }
+    this.stW = wa;
+    return w;
+  }
+
+  // Starter sound, Pa at 1 m: pinion teeth slapping into the ring gear (hard
+  // under load, a light rattle while the engine runs ahead), brushes
+  // snapping across the commutator, the magnets' hum and the planetary
+  // gears' whine, all following current and speed; the solenoid's clunks;
+  // and the engine rocking on its mounts.
+  starterSound() {
+    const st = this.st;
+    const fs = this.fs;
+    let gx = this.stKickG;
+    let cx = this.stKickC;
+    this.stKickG = 0;
+    this.stKickC = 0;
+    const load = this.stTc / this.stTst;
+    const cur = this.stI / this.stIref;
+    if (this.stEng) {
+      const tooth = ((this.cCA[0] % 360) * st.ring / 360) | 0;
+      if (tooth !== this.stTooth) {
+        this.stTooth = tooth;
+        this.stPin = this.stPin + 1 >= st.pinion ? 0 : this.stPin + 1;
+        gx += (0.35 + 1.3 * load) * this.stPinW[this.stPin] * this.stRingW[tooth] * (0.8 + 0.4 * rnd());
+      }
+    }
+    let tone = 0;
+    const fa = (this.stW * this.stGa) / TAU; // armature turns per second
+    if (fa > 0.2) {
+      const a0 = this.stArm;
+      let a1 = a0 + (fa * st.bars) / fs;
+      if ((a1 | 0) !== (a0 | 0)) cx += (0.15 + 0.6 * cur) * this.stBarW[(a1 | 0) % st.bars] * (0.7 + 0.6 * rnd());
+      if (a1 >= st.bars) a1 -= st.bars;
+      this.stArm = a1;
+      tone += Math.sin((TAU * st.poles * a1) / st.bars) * cur * this.stMagG;
+      if (st.sun > 0) {
+        let p = this.stPlan + (st.sun * fa * (1 - 1 / st.gearing)) / fs;
+        p -= Math.floor(p);
+        this.stPlan = p;
+        tone += (Math.sin(TAU * p) + 0.3 * Math.sin(2 * TAU * p + 0.9)) * (0.4 + load + 0.3 * cur) * this.stPlanG * Math.min(1, fa / 40);
+      }
+    }
+    // the mounts react the crank's angular acceleration: a low thud with
+    // every compression, and a kick when the engine catches
+    this.stEnv = this.stEng ? 1 : this.stEnv * this.stEnvK;
+    this.rk1 += this.rkA * (this.J * this.alpha - this.rk1);
+    this.rk2 += this.rkA * (this.rk1 - this.rk2);
+    this.rkH += this.rkB * (this.rk2 - this.rkH);
+    const thud = 0.4 * ftanh(((this.rk2 - this.rkH) * this.rockG * this.stEnv) / 0.4);
+    if (this.stEng || this.stW > 0.3 || this.stEnv > 2e-3) this.stQuiet = 0;
+    else if (++this.stQuiet > fs * 0.1) this.stActive = false;
+    return (this.stGear.tick(gx) + this.stCase.tick(cx) + tone + thud) * this.stNear;
+  }
+
+  // -------------------------------------------------------------------------
   // Per-cycle cylinder events
   // -------------------------------------------------------------------------
 
@@ -898,6 +1144,11 @@ class EngineSim {
 
     const cranking = rpm < 350;
     let fuelOn = this.ignition && !this.dfco && this.crankRevs >= this.syncRevs;
+    // cold start: the first squirts wet the port walls instead of the charge
+    if (fuelOn && this.filmLeft > 0) {
+      this.filmLeft--;
+      fuelOn = false;
+    }
     if (this.limCut && this.limiterType === 'fuel') fuelOn = false;
     let afr = this.afrTarget;
     if (cranking) afr = 11;
@@ -1012,18 +1263,32 @@ class EngineSim {
     const e = this.ecu;
     this.sinceStart += dtc;
 
-    // Starter & running detection
+    // Starter: let go once the engine has caught and holds its own speed
     if (this.starter) {
       this.starterT += dtc;
       this.crankRevs += (rpm / 60) * dtc;
-      if (!this.ignition || (this.running && rpm > e.idle * 0.7) || this.starterT > 4) {
-        this.starter = false;
+      this.stHold = this.running && rpm > this.offRpm ? this.stHold + dtc : 0;
+      if (!this.ignition || this.stHold > 0.1 || this.starterT > 6) this.starter = false;
+    }
+    // the pinion meshes and the main contacts close ~40 ms after the key
+    const eng = this.starter && this.starterT > 0.04;
+    if (eng !== this.stEng) {
+      this.stEng = eng;
+      this.stLock = false;
+      this.stTc = 0;
+      if (eng) {
+        this.stKickG += 2.5; // pinion slams into the ring gear
+        this.stKickC += 1.5;
+      } else {
+        this.stKickC += 0.9; // plunger springs back, pinion out
+        this.stKickG += 0.5;
       }
+      this.stActive = true;
     }
     // cycle-averaged speed: cranking a big twin swings the instantaneous rpm
     // far more than the threshold
     this.rpmAvg += (rpm - this.rpmAvg) * Math.min(1, dtc * 6);
-    if (!this.running && this.ignition && this.rpmAvg > Math.min(500, e.idle * 0.6)) {
+    if (!this.running && this.ignition && this.rpmAvg > this.runRpm) {
       this.running = true;
       this.flare = e.startFlare;
       this.idleI = 0;
@@ -1169,9 +1434,14 @@ class EngineSim {
     this.thrPrevC = this.thr;
     this.tipRet = Math.max(0, Math.min(8, this.tipRet + (dThr > 0 ? dThr * 30 : 0)) - dtc * 12);
 
-    // Friction torque (FMEP from mean piston speed)
+    // Friction torque (FMEP from mean piston speed). Below ~400 rpm the rings
+    // and bearings run short of oil film and drag harder, more so cold.
     const sp = (2 * this.cfg.stroke * rpm) / 60;
-    this.fric = this.fricK * (0.72 + 0.024 * sp + 0.0019 * sp * sp);
+    const dry = (0.45 + 0.35 * this.coldT) * Math.exp(-(rpm * rpm) / 90000);
+    this.fric = this.fricK * (0.72 + 0.024 * sp + 0.0019 * sp * sp + dry);
+    // turning slowly, compression has time to leak past the rings
+    const lk = clamp((520 - rpm) / 260, 0, 1);
+    for (let c = 0; c < this.n; c++) this.cLeak[c] = 1 + lk * (2.5 + 2.5 * this.cLeakVar[c]);
 
     this.vehicleControl(dtc, rpm);
 
@@ -1438,6 +1708,7 @@ class EngineSim {
     const evc = this.cfg.evc;
     const rasp = this.rasp26;
     const kLeak = this.kLeak;
+    const cLeak = this.cLeak;
     const cKi = this.cKi, cPs = this.cPs, cTs = this.cTs, cKq = this.cKq, cKa = this.cKa, cKf = this.cKf, cKph = this.cKph;
     const kTauInv = this.kTauInv, kDecay = this.kDecay;
     const floatSev = this.floatSev;
@@ -1628,7 +1899,7 @@ class EngineSim {
       }
 
       // ring leakage (blow-by) toward crankcase
-      const leak = (p - P_AMB) * kLeak;
+      const leak = (p - P_AMB) * kLeak * cLeak[c];
       if (leak > 0 && leak * dt < m * 0.01) {
         U -= leak * dt * CP * T;
         m -= leak * dt;
@@ -1891,8 +2162,7 @@ class EngineSim {
   // Crank, clutch, wheels and car. Returns the new crank speed.
   stepDrivetrain(omega, torque, scTorque) {
     const dt = this.dt;
-    let tq = torque - this.fric * ftanh(omega * 0.5) - scTorque;
-    if (this.starter) tq += this.starterTq * Math.max(0, 1 - omega / 32);
+    const tq = torque - this.fric * ftanh(omega * 0.5) - scTorque;
     let load = 0;
     if (this.mode === 'dyno') {
       load = this.dynoLoad;
@@ -1941,8 +2211,20 @@ class EngineSim {
     this.telN++;
     this.cycTq += net;
     this.cycN++;
-    const w = omega + ((tq - load) / this.J) * dt;
-    return w > 0 ? w : 0;
+    let w;
+    if (this.stEng) w = this.stepStarter(omega, tq - load, dt);
+    else {
+      w = omega + ((tq - load) / this.J) * dt;
+      if (w < 0) w = 0;
+      if (this.stW > 0) {
+        // pinion out: the armature runs down on its own
+        const wa = this.stW - ((this.stLoss0 + this.stLoss1 * this.stW) / this.stJ) * dt;
+        this.stW = wa > 0 ? wa : 0;
+        this.stI = 0;
+      }
+    }
+    this.alpha = (w - omega) / dt;
+    return w;
   }
 
   // Intake, mechanical and chassis sources; write all sources (Pa at 1 m)
@@ -1991,14 +2273,7 @@ class EngineSim {
       const amp = this.gearK * (0.02 + Math.abs(this.gearTorque) / 400) * Math.min(1, fin / 20);
       mech += Math.sin(TAU * this.gearPhase) * amp + Math.sin(2 * TAU * this.gearPhase + 1) * amp * 0.4;
     }
-    // starter motor
-    if (this.starter) {
-      const fr = (omega / TAU) * 138;
-      this.starterPhase += (fr + 40) / fs;
-      this.starterPhase -= Math.floor(this.starterPhase);
-      const ph = this.starterPhase;
-      mech += ((ph < 0.5 ? 1 : -1) * 0.35 + Math.sin(TAU * ph * 3) * 0.25 + (rnd() - 0.5) * 0.3) * 0.8;
-    }
+    if (this.stActive) mech += this.starterSound();
 
     // chassis: road, wind, tyre squeal
     let chassis = 0;
@@ -2272,16 +2547,7 @@ class EngineProcessor extends AudioWorkletProcessor {
       case 'ignition':
         if (!this.sim) return;
         this.sim.ignition = !!m.on;
-        if (m.on && m.crank) {
-          this.sim.starter = true;
-          this.sim.starterT = 0;
-          this.sim.coldT = m.cold ? 1 : 0;
-          // the ECU fires only once it has seen the cam and crank signals
-          if (!this.sim.running) {
-            this.sim.crankRevs = 0;
-            this.sim.syncRevs = 1.6 + 1.4 * rnd();
-          }
-        }
+        if (m.on && m.crank) this.sim.crankStart(!!m.cold);
         if (!m.on) this.sim.starter = false;
         break;
       case 'shift':
@@ -2608,6 +2874,11 @@ class EngineProcessor extends AudioWorkletProcessor {
     const cabin = !flyby && cam.cabin;
     L.cabin = cabin ? 1 : 0;
     L.moving = !!flyby;
+    // The starter hides low beside the bell housing and is heard through the
+    // block and body, so close up it doesn't grow like a point source.
+    const m = srcs[4];
+    const rm = Math.hypot(carX + m[0] - lisPos[0], m[1] - lisPos[1], carZ + m[2] - lisPos[2]);
+    sim.stNear = Math.min(1, Math.pow(rm / 3, 0.8)) * (cabin ? 0.7 : 1);
     const active = [
       sim.ex.opens.some((_, i) => sim.ex.oCh[i] === 0),
       sim.ex.opens.some((_, i) => sim.ex.oCh[i] === 1),
@@ -2718,6 +2989,9 @@ class EngineProcessor extends AudioWorkletProcessor {
     if (hot && old) {
       // Same car, new hardware: carry the running state across.
       for (const k of ['omega', 'ignition', 'running', 'gear', 'v', 'ww', 'pos', 'clutch', 'pedal', 'thr', 'thrCmd', 'brake', 'idleI', 'egt', 'egtInst', 'launch', 'dyno', 'dynoI', 'dynoLoad', 'mode', 'flare', 'coldT', 'accel'])
+        sim[k] = old[k];
+      // a start in progress carries on with the new hardware
+      for (const k of ['starter', 'starterT', 'stHold', 'crankRevs', 'syncRevs', 'filmLeft', 'stW', 'stLock', 'stEng', 'stV', 'stR', 'stActive', 'stEnv'])
         sim[k] = old[k];
       sim.crank = old.crank % sim.cycle;
       for (let c = 0; c < sim.n; c++) sim.cCA[c] = (sim.crank + sim.off[c]) % sim.cycle;

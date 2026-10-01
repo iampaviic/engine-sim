@@ -55,7 +55,7 @@ const V12_65 = {
     layout: 'front',
     shiftTime: 0.1,
   },
-  sound: { exhaust: 1, intake: 1.2, mech: 0.8, valvetrain: 'dohc', trim: 0.25 },
+  sound: { exhaust: 1, intake: 1.2, mech: 0.8, valvetrain: 'dohc', trim: 0.25, starter: 0.82 },
 };
 
 const V12_60 = {
@@ -108,7 +108,7 @@ const V12_60 = {
     drive: 'awd',
     shiftTime: 0.06,
   },
-  sound: { exhaust: 1.1, intake: 1.1, mech: 0.8, valvetrain: 'dohc', trim: 0.31 },
+  sound: { exhaust: 1.1, intake: 1.1, mech: 0.8, valvetrain: 'dohc', trim: 0.31, starter: 2.02 },
 };
 
 const V8_LS = {
@@ -159,7 +159,7 @@ const V8_LS = {
     layout: 'front',
     shiftTime: 0.22,
   },
-  sound: { exhaust: 1, intake: 0.8, mech: 1, valvetrain: 'ohv', trim: 1.34 },
+  sound: { exhaust: 1, intake: 0.8, mech: 1, valvetrain: 'ohv', trim: 1.34, starter: 0.28 },
 };
 
 const V8_BIGBLOCK = {
@@ -198,6 +198,7 @@ const V8_BIGBLOCK = {
   induction: { type: 'na' },
   ecu: { idle: 950, limit: 6800, limiter: 'spark', afr: 12.3, burble: 0.35, launchRpm: 3800, knockCal: 0.544},
   inertia: 0.42,
+  starter: 'direct',
   combustion: 0.66,
   vehicle: {
     mass: 1560,
@@ -211,7 +212,7 @@ const V8_BIGBLOCK = {
     shiftTime: 0.3,
     mu: 1.0,
   },
-  sound: { exhaust: 1.1, intake: 1.3, mech: 1.3, valvetrain: 'ohv', trim: 0.77 },
+  sound: { exhaust: 1.1, intake: 1.3, mech: 1.3, valvetrain: 'ohv', trim: 0.77, starter: 4.65 },
 };
 
 const V8_BLOWER = {
@@ -250,6 +251,7 @@ const V8_BLOWER = {
   induction: { type: 'twinscrew', displacement: 2.38, ratio: 2.4, lobes: 5 },
   ecu: { idle: 750, limit: 6200, limiter: 'fuel', afr: 11.8, burble: 0.2, launchRpm: 2600, knockCal: 0.271},
   inertia: 0.3,
+  starter: 'direct',
   combustion: 0.68,
   vehicle: {
     mass: 2000,
@@ -262,7 +264,7 @@ const V8_BLOWER = {
     layout: 'front',
     shiftTime: 0.16,
   },
-  sound: { exhaust: 1, intake: 1, mech: 1, valvetrain: 'ohv', gear: 0.2, trim: 0.8 },
+  sound: { exhaust: 1, intake: 1, mech: 1, valvetrain: 'ohv', gear: 0.2, trim: 0.8, starter: 0.62 },
 };
 
 const V8_FLAT = {
@@ -314,7 +316,7 @@ const V8_FLAT = {
     layout: 'mid',
     shiftTime: 0.08,
   },
-  sound: { exhaust: 1, intake: 1.2, mech: 0.8, valvetrain: 'dohc', trim: 0.44 },
+  sound: { exhaust: 1, intake: 1.2, mech: 0.8, valvetrain: 'dohc', trim: 0.44, starter: 1.55 },
 };
 
 const I6_TURBO = {
@@ -361,7 +363,7 @@ const I6_TURBO = {
     layout: 'front',
     shiftTime: 0.2,
   },
-  sound: { exhaust: 1.1, intake: 1, mech: 0.9, valvetrain: 'dohc', trim: 0.56 },
+  sound: { exhaust: 1.1, intake: 1, mech: 0.9, valvetrain: 'dohc', trim: 0.56, starter: 1.22 },
 };
 
 const F6_GT = {
@@ -413,7 +415,7 @@ const F6_GT = {
     shiftTime: 0.07,
     mu: 1.3,
   },
-  sound: { exhaust: 1, intake: 1.5, mech: 1, valvetrain: 'dohc', trim: 0.48 },
+  sound: { exhaust: 1, intake: 1.5, mech: 1, valvetrain: 'dohc', trim: 0.48, starter: 1.19 },
 };
 
 const V10_72 = {
@@ -464,7 +466,7 @@ const V10_72 = {
     layout: 'front',
     shiftTime: 0.1,
   },
-  sound: { exhaust: 1, intake: 1.4, mech: 0.8, valvetrain: 'dohc', trim: 0.76 },
+  sound: { exhaust: 1, intake: 1.4, mech: 0.8, valvetrain: 'dohc', trim: 0.76, starter: 0.83 },
 };
 
 const F1_V10 = {
@@ -504,6 +506,7 @@ const F1_V10 = {
   induction: { type: 'na' },
   ecu: { idle: 4000, limit: 19000, limiter: 'spark', hyst: 300, afr: 12.2, burble: 0.2, launchRpm: 11000, startFlare: 1500, knockCal: 0.584},
   inertia: 0.045,
+  starter: 'external',
   friction: 0.75,
   combustion: 0.76,
   burnScale: 0.85,
@@ -520,7 +523,7 @@ const F1_V10 = {
     shiftTime: 0.04,
     mu: 1.9,
   },
-  sound: { exhaust: 1, intake: 1.2, mech: 1, valvetrain: 'pneumatic', gear: 0.8, trim: 0.12 },
+  sound: { exhaust: 1, intake: 1.2, mech: 1, valvetrain: 'pneumatic', gear: 0.8, trim: 0.12, starter: 11.2 },
 };
 
 const I4_RALLY = {
@@ -570,7 +573,7 @@ const I4_RALLY = {
     shiftTime: 0.05,
     mu: 1.05,
   },
-  sound: { exhaust: 1.1, intake: 1, mech: 1, valvetrain: 'dohc', gear: 0.7, trim: 0.84 },
+  sound: { exhaust: 1.1, intake: 1, mech: 1, valvetrain: 'dohc', gear: 0.7, trim: 0.84, starter: 1.57 },
 };
 
 const I4_VTEC = {
@@ -618,7 +621,7 @@ const I4_VTEC = {
     layout: 'front',
     shiftTime: 0.22,
   },
-  sound: { exhaust: 1, intake: 1.4, mech: 1.1, valvetrain: 'dohc', trim: 0.68 },
+  sound: { exhaust: 1, intake: 1.4, mech: 1.1, valvetrain: 'dohc', trim: 0.68, starter: 1 },
 };
 
 const F4_TURBO = {
@@ -669,7 +672,7 @@ const F4_TURBO = {
     layout: 'front',
     shiftTime: 0.2,
   },
-  sound: { exhaust: 1.1, intake: 1, mech: 1, valvetrain: 'dohc', trim: 0.48 },
+  sound: { exhaust: 1.1, intake: 1, mech: 1, valvetrain: 'dohc', trim: 0.48, starter: 0.89 },
 };
 
 const ROTARY = {
@@ -721,7 +724,7 @@ const ROTARY = {
     layout: 'front',
     shiftTime: 0.2,
   },
-  sound: { exhaust: 1.1, intake: 1.2, mech: 0.5, valvetrain: 'none', trim: 0.41 },
+  sound: { exhaust: 1.1, intake: 1.2, mech: 0.5, valvetrain: 'none', trim: 0.41, starter: 4.95 },
 };
 
 const VTWIN = {
@@ -757,6 +760,7 @@ const VTWIN = {
   induction: { type: 'na' },
   ecu: { idle: 900, limit: 5600, limiter: 'spark', afr: 12.8, burble: 0.35, launchRpm: 3000, startFlare: 400, knockCal: 0.46},
   inertia: 0.15,
+  starter: 'moto',
   combustion: 0.68,
   vehicle: {
     mass: 390,
@@ -770,7 +774,7 @@ const VTWIN = {
     shiftTime: 0.25,
     mu: 1.0,
   },
-  sound: { exhaust: 1.2, intake: 1.2, mech: 1.6, valvetrain: 'ohv', trim: 0.72 },
+  sound: { exhaust: 1.2, intake: 1.2, mech: 1.6, valvetrain: 'ohv', trim: 0.72, starter: 1.14 },
 };
 
 const V8_HOTVEE = {
@@ -823,7 +827,7 @@ const V8_HOTVEE = {
     layout: 'front',
     shiftTime: 0.1,
   },
-  sound: { exhaust: 1, intake: 1, mech: 0.9, valvetrain: 'dohc', trim: 1.74 },
+  sound: { exhaust: 1, intake: 1, mech: 0.9, valvetrain: 'dohc', trim: 1.74, starter: 0.8 },
 };
 
 const I5_TURBO = {
@@ -872,7 +876,7 @@ const I5_TURBO = {
     layout: 'front',
     shiftTime: 0.08,
   },
-  sound: { exhaust: 1.1, intake: 1.1, mech: 1, valvetrain: 'dohc', trim: 1.13 },
+  sound: { exhaust: 1.1, intake: 1.1, mech: 1, valvetrain: 'dohc', trim: 1.13, starter: 0.83 },
 };
 
 export const PRESETS = [V12_65, V12_60, V8_LS, V8_BIGBLOCK, V8_BLOWER, V8_HOTVEE, V8_FLAT, V10_72, F1_V10, F6_GT, I6_TURBO, I5_TURBO, I4_RALLY, I4_VTEC, F4_TURBO, ROTARY, VTWIN];

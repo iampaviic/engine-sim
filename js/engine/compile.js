@@ -743,6 +743,83 @@ export function firingAngles(spec) {
   return angles;
 }
 
+// Starter motors, referred to the crankshaft: torque in N·m at the crank,
+// speed in crank rad/s, inertia as the crank feels it.
+//   kw, kwPerL   peak output; bigger engines get bigger starters
+//   free         no-load crank speed of the equivalent permanent-magnet motor (rpm)
+//   sat          field saturation current of a series-wound motor (A); 0 = magnets
+//   ring, pinion teeth on the flywheel ring gear and on the pinion (0 = by size)
+//   gearing      motor turns per pinion turn; sun: sun gear teeth of that reduction
+//   bars, poles  commutator bars and magnetic poles
+const STARTERS = {
+  // permanent-magnet motor with a planetary reduction: most cars since the 90s
+  reduction: { volts: 12.5, kw: 1.0, kwPerL: 0.2, free: 330, sat: 0, ring: 0, pinion: 0, gearing: 4.5, sun: 12, bars: 22, poles: 6, inertia: 0.16, inertiaPerL: 0.03 },
+  // series-wound motor straight onto the ring gear: classic American V8s
+  direct: { volts: 12.5, kw: 1.4, kwPerL: 0.12, free: 175, sat: 200, ring: 153, pinion: 9, gearing: 1, sun: 0, bars: 30, poles: 4, inertia: 0.14, inertiaPerL: 0.012 },
+  // motorcycle: permanent-magnet motor through a jackshaft to the clutch basket
+  moto: { volts: 12.6, kw: 1.4, kwPerL: 0.15, free: 330, sat: 0, ring: 70, pinion: 9, gearing: 3, sun: 0, bars: 16, poles: 4, inertia: 0.05, inertiaPerL: 0 },
+  // race car: a hand-held starter turning the engine through the gearbox
+  external: { volts: 24, kw: 4.5, kwPerL: 0, free: 950, sat: 0, ring: 48, pinion: 12, gearing: 4, sun: 14, bars: 24, poles: 4, inertia: 0.05, inertiaPerL: 0 },
+};
+
+// Peak torque the engine's compression strokes put against a starter on the
+// first strokes from rest: every cylinder compressing a full charge from
+// intake closing, and nothing yet compressed on the other side of top centre
+// to push back (N·m at the crank).
+function compressionTorque(g, cylOffset, ivc, evo) {
+  const n = cylOffset.length, cycle = g.cycle;
+  const at = (tab, ca) => tab[Math.round((ca / cycle) * TAB_N)];
+  const vIvc = at(g.vol, ivc);
+  let worst = 0;
+  for (let th = 0; th < cycle; th += 1) {
+    let T = 0;
+    for (let c = 0; c < n; c++) {
+      const ca = (th + cylOffset[c]) % cycle;
+      const closed = ivc < evo ? ca > ivc && ca < evo : ca > ivc || ca < evo;
+      const dv = at(g.dvd, ca);
+      if (!closed || dv >= 0) continue;
+      T -= (1.0e5 * Math.pow(vIvc / at(g.vol, ca), 1.34) - 1.013e5) * dv;
+    }
+    if (T > worst) worst = T;
+  }
+  return worst;
+}
+
+function starterSpec(spec, litres, resist, drag) {
+  const o = typeof spec.starter === 'string' ? { type: spec.starter } : (spec.starter ?? {});
+  const type = STARTERS[o.type] ? o.type : 'reduction';
+  const b = { ...STARTERS[type], ...o };
+  let kw = o.kw ?? b.kw + b.kwPerL * litres;
+  const V = b.volts;
+  const K = V / ((b.free * Math.PI) / 30); // N·m per amp at the crank
+  // Starters are sized for a cold engine: enough torque to heave it over
+  // compression from rest and to spin it briskly against its friction.
+  const stall = (R) => {
+    const I = V / R;
+    return b.sat > 0 ? (K * I * I) / (I + b.sat) : K * I;
+  };
+  const need = Math.max(1.15 * (resist + drag), 2.2 * drag);
+  let ohms = (V * V) / (4 * kw * 1000); // battery, cables, brushes and windings
+  for (let i = 0; i < 4 && stall(ohms) < need; i++) ohms *= stall(ohms) / need;
+  kw = (V * V) / (4 * ohms * 1000);
+  return {
+    type,
+    volts: V,
+    ohms,
+    K,
+    sat: b.sat,
+    kw,
+    // bigger engines carry bigger flywheels with more ring gear teeth
+    ring: b.ring || Math.round(Math.min(172, Math.max(116, 108 + 9.5 * litres))),
+    pinion: b.pinion || (litres > 4 ? 9 : litres > 2.2 ? 10 : 11),
+    gearing: b.gearing,
+    sun: b.sun,
+    bars: b.bars,
+    poles: b.poles,
+    inertia: o.inertia ?? b.inertia + b.inertiaPerL * litres,
+  };
+}
+
 export function compileEngine(spec) {
   const g = geometryTables(spec);
   const cycle = g.cycle;
@@ -835,6 +912,8 @@ export function compileEngine(spec) {
     },
     inertia: spec.inertia ?? 0.2,
     friction: spec.friction ?? 1,
+    // cold cranking friction: the worklet's FMEP at a crawl, cold oil
+    starter: starterSpec(spec, dispLitres, compressionTorque(g, cylOffset, inLo.close, exLo.open), (displacement / (4 * Math.PI)) * 1.52e5 * (spec.friction ?? 1)),
     combustion: spec.combustion ?? 0.8,
     burnScale: spec.burnScale ?? 1,
     stroke: mm(spec.stroke ?? 70),
@@ -864,6 +943,7 @@ export function compileEngine(spec) {
       rasp: snd.rasp ?? 1,
       gear: snd.gear ?? 0.3,
       trim: snd.trim ?? 1,
+      starter: snd.starter ?? 1,
     },
   };
 }
