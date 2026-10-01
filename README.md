@@ -81,6 +81,21 @@ Every change is heard immediately (the build hot-swaps into the running engine),
 | Mic / place | C / V | Y (mic) |
 | Garage / workshop | G / T | top bar |
 
+## iOS and Android apps
+
+The same code ships as native apps through [Capacitor](https://capacitorjs.com) 8. The native projects live in `ios/` and `android/`; the app id is `com.iampaviic.firingorder`.
+
+```sh
+npm install
+npm run sync        # copy the web app into www/ and both native projects
+npm run android     # open Android Studio (or: cd android && ./gradlew assembleDebug)
+npm run ios         # open Xcode (macOS only)
+```
+
+The app needs no network: fonts are bundled and everything is computed on the phone. A small native plugin, `EngineAudio` (Swift and Java, in each app target), sets up the audio session so the engine plays with the iPhone's silent switch on (or alongside other apps' music, as a setting), pauses for calls and when headphones are unplugged, and keeps the screen on while the engine runs. Settings, builds and best times are kept in native storage (Capacitor Preferences) instead of web view storage.
+
+Every push to `main` or `claude/app-shell` runs `.github/workflows/app.yml`: it builds an Android debug APK (downloadable from the run) and compiles the iOS app for the simulator. Icon and launch-screen sources are in `assets/`; regenerate the native sizes with `npx capacitor-assets generate --ios --android`.
+
 ## On phones
 
 In portrait the tach and figures sit on top and one lab panel shows below: the tabs switch between the pipe schematic (Engine) and the instruments. The pedals sit at the thumbs with modes, START, shifting and the LAUNCH / TC / BLIP / A/B chips between them. Scenes get their own strip above the deck. In landscape the pedals take the sides and the controls float in a pill at the bottom. The workshop and the builder are full-screen with a Hold to rev button, and the builder's spec sheet is its own tab, summed up in one line above the steps.

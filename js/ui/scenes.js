@@ -1,5 +1,7 @@
 // Scripted scenes: courses, the heads-up strip and the drag-strip time slip.
 
+import { speedText } from './units.js';
+
 const segs = (list) => {
   let s = 0;
   return list.map((q) => {
@@ -98,7 +100,7 @@ export function drawSceneHud(canvas, scene, tel, cache) {
   const def = SCENES[scene.id];
   const x = tel?.scene?.x ?? 0;
   g.font = `500 ${Math.round(10 * dpr)}px "B612 Mono", monospace`;
-  const speed = Math.round((tel?.speed ?? 0) * 3.6);
+  const speed = speedText(tel?.speed ?? 0);
   if (scene.id === 'mountain') {
     const pts = (cache.outline ??= courseOutline(def.track));
     const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
@@ -129,7 +131,7 @@ export function drawSceneHud(canvas, scene, tel, cache) {
     g.fill();
     g.fillStyle = 'rgba(235,227,208,0.85)';
     g.textAlign = 'left';
-    g.fillText(`${speed} km/h · gear ${tel?.gear ?? '-'}`, 10 * dpr, 16 * dpr);
+    g.fillText(`${speed} · gear ${tel?.gear ?? '-'}`, 10 * dpr, 16 * dpr);
     g.fillStyle = 'rgba(235,227,208,0.55)';
     g.fillText(`${Math.round(x)} / ${Math.round(def.length)} m`, 10 * dpr, 30 * dpr);
     g.fillText(tel?.scene?.env === 'canyon' ? 'rock walls' : tel?.scene?.env === 'tunnel' ? 'tunnel' : 'open road', 10 * dpr, 44 * dpr);
@@ -179,7 +181,7 @@ export function drawSceneHud(canvas, scene, tel, cache) {
   g.fillStyle = 'rgba(235,227,208,0.85)';
   g.textAlign = 'left';
   const et = scene.id === 'drag' && scene.leaveT != null ? ` · ${((performance.now() - scene.leaveT) / 1000).toFixed(2)} s` : '';
-  g.fillText(`${Math.round(x)} m · ${speed} km/h · gear ${tel?.gear ?? '-'}${scene.id === 'drag' && scene.finished ? '' : et}`, 10 * dpr, 16 * dpr);
+  g.fillText(`${Math.round(x)} m · ${speed} · gear ${tel?.gear ?? '-'}${scene.id === 'drag' && scene.finished ? '' : et}`, 10 * dpr, 16 * dpr);
 }
 
 // Time slip text from the worklet's timing marks.

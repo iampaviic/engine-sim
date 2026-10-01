@@ -1,0 +1,59 @@
+# Builds the iOS and Android apps from the same web code. The Android job
+# uploads a debug APK you can install on a phone; the iOS job compiles for the
+# simulator (signing for real devices comes with the developer account).
+name: App builds
+
+on:
+  push:
+    branches: [main, 'claude/app-shell']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: app-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android:
+    name: Android debug APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - run: npm ci
+      - run: npm run build:web
+      - run: npx cap sync android
+      - name: Build
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firing-order-android-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+  ios:
+    name: iOS simulator build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:web
+      - run: npx cap sync ios
+      - run: xcodebuild -version
+      - name: Build
+        run: >-
+          xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug
+          -sdk iphonesimulator -destination 'generic/platform=iOS Simulator'
+          CODE_SIGNING_ALLOWED=NO -quiet build

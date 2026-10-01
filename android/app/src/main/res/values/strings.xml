@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Firing Order</string>
+    <string name="title_activity_main">Firing Order</string>
+    <string name="package_name">com.iampaviic.firingorder</string>
+    <string name="custom_url_scheme">com.iampaviic.firingorder</string>
+</resources>

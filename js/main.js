@@ -9,24 +9,27 @@ import { Garage } from './ui/garage.js';
 import { Workshop, CAMERAS, clone, applyHeaderEqualize } from './ui/workshop.js';
 import { Builder } from './ui/builder.js';
 import { SCENES, drawSceneHud, timeSlip } from './ui/scenes.js';
+import { Settings } from './ui/settings.js';
+import { units, speedText, sprint, defaultSpeedUnit } from './ui/units.js';
 import { buildSpecs, loadBuilds, saveBuilds } from './engine/builder.js';
+import { isNative, platform, AppPlugin, StatusBar, EngineAudio, call } from './platform/native.js';
+import { ready as storageReady, getItem, setItem } from './platform/storage.js';
+
+// app storage on phones is read asynchronously, once, before anything uses it
+await storageReady;
 
 const $ = (id) => document.getElementById(id);
 const store = {
   get(k, d) {
     try {
-      const v = localStorage.getItem('firing-order.' + k);
+      const v = getItem('firing-order.' + k);
       return v == null ? d : JSON.parse(v);
     } catch {
       return d;
     }
   },
   set(k, v) {
-    try {
-      localStorage.setItem('firing-order.' + k, JSON.stringify(v));
-    } catch {
-      /* storage unavailable */
-    }
+    setItem('firing-order.' + k, JSON.stringify(v));
   },
 };
 
@@ -53,7 +56,16 @@ const app = {
   lastRun: null,
   timer: { state: 'idle', t0: 0, result: null },
   warned: {},
+  units,
+  mixAudio: store.get('mixAudio', false),
+  keepAwake: store.get('keepAwake', true),
+  awake: false,
+  // iOS (Safari and the app) can share the speaker with other apps; Android
+  // apps share it through audio focus.
+  canMixAudio: isNative || 'audioSession' in navigator,
+  canKeepAwake: isNative || 'wakeLock' in navigator,
 };
+units.speed = store.get('units', defaultSpeedUnit());
 
 // ---------------------------------------------------------------- UI objects
 const tach = new Tach($('tach'));
@@ -106,6 +118,7 @@ const garage = new Garage({
 });
 
 const workshop = new Workshop({ root: $('workshop'), body: $('wsBody'), close: $('wsClose'), reset: $('wsReset'), app });
+const settings = new Settings({ root: $('settings'), body: $('setBody'), close: $('setClose'), app });
 const builder = new Builder({ root: $('builder'), app, presets: PRESETS });
 
 // ------------------------------------------------------------ engine / tune
@@ -248,6 +261,126 @@ app.setVolume = (v) => {
   $('vol').value = v;
   app.audio.setVolume(v);
 };
+
+// ---------------------------------------------------------------- settings
+app.setUnits = (u) => {
+  units.speed = u;
+  store.set('units', u);
+  app.timer.result = null;
+  syncUnitsUI();
+};
+function syncUnitsUI() {
+  $('roTimeLbl').textContent = sprint().label;
+}
+app.setMixAudio = (on) => {
+  app.mixAudio = on;
+  store.set('mixAudio', on);
+  if (app.started) applyAudioSessionType();
+  call(EngineAudio, 'configure', { mixWithOthers: on });
+};
+app.setKeepAwake = (on) => {
+  app.keepAwake = on;
+  store.set('keepAwake', on);
+  if (!on) screenAwake(false);
+};
+
+// --------------------------------------------------------------- platform
+// iOS: "playback" plays through the silent switch and pauses other audio;
+// "ambient" mixes with it. WebKit's Audio Session API sets this for the page
+// itself (Safari and the app's web view); the native plugin covers the rest.
+function applyAudioSessionType() {
+  try {
+    if (navigator.audioSession) navigator.audioSession.type = app.mixAudio ? 'ambient' : 'playback';
+  } catch {
+    /* older WebKit */
+  }
+}
+
+async function screenAwake(on) {
+  app.awake = on;
+  if (isNative) {
+    call(EngineAudio, 'setKeepAwake', { on });
+    return;
+  }
+  try {
+    if (on && !app.wakeLock) app.wakeLock = await navigator.wakeLock?.request('screen');
+    else if (!on && app.wakeLock) {
+      const lock = app.wakeLock;
+      app.wakeLock = null;
+      await lock.release();
+    }
+  } catch {
+    app.wakeLock = null; // refused or already released by the browser
+  }
+}
+
+// Resume the sound after an interruption. Browsers may want a tap first.
+async function resumeSound() {
+  if (!app.started || document.hidden) return;
+  try {
+    await app.audio.resume();
+  } catch {
+    /* handled below */
+  }
+  if (app.audio.ctx?.state !== 'running') armTapResume();
+}
+let tapResumeArmed = false;
+function armTapResume(msg = 'Tap anywhere to bring the sound back') {
+  if (tapResumeArmed) return;
+  tapResumeArmed = true;
+  toast(msg);
+  document.addEventListener(
+    'pointerdown',
+    () => {
+      tapResumeArmed = false;
+      if (isNative) call(EngineAudio, 'setActive', { on: true });
+      app.audio.resume();
+    },
+    { once: true, capture: true }
+  );
+}
+
+// Android back button: close the top-most sheet, leave a scene, then exit.
+function handleBack() {
+  if (!$('slip').hidden) $('slipClose').click();
+  else if (settings.open) settings.hide();
+  else if (builder.open) builder.hide();
+  else if (workshop.open) workshop.hide();
+  else if (garage.open) garage.hide();
+  else if (!$('scenePick').hidden) $('scenePick').hidden = true;
+  else if (app.scene || app.mode !== 'rev') setMode('rev');
+  else call(AppPlugin, 'exitApp');
+}
+
+async function initNative() {
+  if (!isNative) return;
+  if (platform === 'ios') call(StatusBar, 'setStyle', { style: 'DARK' });
+  EngineAudio?.addListener('interruption', (e) => {
+    if (!app.started) return;
+    if (e.state === 'began') app.audio.suspend();
+    else resumeSound();
+  });
+  EngineAudio?.addListener('route', (e) => {
+    if (e.reason !== 'deviceLost' || !app.started || app.audio.ctx?.state !== 'running') return;
+    // headphones out: don't suddenly play out loud
+    app.audio.suspend();
+    armTapResume('Headphones disconnected. Tap to play through the speaker');
+  });
+  AppPlugin?.addListener('appStateChange', ({ isActive }) => {
+    if (!app.started) return;
+    if (isActive) {
+      call(EngineAudio, 'setActive', { on: true });
+      resumeSound();
+    } else {
+      app.audio.suspend();
+      screenAwake(false);
+      call(EngineAudio, 'setActive', { on: false });
+    }
+  });
+  AppPlugin?.addListener('backButton', handleBack);
+  const info = await call(AppPlugin, 'getInfo');
+  if (info) app.versionText = `Version ${info.version} (${info.build})`;
+}
 
 // Load an engine spec directly (the builder's live audition). hot: keep the
 // engine running through the swap.
@@ -544,6 +677,7 @@ function action(a, v) {
       app.openBuilder({ from: 'current' });
       break;
     case 'escape':
+      settings.hide();
       garage.hide();
       workshop.hide();
       if (builder.open) builder.hide();
@@ -556,6 +690,11 @@ app.start = () => start();
 async function start() {
   if (app.started || app.starting) return;
   app.starting = true;
+  applyAudioSessionType();
+  if (isNative) {
+    await call(EngineAudio, 'configure', { mixWithOthers: app.mixAudio });
+    await call(EngineAudio, 'setActive', { on: true });
+  }
   try {
     await app.audio.init();
   } catch (err) {
@@ -575,11 +714,6 @@ async function start() {
   if (app.quality !== 'auto') app.audio.post({ type: 'quality', quality: app.quality });
   app.audio.post({ type: 'ignition', on: true, crank: true, cold: true });
   $('intro').hidden = true;
-  try {
-    await navigator.wakeLock?.request('screen');
-  } catch {
-    /* optional */
-  }
 }
 
 function startStop() {
@@ -641,7 +775,7 @@ function onTelemetry(t) {
     $('treeGo').disabled = true;
   }
   tach.gear = inGear ? (t.gear ? String(t.gear) : 'N') : t.mode === 'dyno' ? 'D' : 'N';
-  tach.speedText = inGear ? `${Math.round(t.speed * 3.6)} km/h` : t.mode === 'dyno' ? 'DYNO' : t.running ? 'NEUTRAL' : t.starter ? 'CRANKING' : 'OFF';
+  tach.speedText = inGear ? speedText(t.speed) : t.mode === 'dyno' ? 'DYNO' : t.running ? 'NEUTRAL' : t.starter ? 'CRANKING' : 'OFF';
   if (inGear && t.gear !== app.lastGear && app.lastGear) navigator.vibrate?.(12);
   app.lastGear = t.gear;
   if (t.af > 0 && t.afI > 0.12) {
@@ -649,6 +783,8 @@ function onTelemetry(t) {
     if (t.afI > 0.35) navigator.vibrate?.(8);
   }
   $('startBtn').classList.toggle('on', !!t.running);
+  const wantAwake = app.keepAwake && !!t.running && !document.hidden;
+  if (wantAwake !== app.awake) screenAwake(wantAwake);
   if (t.knockN > 0) {
     tach.knock = Math.max(tach.knock, Math.min(1, 0.3 + t.knock / 3e5));
     if (!app.warned.knock) {
@@ -665,7 +801,7 @@ function onTelemetry(t) {
     const last = app.dynoPts[app.dynoPts.length - 1];
     if (!last || t.dyno.rpm > last.rpm + 25) app.dynoPts.push({ rpm: t.dyno.rpm, tq: t.dyno.tq });
   }
-  // 0-100 km/h timer
+  // 0–100 km/h (or 0–60 mph) timer
   const tm = app.timer;
   const now = performance.now() / 1000;
   if (inGear) {
@@ -674,10 +810,10 @@ function onTelemetry(t) {
     } else if (tm.state === 'armed') {
       tm.state = 'running';
       tm.t0 = now;
-    } else if (tm.state === 'running' && t.speed >= 100 / 3.6) {
+    } else if (tm.state === 'running' && t.speed >= sprint().target) {
       tm.state = 'done';
       tm.result = now - tm.t0;
-      toast(`0–100 km/h in ${tm.result.toFixed(2)} s`);
+      toast(`${sprint().text} in ${tm.result.toFixed(2)} s`);
     }
   }
 }
@@ -740,7 +876,7 @@ function drawFlyby() {
     g.fillStyle = 'rgba(235,227,208,0.8)';
     g.textAlign = 'left';
     const d = Math.hypot(t.flyX, 7.5);
-    g.fillText(`${Math.round(d)} m · ${Math.round(t.speed * 3.6)} km/h`, 8 * dpr, H * 0.3);
+    g.fillText(`${Math.round(d)} m · ${speedText(t.speed)}`, 8 * dpr, H * 0.3);
   }
 }
 
@@ -915,12 +1051,18 @@ function wire() {
   );
   document.addEventListener('visibilitychange', () => {
     if (!app.started) return;
-    if (document.hidden) app.audio.suspend();
-    else app.audio.resume();
+    if (document.hidden) {
+      app.audio.suspend();
+      screenAwake(false);
+    } else resumeSound();
   });
   scope.mode = store.get('tab', 'wave');
   syncTabs();
+  syncUnitsUI();
   holdToRev($('wsRev'));
+  $('settingsBtn').addEventListener('click', () => settings.show());
+  $('wsSettings').addEventListener('click', () => settings.show());
+  initNative();
   document.fonts?.ready.then(() => {
     tach.face = null;
   });

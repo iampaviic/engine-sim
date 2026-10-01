@@ -23,6 +23,7 @@
           <label class="sel"><span>Place</span><select id="envSel" aria-label="Environment"></select></label>
           <button class="btn" id="buildBtn" title="Engine builder">Build</button>
           <button class="btn" id="workshopBtn" title="Tune the engine (T)">Workshop</button>
+          <button class="icon-btn gear-btn" id="settingsBtn" aria-label="Settings" title="Settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8" /><circle cx="12" cy="12" r="6.4" fill="none" stroke="currentColor" stroke-width="1.8" /><path d="M12 2.6v3M12 18.4v3M21.4 12h-3M5.6 12h-3M18.6 5.4l-2.1 2.1M7.5 16.5l-2.1 2.1M18.6 18.6l-2.1-2.1M7.5 7.5L5.4 5.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg></button>
           <label class="vol" title="Volume">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4z" fill="currentColor" /><path d="M16 8.5a5 5 0 010 7M18.5 6a8.5 8.5 0 010 12" fill="none" stroke="currentColor" stroke-width="1.6" /></svg>
             <input type="range" id="vol" min="0" max="1" step="0.01" value="0.8" aria-label="Volume" />
@@ -123,6 +124,7 @@
     <aside class="drawer" id="workshop" aria-labelledby="wsTitle" hidden>
       <div class="drawer-head">
         <h2 id="wsTitle">Workshop</h2>
+        <button class="icon-btn gear-btn" id="wsSettings" aria-label="Settings" title="Settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8" /><circle cx="12" cy="12" r="6.4" fill="none" stroke="currentColor" stroke-width="1.8" /><path d="M12 2.6v3M12 18.4v3M21.4 12h-3M5.6 12h-3M18.6 5.4l-2.1 2.1M7.5 16.5l-2.1 2.1M18.6 18.6l-2.1-2.1M7.5 7.5L5.4 5.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg></button>
         <button class="btn" id="wsReset" title="Back to factory spec">Factory</button>
         <button class="btn" id="wsClose">Done</button>
       </div>
@@ -131,6 +133,14 @@
         <button class="b-rev" id="wsRev">Hold to rev</button>
         <span class="b-rpm" id="wsRpm">engine off</span>
       </footer>
+    </aside>
+
+    <aside class="drawer settings" id="settings" aria-labelledby="setTitle" hidden>
+      <div class="drawer-head">
+        <h2 id="setTitle">Settings</h2>
+        <button class="btn" id="setClose">Done</button>
+      </div>
+      <div class="drawer-body" id="setBody"></div>
     </aside>
 
     <div class="builder" id="builder" role="dialog" aria-modal="true" aria-labelledby="bTitle" hidden>

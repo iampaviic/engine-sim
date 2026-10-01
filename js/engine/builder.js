@@ -5,6 +5,8 @@
 // which revolution each cylinder fires on. Every option it offers is one a
 // real crankshaft could produce, including twin-pulse and big-bang orders.
 
+import { getItem, setItem } from '../platform/storage.js';
+
 export const LAYOUTS = [
   ['inline', 'Inline'],
   ['v', 'Vee'],
@@ -707,14 +709,14 @@ export function specToDesign(spec) {
 }
 
 // ---------------------------------------------------------------------------
-// My garage (browser storage)
+// My garage (app storage on phones, browser storage on the web)
 // ---------------------------------------------------------------------------
 
 const KEY = 'firing-order.builds';
 
 export function loadBuilds() {
   try {
-    const v = JSON.parse(localStorage.getItem(KEY) ?? '[]');
+    const v = JSON.parse(getItem(KEY) ?? '[]');
     return Array.isArray(v) ? v : [];
   } catch {
     return [];
@@ -722,12 +724,7 @@ export function loadBuilds() {
 }
 
 export function saveBuilds(list) {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(list));
-    return true;
-  } catch {
-    return false;
-  }
+  return setItem(KEY, JSON.stringify(list));
 }
 
 export function buildSpecs() {

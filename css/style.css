@@ -208,6 +208,9 @@ button {
   width: 18px;
   height: 18px;
 }
+.icon-btn.gear-btn {
+  display: inline-flex;
+}
 
 /* ------------------------------------------------------------------ stage */
 .stage {
@@ -867,8 +870,25 @@ button {
   text-transform: uppercase;
   letter-spacing: 0.03em;
 }
-.drawer-head .btn {
-  margin-left: auto;
+.drawer-head h2 {
+  margin-right: auto;
+}
+.drawer.settings {
+  z-index: 46;
+}
+.about-name {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 24px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+.about-version {
+  margin: -6px 0 0;
+  font-family: var(--font-data);
+  font-size: 12px;
+  color: var(--smoke);
 }
 .drawer-body {
   flex: 1 1 auto;
@@ -1703,6 +1723,9 @@ button {
   .icon-btn {
     display: inline-flex;
   }
+  .topbar .gear-btn {
+    display: none;
+  }
   #buildBtn {
     height: 38px;
     padding: 0 11px;
@@ -2093,7 +2116,8 @@ button {
   }
   .top-actions .sel,
   .top-actions .vol,
-  #workshopBtn {
+  #workshopBtn,
+  .topbar .gear-btn {
     display: none;
   }
   .icon-btn {
