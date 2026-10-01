@@ -469,9 +469,9 @@ const V10_72 = {
 
 const F1_V10 = {
   id: 'f1-v10',
-  name: 'F1 V10',
+  name: 'GP V10',
   tagline: '3.0 L 90° V10 · 19,000 rpm · 2004 spec',
-  origin: 'Formula 1',
+  origin: 'Grand prix',
   family: 'V10',
   blurb:
     'A 40.5 mm stroke, pneumatic valve springs and almost no flywheel. Short 5-into-1 headers per bank, no silencers, straight-cut gears. At the limit the firing frequency is 1,600 Hz.',
@@ -527,7 +527,7 @@ const I4_RALLY = {
   id: 'i4-rally',
   name: 'Rally Four',
   tagline: '2.0 L inline-4 turbo · anti-lag',
-  origin: 'WRC',
+  origin: 'Rally',
   family: 'I4',
   blurb:
     'Stage-rally four with a restricted turbo and an anti-lag system. Off throttle, the ECU keeps air flowing and retards the spark so far that fuel burns in the exhaust manifold, which keeps the turbo spinning.',

@@ -255,7 +255,7 @@ export const VALVETRAINS = [
   ['ohv', 'Pushrods (OHV)'],
   ['sohc', 'Single cam (SOHC)'],
   ['dohc', 'Twin cam (DOHC)'],
-  ['pneumatic', 'Pneumatic (F1)'],
+  ['pneumatic', 'Pneumatic (racing)'],
 ];
 const FLOAT_RPM = { ohv: 7000, sohc: 8000, dohc: 9200, pneumatic: 40000 };
 

@@ -547,7 +547,7 @@ export class Builder {
       (v) => this.set({ cam: v }),
       camHint(d)
     );
-    H.toggle('Second cam profile', d.vtec, (v) => this.set({ vtec: v }), 'Switch to a wilder lobe at high rpm, VTEC style.');
+    H.toggle('Second cam profile', d.vtec, (v) => this.set({ vtec: v }), 'Switch to a wilder lobe at high rpm, as two-stage cam engines do.');
     if (d.vtec) {
       H.range('Switch-over', 2500, Math.max(3000, d.ecu.limit - 500), 100, d.vtecRpm, (v) => `${fmt(v)} rpm`, (v) => this.set({ vtecRpm: v }, false));
     }
@@ -774,7 +774,7 @@ export class Builder {
       if (r.floatMax > 0.05) notes.push(['bad', 'The valves float before the rev limit: power falls away and the sound goes ragged. Lower the limit, or use a lighter valvetrain.']);
     }
     if (r?.error) notes.push(['bad', r.error]);
-    if (d.layout !== 'rotary' && dv.pistonSpeed > 26) notes.push(['bad', 'Piston speed past 26 m/s: Formula 1 territory. Shorten the stroke or lower the limit.']);
+    if (d.layout !== 'rotary' && dv.pistonSpeed > 26) notes.push(['bad', 'Piston speed past 26 m/s: Grand prix territory. Shorten the stroke or lower the limit.']);
     if (this.workerFailed) notes.push(['warn', 'The virtual dyno is not available in this browser, so power figures are missing. The engine still runs and sounds the same.']);
     this.$('bNotes').innerHTML = notes.map(([lvl, t]) => `<li class="${lvl}">${t}</li>`).join('');
     this.flags = notes.filter(([lvl]) => lvl === 'warn' || lvl === 'bad').map(([lvl]) => lvl);

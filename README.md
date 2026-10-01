@@ -21,7 +21,7 @@ Sound is pressure changing over time, so the simulator computes pressures:
 3. **Pipes**. Headers, collectors, X/H-pipes, cats, mufflers and tails are digital waveguides: pressure waves travel both ways at the local speed of sound (it follows exhaust gas temperature), scatter at junctions, lose high frequencies to friction and reflect at open ends. Strong blowdown pulses steepen toward shocks (finite-amplitude propagation), which gives high-load rasp.
 4. **Radiation**. Each tail pipe (and the intake) radiates the time derivative of its mass outflow, like a monopole. A listener model adds distance delay (so fly-bys Doppler-shift on their own), a ground reflection, air absorption, head shadow and the cabin.
 5. **Knock and valve float**. The unburned end gas in every cylinder integrates its autoignition delay (Livengood-Wu with the Douaud-Eyzat correlation, so octane, compression, boost, intake temperature and spark timing all matter). When it autoignites, the rest of the charge burns at once and the chamber rings at its first acoustic modes (1.84·c/πB, about 5–7 kHz), which the block radiates as the ping. Past the spring limit the valves loft off the cams and bounce on their seats, letting gas back the wrong way: power collapses and the sound turns ragged.
-6. **Everything else is also simulated**: an ECU (idle control, fuel cut on overrun, rev limiter, spark map with knock control, launch control, traction control, VTEC-style cam switching, anti-lag), turbochargers (compressor map with surge, wastegate, blow-off valve or compressor flutter, screamer pipe), twin-screw, Roots and centrifugal superchargers, afterfire in the exhaust, a drivetrain, tyres and a dyno.
+6. **Everything else is also simulated**: an ECU (idle control, fuel cut on overrun, rev limiter, spark map with knock control, launch control, traction control, two-stage cam switching, anti-lag), turbochargers (compressor map with surge, wastegate, blow-off valve or compressor flutter, screamer pipe), twin-screw, Roots and centrifugal superchargers, afterfire in the exhaust, a drivetrain, tyres and a dyno.
 
 Each engine's character comes out of its geometry: firing order, crank and bank angle, header lengths and how they merge. A cross-plane V8 burbles because each bank fires unevenly. A flat-plane V8 or a V12 screams because the pulses arrive evenly. An unequal-length boxer rumbles because the pulses arrive at the collector unevenly.
 
@@ -36,7 +36,7 @@ Each engine's character comes out of its geometry: firing order, crank and bank 
 | Blower V8 | Cross-plane V8 with a twin-screw supercharger |
 | Flat-Plane V8 | High-revving flat-plane V8 |
 | Angel V10 | 72° V10, equal-length 5-into-1 headers |
-| F1 V10 | 19,000 rpm, pneumatic valves |
+| GP V10 | 19,000 rpm, pneumatic valves |
 | Boxer Six | Flat six with individual throttle bodies |
 | Tuner Six | Straight six, big single turbo |
 | Rally Four | Turbo four with anti-lag |
