@@ -143,6 +143,12 @@ export class Builder {
     const next = { ...d, ...patch };
     for (const k of ['induction', 'intake', 'exhaust', 'ecu']) if (patch[k]) next[k] = { ...d[k], ...patch[k] };
     this.d = normalize(next);
+    // default names follow the layout ("My V8" -> "My V12")
+    if ((patch.layout || patch.cylinders) && /^My (V\d+|I\d+|flat-\d+|\d-rotor|engine)$/.test(d.name)) {
+      const n = this.d.cylinders;
+      this.d.name = { v: `My V${n}`, inline: `My I${n}`, flat: `My flat-${n}`, rotary: `My ${n}-rotor` }[this.d.layout];
+      this.$('bName').value = this.d.name;
+    }
     this.dirty = true;
     if (form) this.renderForm();
     this.renderSheet();

@@ -497,6 +497,91 @@ export function designToSpec(d) {
   spec.tagline = `${L.toFixed(1)} L ${shape}${crank} · ${indTxt}`;
   spec.blurb = describeFiring(d, fire, banks);
   spec.listen = listenHint(d, fire, banks);
+  return d.base ? applyBase(d, spec) : spec;
+}
+
+const FLY = { light: 0.6, stock: 1, heavy: 1.7 };
+const pick = (o, path) => path.split('.').reduce((a, k) => (a == null ? a : a[k]), o);
+const sameAs = (d, k, path) => JSON.stringify(pick(d, path)) === JSON.stringify(pick(k, path));
+
+// An engine opened from the garage keeps its exact factory spec as a base:
+// only what the builder has changed is regenerated, so an untouched engine
+// sounds exactly like the original and every edit is incremental.
+function applyBase(d, gen) {
+  const k = d.base.snap;
+  const same = (p) => sameAs(d, k, p);
+  const spec = JSON.parse(JSON.stringify(d.base.spec));
+  for (const f of ['id', 'name', 'custom', 'origin', 'family', 'tagline', 'blurb', 'listen']) spec[f] = gen[f];
+  const core = ['layout', 'cylinders', 'bankAngle', 'crank', 'splitPin', 'pinOffset', 'order', 'chamber'].every(same);
+  if (!core) {
+    for (const f of ['kind', 'cylinders', 'firingAngles', 'firingOrder', 'banks', 'chamberDisplacement']) spec[f] = gen[f];
+    delete spec.intervals;
+    spec.exhaust = gen.exhaust;
+    spec.intake = gen.intake;
+  }
+  const bore0 = spec.bore;
+  if (!same('bore') || !same('stroke') || !same('rodRatio')) {
+    spec.bore = gen.bore;
+    spec.stroke = gen.stroke;
+    spec.rod = gen.rod;
+  }
+  spec.compression = d.compression;
+  if (!core || !same('valvetrain') || !same('valves')) spec.valves = gen.valves;
+  else if (bore0 && spec.bore !== bore0 && spec.valves?.inDia) {
+    const r = spec.bore / bore0;
+    spec.valves = { ...spec.valves, inDia: +(spec.valves.inDia * r).toFixed(1), exDia: +(spec.valves.exDia * r).toFixed(1) };
+  }
+  if (!core || !same('cam') || !same('vtec') || !same('vtecRpm') || !same('valvetrain')) {
+    spec.cam = gen.cam;
+    if (gen.camHigh) {
+      spec.camHigh = gen.camHigh;
+      spec.camSwitchRpm = gen.camSwitchRpm;
+    } else {
+      delete spec.camHigh;
+      delete spec.camSwitchRpm;
+    }
+  }
+  if (!same('induction')) spec.induction = gen.induction;
+  // intake
+  const it = spec.intake ?? {};
+  if (!same('intake.itb')) {
+    for (const f of ['itb', 'throttleCount', 'throttleDia', 'plenum']) it[f] = gen.intake[f];
+  }
+  it.airbox = d.intake.airbox;
+  it.runnerLen = d.intake.runnerLen;
+  spec.intake = it;
+  // exhaust: keep the factory pipe sizes, apply the choices
+  if (core) {
+    const ex = spec.exhaust;
+    const h = { ...(ex.headers ?? {}) };
+    if (!same('exhaust.len')) {
+      if (h.lens && h.len) h.lens = h.lens.map((v) => +((v * d.exhaust.len) / h.len).toFixed(3));
+      h.len = d.exhaust.len;
+    }
+    if (!same('exhaust.unequal')) {
+      if (d.exhaust.unequal) h.lens = gen.exhaust.headers.lens;
+      else delete h.lens;
+    }
+    h.style = d.exhaust.headers;
+    ex.headers = h;
+    for (const f of ['cat', 'resonator', 'muffler', 'exit', 'tips']) ex[f] = d.exhaust[f];
+    if (ex.merge != null || gen.exhaust.merge != null) ex.merge = d.exhaust.merge;
+  }
+  // ECU: the springs stay those of the original engine
+  const e0 = d.base.spec.ecu ?? {};
+  const floatRpm = e0.floatRpm ?? ((d.base.spec.sound?.valvetrain === 'pneumatic' || d.base.spec.kind === 'rotary') ? 40000 : (e0.limit ?? 6500) * 1.07);
+  spec.ecu = { ...spec.ecu, limit: d.ecu.limit, limiter: d.ecu.limiter, burble: d.ecu.burble, octane: d.ecu.octane, floatRpm: same('valvetrain') && same('valves') ? floatRpm : gen.ecu.floatRpm, antilag: gen.ecu.antilag };
+  if (d.ecu.idle) spec.ecu.idle = d.ecu.idle;
+  else if (!core || !same('cam')) spec.ecu.idle = gen.ecu.idle;
+  // the factory knock calibration only holds for the factory combustion
+  if (!(core && same('bore') && same('stroke') && same('compression') && same('induction') && same('cam'))) delete spec.ecu.knockCal;
+  // rotating mass and the car
+  const L0 = displacementL(k), L = displacementL(d);
+  spec.inertia = +((spec.inertia ?? 0.2) * ((FLY[d.flywheel] ?? 1) / (FLY[k.flywheel] ?? 1)) * Math.pow(L / L0, 1.15)).toFixed(3);
+  if (!same('car')) spec.vehicle = gen.vehicle;
+  // loudness: measured if the virtual dyno has run, else the factory trim
+  // while nothing that matters has changed
+  spec.sound = { ...spec.sound, trim: d.calib?.trim ?? (core && same('induction') && same('exhaust') ? spec.sound?.trim : gen.sound.trim) };
   return spec;
 }
 
@@ -611,6 +696,13 @@ export function specToDesign(spec) {
   const want = (spec.firingOrder ?? []).join();
   const opt = firingOptions(nd, 64).find((o) => o.order.join() === want);
   if (opt) nd.order = opt.order.slice();
+  // remember the exact original so untouched parts stay factory
+  const base = JSON.parse(JSON.stringify(spec));
+  for (const f of ['design', 'custom']) delete base[f];
+  const snap = JSON.parse(JSON.stringify(nd));
+  delete snap.base;
+  delete snap.calib;
+  nd.base = { spec: base, snap };
   return nd;
 }
 
