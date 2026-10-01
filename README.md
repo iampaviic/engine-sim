@@ -96,6 +96,20 @@ The app needs no network: fonts are bundled and everything is computed on the ph
 
 Every push to `main` or `claude/app-shell` runs `.github/workflows/app.yml`: it builds an Android debug APK (downloadable from the run) and compiles the iOS app for the simulator. Icon and launch-screen sources are in `assets/`; regenerate the native sizes with `npx capacitor-assets generate --ios --android`.
 
+## Free and Pro
+
+The apps are free with a one-time **Firing Order Pro** unlock. Free: five engines (Berlinetta V12, Small-Block V8, Tuner Six, Screamer Four, Big Twin), Rev, Drive and Fly-by, the engine view and pressure trace, the basic workshop (listening, silencer, exhaust valve, rev limit, traction control) and the builder with one saved build. Pro adds every engine, the other scenes, the rest of the workshop, spectrum, p–V, dyno, A/B compare, the mixer, launch control and unlimited builds. Locked engines play for 30 seconds from the garage. The split lives in `js/config.js` (`FREE`).
+
+Purchases go through [RevenueCat](https://www.revenuecat.com) (`@revenuecat/purchases-capacitor`); `js/platform/purchases.js` is the only code that talks to it, and the rest of the app asks `app.isPro()`. The web version has no store and stays unlocked (`WEB_UNLOCKED` in `js/config.js`); Settings → Pro can show the free version. For testing the purchase screens in a browser, open the page with `?store=mock`. App builds without RevenueCat keys offer "Unlock for testing" instead of a purchase.
+
+To connect the stores:
+
+1. **App Store Connect**: create the app (bundle id `com.iampaviic.firingorder`), then In-App Purchases → Non-Consumable, product id `firingorder_pro`, reference name "Firing Order Pro". Set the price, turn on Family Sharing, add a screenshot of the Pro screen for review.
+2. **Play Console**: create the app (package `com.iampaviic.firingorder`), then Monetize → One-time products → product id `firingorder_pro`, name "Firing Order Pro", set the price and activate it.
+3. **RevenueCat**: create a project, add the iOS app (with an App Store Connect in-app purchase key) and the Android app (with Google Play service credentials). Import `firingorder_pro` from both stores, create the entitlement `pro` and attach both products, and add a Lifetime package with both products to the `default` offering.
+4. Copy the public SDK keys (`appl_…` and `goog_…`) into `STORE.revenueCatKeys` in `js/config.js`.
+5. Test with an App Store sandbox account and a Play Console license tester (the Android build has to come from a Play testing track for real purchases).
+
 ## On phones
 
 In portrait the tach and figures sit on top and one lab panel shows below: the tabs switch between the pipe schematic (Engine) and the instruments. The pedals sit at the thumbs with modes, START, shifting and the LAUNCH / TC / BLIP / A/B chips between them. Scenes get their own strip above the deck. In landscape the pedals take the sides and the controls float in a pill at the bottom. The workshop and the builder are full-screen with a Hold to rev button, and the builder's spec sheet is its own tab, summed up in one line above the steps.

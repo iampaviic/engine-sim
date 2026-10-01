@@ -5,7 +5,7 @@ name: App builds
 
 on:
   push:
-    branches: [main, 'claude/app-shell']
+    branches: [main, 'claude/**']
   pull_request:
   workflow_dispatch:
 

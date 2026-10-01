@@ -1,5 +1,7 @@
 // Engine picker: the factory engines plus the user's own builds.
 
+import { PREVIEW_SECONDS } from '../config.js';
+
 const FILTERS = [
   ['all', 'All'],
   ['V12', 'V12'],
@@ -22,11 +24,12 @@ function matches(p, f) {
 }
 
 export class Garage {
-  constructor({ root, cards, filters, close, getEngines, onPick, onBuild, onEdit, onDelete }) {
+  constructor({ root, cards, filters, close, getEngines, isLocked = () => false, onPick, onBuild, onEdit, onDelete }) {
     this.root = root;
     this.cardsEl = cards;
     this.filtersEl = filters;
     this.getEngines = getEngines;
+    this.isLocked = isLocked;
     this.onPick = onPick;
     this.onBuild = onBuild;
     this.onEdit = onEdit;
@@ -82,8 +85,9 @@ export class Garage {
     }
     for (const p of engines) {
       if (!matches(p, this.filter)) continue;
+      const locked = this.isLocked(p.id);
       const card = document.createElement('div');
-      card.className = 'card' + (p.custom ? ' card-mine' : '');
+      card.className = 'card' + (p.custom ? ' card-mine' : '') + (locked ? ' card-locked' : '');
       card.setAttribute('role', 'button');
       card.tabIndex = 0;
       card.setAttribute('aria-current', String(p.id === this.current));
@@ -97,11 +101,13 @@ export class Garage {
               ? 'centrifugal blower'
               : 'NA';
       card.innerHTML = `
-        <div class="card-top"><span class="badge">${p.family}</span><span class="origin">${p.origin}</span></div>
+        <div class="card-top"><span class="badge">${p.family}</span>${locked ? '<span class="pro-tag">PRO</span>' : ''}<span class="origin">${p.origin}</span></div>
         <h3>${escapeHtml(p.name)}</h3>
         <div class="tagline">${p.tagline}</div>
         <p class="blurb">${p.blurb}</p>
-        <div class="fo-line"><b>firing</b> ${fo}<br><b>redline</b> ${p.ecu.limit.toLocaleString('en-US')} rpm · ${ind}</div>`;
+        <div class="fo-line"><b>firing</b> ${fo}<br><b>redline</b> ${p.ecu.limit.toLocaleString('en-US')} rpm · ${ind}</div>${
+          locked ? `<div class="card-preview">Tap for a ${PREVIEW_SECONDS}-second listen</div>` : ''
+        }`;
       const pick = () => {
         this.hide();
         this.onPick(p.id);

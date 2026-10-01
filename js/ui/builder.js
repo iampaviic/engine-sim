@@ -23,6 +23,7 @@ import {
 } from '../engine/builder.js';
 import { compileEngine, workletConfig } from '../engine/compile.js';
 import { headerStyles, FUELS } from './workshop.js';
+import { FREE } from '../config.js';
 
 const STEPS = [
   ['block', 'Block'],
@@ -71,6 +72,7 @@ export class Builder {
       from.value = '';
       if (!v) return;
       const spec = v === 'default' ? null : presets.find((p) => p.id === v);
+      if (spec && !app.requirePro(`Building on ${spec.name} is part of Pro`)) return;
       const d = spec ? specToDesign(spec) : defaultDesign();
       d.id = this.d.id;
       if (spec) d.name = `My ${spec.name}`;
@@ -120,7 +122,9 @@ export class Builder {
     this.root.hidden = false;
     this.load(d, from !== 'current' || !!app.factory.custom);
     const sel = this.$('bFrom');
-    if (sel.options.length <= 2) for (const p of this.presets) sel.add(new Option(p.name, p.id));
+    // Pro engines are marked for the free version
+    while (sel.options.length > 2) sel.remove(2);
+    for (const p of this.presets) sel.add(new Option(app.isLockedEngine(p.id) ? `${p.name} · Pro` : p.name, p.id));
     this.$('bName').focus({ preventScroll: true });
   }
 
@@ -248,8 +252,10 @@ export class Builder {
   // -------------------------------------------------------------- saving
   save() {
     const d = this.d;
-    if (!d.id || d.id === 'my-draft') d.id = 'my-' + Date.now().toString(36);
     const list = loadBuilds();
+    const isNew = !d.id || d.id === 'my-draft' || !list.some((x) => x.id === d.id);
+    if (isNew && list.length >= FREE.builds && !this.app.requirePro(`The free version keeps ${FREE.builds === 1 ? 'one build' : `${FREE.builds} builds`}. Pro keeps as many as you like.`)) return;
+    if (!d.id || d.id === 'my-draft') d.id = 'my-' + Date.now().toString(36);
     const i = list.findIndex((x) => x.id === d.id);
     if (i >= 0) list[i] = d;
     else list.push(d);

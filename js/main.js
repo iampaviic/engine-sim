@@ -14,9 +14,13 @@ import { units, speedText, sprint, defaultSpeedUnit } from './ui/units.js';
 import { buildSpecs, loadBuilds, saveBuilds } from './engine/builder.js';
 import { isNative, platform, AppPlugin, StatusBar, EngineAudio, call } from './platform/native.js';
 import { ready as storageReady, getItem, setItem } from './platform/storage.js';
+import { pro, initPurchases, onProChange } from './platform/purchases.js';
+import { Paywall } from './ui/paywall.js';
+import { FREE, PREVIEW_SECONDS } from './config.js';
 
 // app storage on phones is read asynchronously, once, before anything uses it
 await storageReady;
+initPurchases();
 
 const $ = (id) => document.getElementById(id);
 const store = {
@@ -101,7 +105,8 @@ const garage = new Garage({
   filters: $('garageFilters'),
   close: $('garageClose'),
   getEngines: allEngines,
-  onPick: (id) => loadEngine(id, { autostart: true }),
+  isLocked: (id) => app.isLockedEngine(id),
+  onPick: (id) => (app.isLockedEngine(id) ? app.previewEngine(id) : loadEngine(id, { autostart: true })),
   onBuild: () => app.openBuilder({ from: 'new' }),
   onEdit: (id) => {
     const s = engineById(id);
@@ -116,6 +121,83 @@ const garage = new Garage({
     if (app.presetId === id) loadEngine('v12-65', { autostart: true });
   },
 });
+
+// ---------------------------------------------------------------------- Pro
+const paywall = new Paywall({ root: $('paywall'), app });
+app.isPro = () => pro.active;
+app.engineById = (id) => engineById(id);
+app.isLockedEngine = (id) => !pro.active && !!id && !id.startsWith('my-') && !FREE.engines.has(id);
+app.showPaywall = (opts) => paywall.show(opts);
+// true when the feature may be used; otherwise the paywall explains why not
+app.requirePro = (reason) => {
+  if (pro.active) return true;
+  paywall.show({ reason });
+  return false;
+};
+
+// Locked engines play for a while before the paywall.
+app.preview = null;
+app.previewEngine = (id) => {
+  if (!app.isLockedEngine(id)) {
+    loadEngine(id, { autostart: true });
+    return;
+  }
+  const keepFree = app.preview ? app.preview.backTo : app.presetId;
+  // the preview plays on the main screen
+  if (builder.open) builder.hide();
+  workshop.hide();
+  garage.hide();
+  loadEngine(id, { autostart: true });
+  app.preview = { id, backTo: keepFree, until: performance.now() + PREVIEW_SECONDS * 1000 };
+  $('previewBar').hidden = false;
+  if (!app.started) start();
+};
+function endPreview(expired) {
+  const p = app.preview;
+  if (!p) return;
+  app.preview = null;
+  $('previewBar').hidden = true;
+  if (!expired) return;
+  const name = engineById(p.id).name;
+  app.audio.post({ type: 'ignition', on: false });
+  setTimeout(() => loadEngine(app.isLockedEngine(p.backTo) ? 'v12-65' : p.backTo, { keepOff: true }), 700);
+  paywall.show({ reason: `That was ${name}. It's one of the Pro engines.` });
+}
+function updatePreviewBar(now) {
+  const p = app.preview;
+  if (!p) return;
+  const left = Math.max(0, Math.ceil((p.until - now) / 1000));
+  $('previewText').textContent = `Preview · ${engineById(p.id).name} · 0:${String(left).padStart(2, '0')}`;
+  if (left <= 0) endPreview(true);
+}
+
+// Lock marks on tabs, chips and scenes; leave anything Pro when Pro goes away.
+function syncPro() {
+  const locked = !pro.active;
+  document.querySelectorAll('.tabs [role=tab]').forEach((b) => b.classList.toggle('pro-lock', locked && !FREE.tabs.has(b.dataset.mode)));
+  $('launchBtn').classList.toggle('pro-lock', locked);
+  $('abBtn').classList.toggle('pro-lock', locked);
+  if (pro.active) {
+    if (app.preview) {
+      // bought during a preview: keep the engine
+      const id = app.preview.id;
+      endPreview(false);
+      store.set('engine', id);
+    }
+  } else {
+    if (app.factory && app.isLockedEngine(app.presetId) && !app.preview) loadEngine('v12-65');
+    if (app.scene && !FREE.scenes.has(app.scene.id)) setMode('rev');
+    if (!FREE.tabs.has(phoneMQ.matches && app.view === 'engine' ? 'engine' : scope.mode)) selectTab('wave');
+    if (app.abLatched || app.abActive) {
+      app.abLatched = false;
+      abSwitch(false);
+    }
+  }
+  if (garage.open) garage.render();
+  if (workshop.open) workshop.render();
+  if (settings.open) settings.render();
+  if (!$('scenePick').hidden) toggleScenePick(true);
+}
 
 const workshop = new Workshop({ root: $('workshop'), body: $('wsBody'), close: $('wsClose'), reset: $('wsReset'), app });
 const settings = new Settings({ root: $('settings'), body: $('setBody'), close: $('setClose'), app });
@@ -178,10 +260,15 @@ function updateEngineUI() {
   $('intro').querySelector('.fo').textContent = f.kind === 'rotary' ? 'rotor · rotor · every 180°' : f.firingOrder.join(' · ');
 }
 
-function loadEngine(id, { autostart = false } = {}) {
-  const wasRunning = app.tel?.running;
-  app.presetId = id;
+function loadEngine(id, { autostart = false, keepOff = false } = {}) {
+  const wasRunning = app.tel?.running && !keepOff;
+  if (app.preview && id !== app.preview.id) {
+    app.preview = null;
+    $('previewBar').hidden = true;
+  }
   app.factory = engineById(id);
+  // an unsaved builder draft or a deleted build falls back to a real engine
+  app.presetId = app.factory.id ?? id;
   if (app.ab && !app.ab.keep) app.ab = null;
   app.abCompiled = null;
   app.spec = clone(app.factory);
@@ -192,7 +279,7 @@ function loadEngine(id, { autostart = false } = {}) {
   app.dynoPts = [];
   scope.dyno = [];
   scope.dynoPrev = null;
-  store.set('engine', id);
+  if (!app.isLockedEngine(app.presetId)) store.set('engine', app.presetId);
   updateEngineUI();
   if (app.started) {
     app.audio.post({ type: 'config', cfg: workletConfig(app.compiled), tune: app.tune });
@@ -342,7 +429,8 @@ function armTapResume(msg = 'Tap anywhere to bring the sound back') {
 
 // Android back button: close the top-most sheet, leave a scene, then exit.
 function handleBack() {
-  if (!$('slip').hidden) $('slipClose').click();
+  if (paywall.open) paywall.hide();
+  else if (!$('slip').hidden) $('slipClose').click();
   else if (settings.open) settings.hide();
   else if (builder.open) builder.hide();
   else if (workshop.open) workshop.hide();
@@ -408,6 +496,10 @@ app.holdGas = (v) => {
 };
 app.toast = (m) => toast(m);
 app.openBuilder = (opts) => {
+  if ((opts?.from ?? 'current') === 'current' && !opts?.design && app.isLockedEngine(app.presetId)) {
+    app.requirePro(`Building on ${app.factory.name} is part of Pro`);
+    return;
+  }
   workshop.hide();
   garage.hide();
   builder.show(opts);
@@ -473,6 +565,7 @@ function abSwitch(on) {
 // ------------------------------------------------------------------ modes
 function setMode(m) {
   if (!app.started) return;
+  if (SCENES[m] && !FREE.scenes.has(m) && !app.requirePro(`${SCENES[m].title} is part of Pro`)) return;
   if (app.dynoActive) stopDyno();
   endScene();
   $('scenePick').hidden = true;
@@ -551,7 +644,8 @@ function toggleScenePick(force) {
     for (const [id, def] of Object.entries(SCENES)) {
       const b = document.createElement('button');
       b.setAttribute('role', 'menuitem');
-      b.innerHTML = `<b>${def.title}</b><span>${def.sub}</span><kbd>${def.key}</kbd>`;
+      const lock = !pro.active && !FREE.scenes.has(id) ? ' <i class="pro-tag">PRO</i>' : '';
+      b.innerHTML = `<b>${def.title}${lock}</b><span>${def.sub}</span><kbd>${def.key}</kbd>`;
       b.addEventListener('click', () => {
         p.hidden = true;
         if (!app.started) start().then(() => setTimeout(() => setMode(id), 600));
@@ -599,6 +693,7 @@ function onScene(m) {
 }
 
 function runDyno() {
+  if (!app.requirePro('The dyno is part of Pro')) return;
   if (!app.started) {
     start().then(() => setTimeout(runDyno, 1500));
     return;
@@ -640,6 +735,7 @@ function action(a, v) {
       toggleScenePick();
       break;
     case 'launch':
+      if (v && !app.requirePro('Launch control is part of Pro')) break;
       if (app.started) app.audio.post({ type: 'input', launch: v });
       $('launchBtn').classList.toggle('held', !!v);
       if (v && app.mode !== 'drive' && app.started) setMode('drive');
@@ -671,12 +767,14 @@ function action(a, v) {
       app.dynoActive ? stopDyno() : runDyno();
       break;
     case 'ab':
+      if (v && !app.requirePro('A/B compare is part of Pro')) break;
       abSwitch(!!v);
       break;
     case 'builder':
       app.openBuilder({ from: 'current' });
       break;
     case 'escape':
+      paywall.hide();
       settings.hide();
       garage.hide();
       workshop.hide();
@@ -899,6 +997,7 @@ function frame(now) {
   schem.draw(now / 1000, app.tel);
   scope.draw(app.audio.analyser, app.tel);
   updateReadouts(dt);
+  updatePreviewBar(now);
   if (app.scene) drawSceneHud($('flybyStrip'), app.scene, app.tel, app.scene.cache);
   else drawFlyby();
   if (toastT > 0) {
@@ -914,7 +1013,9 @@ function frame(now) {
 // tabs only pick the instrument. Matches the phone layout in style.css.
 const phoneMQ = matchMedia('(max-width: 760px) and (min-height: 521px), (max-width: 760px) and (orientation: portrait)');
 app.view = store.get('view', 'engine');
+const TAB_NAMES = { spec: 'The spectrum', pv: 'The p–V diagram', dyno: 'The dyno' };
 function selectTab(mode) {
+  if (!FREE.tabs.has(mode) && !app.requirePro(`${TAB_NAMES[mode] ?? 'This instrument'} is part of Pro`)) return;
   if (mode === 'engine') app.view = 'engine';
   else {
     app.view = 'scope';
@@ -971,6 +1072,7 @@ function wire() {
   const ab = $('abBtn');
   let abT = 0, unlatched = false;
   ab.addEventListener('pointerdown', (e) => {
+    if (!app.requirePro('A/B compare is part of Pro')) return;
     ab.setPointerCapture(e.pointerId);
     if (app.abLatched) {
       app.abLatched = false;
@@ -1003,6 +1105,7 @@ function wire() {
   $('blipBtn').addEventListener('click', () => controls.blip());
   const lb = $('launchBtn');
   lb.addEventListener('pointerdown', (e) => {
+    if (!app.requirePro('Launch control is part of Pro')) return;
     lb.setPointerCapture(e.pointerId);
     controls.setLaunch(true);
   });
@@ -1060,6 +1163,9 @@ function wire() {
   syncTabs();
   syncUnitsUI();
   holdToRev($('wsRev'));
+  onProChange(syncPro);
+  syncPro();
+  $('previewUnlock').addEventListener('click', () => paywall.show({ reason: `${app.factory.name} is one of the Pro engines` }));
   $('settingsBtn').addEventListener('click', () => settings.show());
   $('wsSettings').addEventListener('click', () => settings.show());
   initNative();
@@ -1069,5 +1175,6 @@ function wire() {
 }
 
 wire();
+if (app.isLockedEngine(app.presetId)) app.presetId = 'v12-65';
 loadEngine(app.presetId);
 requestAnimationFrame(frame);

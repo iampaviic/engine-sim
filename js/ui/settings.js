@@ -2,6 +2,7 @@
 // screen keep-awake, and the about box.
 
 import { isNative, platform } from '../platform/native.js';
+import { pro, restorePro, setFreePreview, freePreview, unlockForTesting } from '../platform/purchases.js';
 
 // Fill these in once the support site exists; empty links are left out.
 export const SITE = { privacy: '', support: '' };
@@ -75,7 +76,51 @@ export class Settings {
       return p;
     };
 
-    let g = group('Units');
+    let g = group('Pro');
+    const status = {
+      web: pro.active ? 'The web version has everything unlocked.' : 'Showing the free version of the app.',
+      mock: pro.active ? 'Pro is unlocked (test store).' : 'Free version (test store).',
+      unconfigured: pro.active ? 'Pro is unlocked for testing. No store is connected to this build yet.' : 'Free version. No store is connected to this build yet.',
+      revenuecat: pro.active ? 'Pro is unlocked. Thank you!' : 'Free version.',
+    }[pro.mode];
+    line(g, status, 'about-version');
+    const row = document.createElement('div');
+    row.className = 'btn-row';
+    const btn = (text, onClick, cls = 'btn') => {
+      const b2 = document.createElement('button');
+      b2.className = cls;
+      b2.textContent = text;
+      b2.addEventListener('click', onClick);
+      row.appendChild(b2);
+    };
+    if (!pro.active && pro.mode !== 'web') btn('See what Pro adds', () => app.showPaywall(), 'btn btn-accent');
+    if (pro.mode === 'revenuecat')
+      btn('Restore purchase', async () => {
+        const res = await restorePro();
+        app.toast(res.ok ? 'Pro restored' : res.none ? 'No Pro purchase was found for this account' : res.error);
+        this.render();
+      });
+    if (pro.mode === 'unconfigured')
+      btn(pro.active ? 'Turn test unlock off' : 'Unlock for testing', () => {
+        unlockForTesting(!pro.active);
+        this.render();
+      });
+    if (row.childElementCount) g.appendChild(row);
+    if (pro.mode === 'web') {
+      seg(
+        g,
+        'Free version preview',
+        [
+          ['off', 'Off'],
+          ['on', 'On'],
+        ],
+        freePreview() ? 'on' : 'off',
+        (v) => setFreePreview(v === 'on'),
+        'Shows what the free app looks like: five engines, the basic workshop, Pro features locked.'
+      );
+    }
+
+    g = group('Units');
     seg(
       g,
       'Speed',

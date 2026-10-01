@@ -2,6 +2,7 @@
 // the hardware and recompile the engine ("rebuild").
 
 import { firingAngles } from '../engine/compile.js';
+import { FREE } from '../config.js';
 
 export const CAMERAS = [
   ['rear', 'Behind the car'],
@@ -102,6 +103,39 @@ export class Workshop {
       b.appendChild(g);
       return g;
     };
+    // Pro-only settings stay visible but open the Pro screen when touched.
+    const lockField = (f, label) => {
+      if (app.isPro() || FREE.workshop.has(label)) return;
+      f.classList.add('locked');
+      const tag = document.createElement('span');
+      tag.className = 'pro-tag';
+      tag.textContent = 'PRO';
+      f.querySelector('label')?.appendChild(tag);
+      f.querySelectorAll('input').forEach((i) => (i.disabled = true));
+      f.addEventListener(
+        'click',
+        (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          app.showPaywall({ reason: `${label} can be changed with Pro` });
+        },
+        true
+      );
+    };
+    const lockedGroup = (g, what) => {
+      const p = document.createElement('p');
+      p.className = 'ws-note';
+      p.textContent = `${what} is part of Pro.`;
+      g.appendChild(p);
+      const row = document.createElement('div');
+      row.className = 'btn-row';
+      const bt = document.createElement('button');
+      bt.className = 'btn';
+      bt.textContent = 'See Pro';
+      bt.addEventListener('click', () => app.showPaywall({ reason: `${what} is part of Pro` }));
+      row.appendChild(bt);
+      g.appendChild(row);
+    };
     const seg = (g, label, opts, value, onSet, hint) => {
       const f = document.createElement('div');
       f.className = 'field';
@@ -120,6 +154,7 @@ export class Workshop {
       }
       f.appendChild(s);
       if (hint) f.insertAdjacentHTML('beforeend', `<div class="hint">${hint}</div>`);
+      lockField(f, label);
       g.appendChild(f);
     };
     const range = (g, label, min, max, step, value, fmt, onSet, hint, onCommit) => {
@@ -135,6 +170,7 @@ export class Workshop {
       });
       if (onCommit) inp.addEventListener('change', () => onCommit(+inp.value));
       if (hint) f.insertAdjacentHTML('beforeend', `<div class="hint">${hint}</div>`);
+      lockField(f, label);
       g.appendChild(f);
     };
     const button = (g, text, onClick, cls = 'btn') => {
@@ -172,10 +208,21 @@ export class Workshop {
 
     // --- mixer
     g = group('Mixer', 'Each source is computed separately, so you can pull them apart. Solo plays one alone.');
-    this.renderMixer(g);
+    if (app.isPro()) this.renderMixer(g);
+    else lockedGroup(g, 'The sound mixer');
 
     // --- A/B
     g = group('Compare A/B', 'Hold the A/B button (or the B key) to hear A. Let go to come back.');
+    if (!app.isPro()) lockedGroup(g, 'A/B compare');
+    else this.renderAB(g, button);
+
+    this.renderHardware(group, seg, range, button);
+    b.scrollTop = scroll;
+  }
+
+  renderAB(g, button) {
+    const app = this.app;
+    const factory = app.factory;
     const ab = document.createElement('div');
     ab.className = 'ab-row';
     ab.innerHTML = `<span class="ab-badge">A</span><span class="ab-label"></span>`;
@@ -218,9 +265,17 @@ export class Workshop {
       this.render();
     });
     abBtns.appendChild(pick);
+  }
+
+  // Exhaust, intake, engine and ECU settings.
+  renderHardware(group, seg, range, button) {
+    const app = this.app;
+    const spec = app.spec;
+    const factory = app.factory;
+    const tune = app.tune;
 
     // --- exhaust
-    g = group('Exhaust');
+    let g = group('Exhaust');
     const ex = spec.exhaust;
     seg(
       g,
@@ -595,7 +650,6 @@ export class Workshop {
       (v) => app.setTune({ autoShift: v }),
       'With manual paddles nothing stops you from shifting down too early: the wheels drag the engine past redline.'
     );
-    b.scrollTop = scroll;
   }
 
   renderMixer(g) {
