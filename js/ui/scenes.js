@@ -159,7 +159,8 @@ export function drawSceneHud(canvas, scene, tel, cache) {
     }
     g.fillStyle = '#58aee0';
     g.textAlign = 'center';
-    g.fillText('TUNNEL', (X(t.s) + X(t.s + t.len)) / 2, yRoad - 18 * dpr);
+    // short strips (phones) keep the label clear of the readout line
+    g.fillText('TUNNEL', (X(t.s) + X(t.s + t.len)) / 2, H / dpr < 70 ? yRoad + 22 * dpr : yRoad - 18 * dpr);
   } else if (scene.id === 'drag') {
     const labels = { '60ft': "60'", '330ft': "330'", eighth: '1/8', '1000ft': "1000'", quarter: '1/4' };
     g.textAlign = 'center';

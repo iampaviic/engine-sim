@@ -81,6 +81,10 @@ Every change is heard immediately (the build hot-swaps into the running engine),
 | Mic / place | C / V | Y (mic) |
 | Garage / workshop | G / T | top bar |
 
+## On phones
+
+In portrait the tach and figures sit on top and one lab panel shows below: the tabs switch between the pipe schematic (Engine) and the instruments. The pedals sit at the thumbs with modes, START, shifting and the LAUNCH / TC / BLIP / A/B chips between them. Scenes get their own strip above the deck. In landscape the pedals take the sides and the controls float in a pill at the bottom. The workshop and the builder are full-screen with a Hold to rev button, and the builder's spec sheet is its own tab, summed up in one line above the steps.
+
 ## Performance
 
 A V12 needs about 12–15% of one desktop core. On slower phones the simulator detects the load and runs the physics at half rate, upsampled. You can force this under Workshop → Physics rate.

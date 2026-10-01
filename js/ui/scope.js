@@ -35,8 +35,10 @@ export class Scope {
     if (this.pv.length > 5) this.pv.pop();
   }
 
+  // false while the panel is hidden (phones show one lab panel at a time)
   resize() {
     const r = this.c.getBoundingClientRect();
+    if (!r.width || !r.height) return false;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const w = Math.max(10, Math.round(r.width * dpr));
     const h = Math.max(10, Math.round(r.height * dpr));
@@ -49,10 +51,10 @@ export class Scope {
   }
 
   draw(analyser, tel) {
-    this.resize();
+    if (tel) this.rpm = tel.rpm;
+    if (this.resize() === false) return;
     const g = this.g;
     g.clearRect(0, 0, this.c.width, this.c.height);
-    if (tel) this.rpm = tel.rpm;
     if (this.mode === 'wave') this.drawWave();
     else if (this.mode === 'spec') this.drawSpectrum(analyser);
     else if (this.mode === 'pv') this.drawPV();
@@ -64,6 +66,11 @@ export class Scope {
     g.strokeStyle = INK + '0.12)';
     g.lineWidth = 1;
     g.strokeRect(l, t, r - l, b - t);
+  }
+
+  // CSS width under 440 px: phones get the short captions
+  get narrow() {
+    return this.c.width / this.dpr < 440;
   }
 
   text(s, x, y, align = 'left', alpha = 0.55, size = 10, weight = 500) {
@@ -104,9 +111,9 @@ export class Scope {
       g.fillStyle = `rgba(${col},0.9)`;
       g.fillText(String(c + 1), x, b + 12 * dpr);
     }
-    this.text(`crank ° →  one full cycle (${cyc}°)  ·  numbers = firing sequence`, l, H - 4 * dpr, 'left', 0.4, 9);
+    this.text(this.narrow ? `one cycle (${cyc}°)  ·  numbers = firing order` : `crank ° →  one full cycle (${cyc}°)  ·  numbers = firing sequence`, l, H - 4 * dpr, 'left', 0.4, 9);
     if (!this.traces.length) {
-      this.text('start the engine to see the exhaust pressure trace', (l + r) / 2, (t + b) / 2, 'center', 0.4, 11);
+      this.text(this.narrow ? 'start the engine' : 'start the engine to see the exhaust pressure trace', (l + r) / 2, (t + b) / 2, 'center', 0.4, 11);
       return;
     }
     let m = 1e-6;
@@ -144,7 +151,7 @@ export class Scope {
     const l = 36 * dpr, r = W - 12 * dpr, t = 14 * dpr, b = H - 30 * dpr;
     if (!analyser) {
       this.frame(l, t, r, b);
-      this.text('start the engine to see the spectrum', (l + r) / 2, (t + b) / 2, 'center', 0.4, 11);
+      this.text(this.narrow ? 'start the engine' : 'start the engine to see the spectrum', (l + r) / 2, (t + b) / 2, 'center', 0.4, 11);
       return;
     }
     const n = analyser.frequencyBinCount;
@@ -191,6 +198,7 @@ export class Scope {
       const o1 = rpm / 60;
       g.font = `600 ${Math.round(9 * dpr)}px "B612 Mono", monospace`;
       g.textAlign = 'center';
+      let lastLabel = -1e9;
       for (let k = 1; k <= 60; k++) {
         const ord = k * 0.5;
         const f = o1 * ord;
@@ -204,8 +212,13 @@ export class Scope {
         g.lineTo(x, b);
         g.stroke();
         if (isFire && ord / fireOrder <= 4) {
-          g.fillStyle = 'rgba(255,95,31,0.9)';
-          g.fillText(`${ord % 1 ? ord.toFixed(1) : ord}×`, x, t + 10 * dpr);
+          const label = `${ord % 1 ? ord.toFixed(1) : ord}×`;
+          const w = g.measureText(label).width;
+          if (x - w / 2 > lastLabel + 4 * dpr) {
+            g.fillStyle = 'rgba(255,95,31,0.9)';
+            g.fillText(label, x, t + 10 * dpr);
+            lastLabel = x + w / 2;
+          }
         }
       }
     }
@@ -228,7 +241,7 @@ export class Scope {
       if (f < f0 || f > f1) continue;
       this.text(f >= 1000 ? `${f / 1000}k` : String(f), xOf(f), b + 12 * dpr, 'center', 0.4, 8);
     }
-    this.text('Hz  ·  orange lines = firing-frequency harmonics', l, H - 4 * dpr, 'left', 0.4, 9);
+    this.text(this.narrow ? 'Hz  ·  orange = firing harmonics' : 'Hz  ·  orange lines = firing-frequency harmonics', l, H - 4 * dpr, 'left', 0.4, 9);
   }
 
   drawPV() {
@@ -259,7 +272,7 @@ export class Scope {
     g.stroke();
     g.setLineDash([]);
     if (!this.pv.length) {
-      this.text('start the engine to see the cylinder 1 indicator diagram', (l + r) / 2, (t + b) / 2, 'center', 0.4, 11);
+      this.text(this.narrow ? 'start the engine' : 'start the engine to see the cylinder 1 indicator diagram', (l + r) / 2, (t + b) / 2, 'center', 0.4, 11);
       return;
     }
     this.pv.forEach((d, k) => {
@@ -283,7 +296,7 @@ export class Scope {
     let pk = 0;
     for (const v of this.pv[0].p) pk = Math.max(pk, v);
     this.text(`peak ${(pk / 1e5).toFixed(1)} bar`, r - 6 * dpr, t + 14 * dpr, 'right', 0.7, 10, 600);
-    this.text('log volume →   cylinder 1   ·   dashed = atmosphere', l, H - 4 * dpr, 'left', 0.4, 9);
+    this.text(this.narrow ? 'log volume →  ·  cylinder 1  ·  dashed = 1 atm' : 'log volume →   cylinder 1   ·   dashed = atmosphere', l, H - 4 * dpr, 'left', 0.4, 9);
   }
 
   drawDyno() {
@@ -345,10 +358,21 @@ export class Scope {
       }
       this.text(`${Math.round(pt.tq)} Nm @ ${Math.round(pt.rpm / 100) * 100}`, l + 8 * dpr, t + 14 * dpr, 'left', 0.9, 11, 700);
       this.text(`${Math.round(hpF(ph))} hp @ ${Math.round(ph.rpm / 100) * 100}`, l + 8 * dpr, t + 30 * dpr, 'left', 0.9, 11, 700);
+    } else if (this.narrow) {
+      this.text('press RUN DYNO', (l + r) / 2, (t + b) / 2 - 6 * dpr, 'center', 0.55, 11);
+      this.text('a full-throttle pull on an absorber dyno', (l + r) / 2, (t + b) / 2 + 10 * dpr, 'center', 0.4, 9);
     } else {
       this.text('press RUN DYNO: full-throttle sweep on an absorber dyno', (l + r) / 2, (t + b) / 2, 'center', 0.45, 11);
     }
-    if (this.dynoPrev) this.text(`dashed: ${this.dynoPrevLabel}`, r - 4 * dpr, t + 14 * dpr, 'right', 0.4, 9);
+    if (this.dynoPrev) {
+      // the previous run's label, cut to fit beside the peak figures
+      g.font = `500 ${Math.round(9 * dpr)}px "B612 Mono", ui-monospace, monospace`;
+      let s = `dashed: ${this.dynoPrevLabel}`;
+      const room = this.narrow ? r - l - 16 * dpr : (r - l) * 0.5;
+      while (s.length > 12 && g.measureText(s).width > room) s = s.slice(0, -2) + '…';
+      if (this.narrow) this.text(s, r - 6 * dpr, b - 8 * dpr, 'right', 0.4, 9);
+      else this.text(s, r - 4 * dpr, t + 14 * dpr, 'right', 0.4, 9);
+    }
     this.text('rpm × 1000', l, H - 4 * dpr, 'left', 0.4, 9);
   }
 }

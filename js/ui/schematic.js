@@ -108,8 +108,10 @@ export class Schematic {
     this.scale = Math.max(1500, lerp(this.scale, m * 1.1, m > this.scale ? 0.25 : 0.04));
   }
 
+  // false while the panel is hidden (phones show one lab panel at a time)
   resize() {
     const r = this.c.getBoundingClientRect();
+    if (!r.width || !r.height) return false;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const w = Math.max(10, Math.round(r.width * dpr));
     const h = Math.max(10, Math.round(r.height * dpr));
@@ -127,7 +129,10 @@ export class Schematic {
   }
 
   draw(now, tel) {
-    this.resize();
+    if (this.resize() === false) {
+      this.pendingFlame = 0;
+      return;
+    }
     const g = this.g;
     const W = this.c.width, H = this.c.height;
     g.clearRect(0, 0, W, H);

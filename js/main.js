@@ -294,8 +294,13 @@ app.setMix = (patch) => {
   Object.assign(app.mix, patch);
   store.set('mix', app.mix);
   if (app.started) app.audio.post({ type: 'mix', gains: mixGains() });
-  $('mixTag').hidden = !(app.mix.solo || ['exL', 'exR', 'intake', 'mech', 'road'].some((k) => Math.abs(app.mix[k] - 1) > 0.01));
+  syncMixTag();
 };
+// the "Mixer on" tag, also for a mix stored from an earlier visit
+function syncMixTag() {
+  $('mixTag').hidden = !(app.mix.solo || ['exL', 'exR', 'intake', 'mech', 'road'].some((k) => Math.abs(app.mix[k] - 1) > 0.01));
+}
+syncMixTag();
 
 // -------------------------------------------------------------------- A/B
 // Slot A is the current engine's factory spec unless something else was
@@ -623,11 +628,18 @@ function onMessage(m) {
 function onTelemetry(t) {
   app.tel = t;
   tach.target = t.rpm;
-  if (builder.open) $('bRpm').textContent = t.running || t.starter ? `${Math.round(t.rpm).toLocaleString('en-US')} rpm` : 'engine off';
+  const rpmText = t.running || t.starter ? `${Math.round(t.rpm).toLocaleString('en-US')} rpm` : 'engine off';
+  if (builder.open) $('bRpm').textContent = rpmText;
+  if (workshop.open) $('wsRpm').textContent = rpmText;
   tach.lim = t.lim;
   tach.camHi = t.camHi;
   const inGear = t.mode === 'drive' || t.mode === 'flyby';
   if (app.scene?.id === 'drag' && app.scene.leaveT == null && t.scene?.phase === 'run' && t.scene.x > 0.3) app.scene.leaveT = performance.now();
+  if (app.scene?.staging && t.scene?.phase === 'run') {
+    // the car launched itself after a slow reaction
+    app.scene.staging = false;
+    $('treeGo').disabled = true;
+  }
   tach.gear = inGear ? (t.gear ? String(t.gear) : 'N') : t.mode === 'dyno' ? 'D' : 'N';
   tach.speedText = inGear ? `${Math.round(t.speed * 3.6)} km/h` : t.mode === 'dyno' ? 'DYNO' : t.running ? 'NEUTRAL' : t.starter ? 'CRANKING' : 'OFF';
   if (inGear && t.gear !== app.lastGear && app.lastGear) navigator.vibrate?.(12);
@@ -761,11 +773,47 @@ function frame(now) {
 }
 
 // ------------------------------------------------------------------ wiring
+// Phones in portrait show one lab panel at a time: the schematic ('engine')
+// or the instruments. Elsewhere the schematic is always on screen and the
+// tabs only pick the instrument. Matches the phone layout in style.css.
+const phoneMQ = matchMedia('(max-width: 760px) and (min-height: 521px), (max-width: 760px) and (orientation: portrait)');
+app.view = store.get('view', 'engine');
 function selectTab(mode) {
-  scope.mode = mode;
-  document.querySelectorAll('.tabs [role=tab]').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.mode === mode)));
-  $('dynoRun').hidden = mode !== 'dyno';
-  store.set('tab', mode);
+  if (mode === 'engine') app.view = 'engine';
+  else {
+    app.view = 'scope';
+    scope.mode = mode;
+    store.set('tab', mode);
+  }
+  store.set('view', app.view);
+  syncTabs();
+}
+function syncTabs() {
+  const engine = phoneMQ.matches && app.view === 'engine';
+  const active = engine ? 'engine' : scope.mode;
+  document.querySelectorAll('.tabs [role=tab]').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.mode === active)));
+  $('lab').dataset.view = app.view;
+  $('dynoRun').hidden = engine || scope.mode !== 'dyno';
+}
+phoneMQ.addEventListener?.('change', syncTabs);
+
+// Hold-to-rev buttons (builder and workshop): the pedal while the deck is covered.
+function holdToRev(btn) {
+  const down = (e) => {
+    e.preventDefault();
+    btn.setPointerCapture?.(e.pointerId);
+    if (!app.started) start();
+    app.holdGas(1);
+    btn.classList.add('held');
+  };
+  const up = () => {
+    app.holdGas(0);
+    btn.classList.remove('held');
+  };
+  btn.addEventListener('pointerdown', down);
+  btn.addEventListener('pointerup', up);
+  btn.addEventListener('pointercancel', up);
+  btn.addEventListener('contextmenu', (e) => e.preventDefault());
 }
 
 function wire() {
@@ -859,7 +907,7 @@ function wire() {
   document.querySelector('.stage').addEventListener(
     'wheel',
     (e) => {
-      if (e.target.closest('.instr-panel')) return;
+      if (e.target.closest('.instr-panel, .tabs')) return;
       e.preventDefault();
       controls.wheel(e.deltaY);
     },
@@ -870,7 +918,9 @@ function wire() {
     if (document.hidden) app.audio.suspend();
     else app.audio.resume();
   });
-  selectTab(store.get('tab', 'wave'));
+  scope.mode = store.get('tab', 'wave');
+  syncTabs();
+  holdToRev($('wsRev'));
   document.fonts?.ready.then(() => {
     tach.face = null;
   });

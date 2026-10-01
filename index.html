@@ -53,25 +53,26 @@
           </dl>
         </section>
 
-        <section class="lab" aria-label="Lab">
+        <section class="lab" id="lab" aria-label="Lab" data-view="engine">
           <div class="panel schem-panel">
             <div class="panel-head">
               <span class="eyebrow" id="schemLbl">Exhaust pressure · <b>strobe</b></span>
               <button class="link-btn" id="strobeBtn" aria-pressed="true" title="Slow-motion strobe or real time">Slow-mo</button>
             </div>
             <canvas id="schem" aria-label="Engine and exhaust schematic with live pressure waves"></canvas>
-            <canvas class="flyby-strip" id="flybyStrip" hidden></canvas>
           </div>
           <div class="panel instr-panel">
-            <div class="tabs" role="tablist" aria-label="Instruments">
-              <button role="tab" data-mode="wave" aria-selected="true">Pressure</button>
-              <button role="tab" data-mode="spec" aria-selected="false">Spectrum</button>
-              <button role="tab" data-mode="pv" aria-selected="false">p–V</button>
-              <button role="tab" data-mode="dyno" aria-selected="false">Dyno</button>
-              <button class="btn" id="dynoRun" hidden>Run dyno</button>
-            </div>
             <canvas id="scope"></canvas>
           </div>
+          <div class="tabs" role="tablist" aria-label="Instruments">
+            <button role="tab" class="tab-engine" data-mode="engine" aria-selected="false">Engine</button>
+            <button role="tab" data-mode="wave" aria-selected="true">Pressure</button>
+            <button role="tab" data-mode="spec" aria-selected="false">Spectrum</button>
+            <button role="tab" data-mode="pv" aria-selected="false">p–V</button>
+            <button role="tab" data-mode="dyno" aria-selected="false">Dyno</button>
+            <button class="btn" id="dynoRun" hidden>Run dyno</button>
+          </div>
+          <canvas class="flyby-strip" id="flybyStrip" hidden></canvas>
         </section>
       </main>
 
@@ -118,8 +119,8 @@
           <h2 id="garageTitle">Garage</h2>
           <p>Seventeen engines, each defined by its geometry, cams, firing order and pipes, and your own builds.</p>
           <button class="btn" id="garageClose">Close</button>
+          <div class="filters" id="garageFilters"></div>
         </div>
-        <div class="filters" id="garageFilters"></div>
         <div class="cards" id="garageCards"></div>
       </div>
     </div>
@@ -131,6 +132,10 @@
         <button class="btn" id="wsClose">Done</button>
       </div>
       <div class="drawer-body" id="wsBody"></div>
+      <footer class="drawer-foot">
+        <button class="b-rev" id="wsRev">Hold to rev</button>
+        <span class="b-rpm" id="wsRpm">engine off</span>
+      </footer>
     </aside>
 
     <div class="builder" id="builder" role="dialog" aria-modal="true" aria-labelledby="bTitle" hidden>
@@ -146,6 +151,7 @@
       </header>
       <div class="b-body">
         <section class="b-left">
+          <button class="b-sum" id="bSum" title="Open the spec sheet"></button>
           <nav class="b-steps" id="bSteps" role="tablist" aria-label="Builder steps"></nav>
           <div class="b-form" id="bForm"></div>
         </section>

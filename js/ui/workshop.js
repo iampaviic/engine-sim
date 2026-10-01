@@ -81,6 +81,7 @@ export class Workshop {
   }
   hide() {
     this.root.hidden = true;
+    this.app.holdGas?.(0);
   }
   get open() {
     return !this.root.hidden;

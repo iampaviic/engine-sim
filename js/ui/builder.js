@@ -33,6 +33,8 @@ const STEPS = [
   ['ecu', 'ECU & car'],
 ];
 const BANK_COL = ['#ffb54a', '#58aee0', '#7bd88f', '#e58cff'];
+// Narrow screens: the spec sheet is its own tab, summed up above the steps.
+const narrowMQ = matchMedia('(max-width: 860px)');
 const fmt = (v) => Math.round(v).toLocaleString('en-US');
 
 export class Builder {
@@ -95,6 +97,11 @@ export class Builder {
     root.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') this.hide();
     });
+    this.$('bSum').addEventListener('click', () => this.go('sheet'));
+    narrowMQ.addEventListener?.('change', () => {
+      if (!narrowMQ.matches && this.step === 'sheet') this.go('block');
+      else if (this.open) this.renderSheet();
+    });
   }
 
   get open() {
@@ -109,6 +116,7 @@ export class Builder {
     else d = app.factory.custom && app.factory.design ? normalize(app.factory.design) : specToDesign(app.spec);
     if (from === 'current' && app.factory.custom && app.factory.id?.startsWith('my-') && app.factory.id !== 'my-draft') d.id = app.factory.id;
     // starting from a factory engine keeps its sound until the first change
+    if (this.step === 'sheet') this.step = 'block';
     this.root.hidden = false;
     this.load(d, from !== 'current' || !!app.factory.custom);
     const sel = this.$('bFrom');
@@ -259,22 +267,21 @@ export class Builder {
   renderSteps() {
     const nav = this.$('bSteps');
     nav.innerHTML = '';
-    for (const [k, label] of STEPS) {
+    this.root.dataset.step = this.step;
+    for (const [k, label] of [...STEPS, ['sheet', 'Spec sheet']]) {
       const b = document.createElement('button');
       b.textContent = label;
       b.setAttribute('role', 'tab');
       b.setAttribute('aria-selected', String(k === this.step));
-      b.addEventListener('click', () => {
-        this.step = k;
-        this.renderSteps();
-        this.renderForm();
-        this.$('bForm').scrollTop = 0;
-      });
+      if (k === 'sheet') b.className = 'b-step-sheet';
+      b.addEventListener('click', () => this.go(k));
       nav.appendChild(b);
+      if (k === this.step) requestAnimationFrame(() => b.scrollIntoView?.({ block: 'nearest', inline: 'nearest' }));
     }
   }
 
   renderForm() {
+    if (this.step === 'sheet') return;
     const f = this.$('bForm');
     const keepScroll = f.scrollTop;
     f.innerHTML = '';
@@ -324,6 +331,12 @@ export class Builder {
   go(step) {
     this.step = step;
     this.renderSteps();
+    if (step === 'sheet') {
+      // the canvases size themselves once the sheet is on screen
+      this.root.querySelector('.b-sheet').scrollTop = 0;
+      this.renderSheet();
+      return;
+    }
     this.renderForm();
     this.$('bForm').scrollTop = 0;
   }
@@ -764,6 +777,8 @@ export class Builder {
     if (d.layout !== 'rotary' && dv.pistonSpeed > 26) notes.push(['bad', 'Piston speed past 26 m/s: Formula 1 territory. Shorten the stroke or lower the limit.']);
     if (this.workerFailed) notes.push(['warn', 'The virtual dyno is not available in this browser, so power figures are missing. The engine still runs and sounds the same.']);
     this.$('bNotes').innerHTML = notes.map(([lvl, t]) => `<li class="${lvl}">${t}</li>`).join('');
+    this.flags = notes.filter(([lvl]) => lvl === 'warn' || lvl === 'bad').map(([lvl]) => lvl);
+    this.renderSummary();
     const saved = d.id && d.id !== 'my-draft' && !this.dirty;
     this.$('bSave').textContent = saved ? 'Saved' : d.id && d.id !== 'my-draft' ? 'Save changes' : 'Save build';
     this.$('bSave').title = 'Keep this build in My garage (stored in this browser)';
@@ -775,6 +790,21 @@ export class Builder {
     if (this.busy) el.innerHTML = `<b>Measuring on the virtual dyno…</b> ${Math.round(this.progress * 100)}%`;
     else if (r && !r.error) el.innerHTML = `<b>${fmt(r.peakHp)} hp</b> at ${fmt(r.peakHpRpm)} rpm · <b>${fmt(r.peakTq)} Nm</b> at ${fmt(r.peakTqRpm)} rpm${r.boostMax > 2e4 ? ` · ${(r.boostMax / 1e5).toFixed(2)} bar` : ''}`;
     else el.textContent = this.workerFailed ? 'Virtual dyno unavailable' : 'Virtual dyno';
+    this.renderSummary();
+  }
+
+  // One line for narrow screens: size, measured power, warnings.
+  renderSummary() {
+    const d = this.d;
+    if (!d) return;
+    const r = this.result;
+    const parts = [`<b>${derived(d).L.toFixed(2)} L</b>`];
+    if (this.busy) parts.push(`dyno ${Math.round(this.progress * 100)}%`);
+    else if (r && !r.error) parts.push(`<b>${fmt(r.peakHp)} hp</b>`, `<b>${fmt(r.peakTq)} Nm</b>`);
+    parts.push(`${fmt(d.ecu.limit)} rpm`);
+    const flags = this.flags ?? [];
+    const flag = flags.length ? `<span class="b-flag ${flags.includes('bad') ? 'bad' : 'warn'}">${flags.length}</span>` : '';
+    this.$('bSum').innerHTML = `<span class="b-sum-figs">${parts.join(' · ')}</span>${flag}<span class="b-sum-go">Sheet</span>`;
   }
 
   drawFiring() {

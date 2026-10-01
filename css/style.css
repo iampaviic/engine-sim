@@ -332,6 +332,16 @@ button {
 .panel-head > * {
   pointer-events: auto;
 }
+.panel-head .eyebrow {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.panel-head .link-btn {
+  flex: none;
+  white-space: nowrap;
+}
 .eyebrow {
   font-size: 10px;
   letter-spacing: 0.16em;
@@ -379,15 +389,27 @@ button {
   top: 38px;
   height: calc(100% - 38px);
 }
-.tabs {
-  position: absolute;
-  left: 8px;
-  right: 8px;
-  top: 6px;
+/* The instrument tabs sit over the top of the instrument panel. On phones
+   they also switch the schematic in, so one panel shows at a time. */
+.lab > .schem-panel {
+  grid-area: 1 / 1;
+}
+.lab > .instr-panel {
+  grid-area: 2 / 1;
+}
+.lab > .tabs {
+  grid-area: 2 / 1;
+  align-self: start;
+  position: relative;
+  z-index: 2;
+  margin: 6px 8px 0;
   display: flex;
   gap: 4px;
   align-items: center;
-  z-index: 2;
+  min-width: 0;
+}
+.tabs .tab-engine {
+  display: none;
 }
 .tabs button[role='tab'] {
   background: none;
@@ -410,29 +432,23 @@ button {
   font-size: 11px;
 }
 
-.flyby-strip {
-  position: absolute;
-  left: 12px;
-  right: 12px;
-  bottom: 34px;
+/* fly-by strip and scene heads-up display: over the foot of the schematic */
+.lab > .flyby-strip {
+  grid-area: 1 / 1;
+  align-self: end;
+  justify-self: center;
+  width: calc(100% - 24px);
   height: 36px;
+  margin-bottom: 34px;
   z-index: 3;
 }
-.schem-panel canvas.flyby-strip {
-  top: auto;
-  bottom: 34px;
-  left: 12px;
-  right: 12px;
-  width: auto;
-  height: 36px;
-}
-.schem-panel canvas.flyby-strip.scene-hud {
+.lab > .flyby-strip.scene-hud {
   height: 62px;
   border-radius: 8px;
 }
-.schem-panel canvas.flyby-strip.scene-map {
+.lab > .flyby-strip.scene-map {
   height: 120px;
-  bottom: 30px;
+  margin-bottom: 30px;
 }
 
 /* ------------------------------------------------------------------- deck */
@@ -657,9 +673,10 @@ button {
 }
 .intro .fo {
   font-family: var(--font-data);
-  font-size: 12px;
+  font-size: clamp(10px, 3vw, 12px);
   color: var(--amber);
-  letter-spacing: 0.1em;
+  letter-spacing: clamp(0px, 0.4vw, 1.2px);
+  text-wrap: balance;
 }
 .key-btn {
   margin-top: 6px;
@@ -704,6 +721,7 @@ button {
   backdrop-filter: blur(5px);
   display: flex;
   justify-content: center;
+  align-items: flex-start;
   padding: 24px 16px;
   overflow: auto;
 }
@@ -738,6 +756,7 @@ button {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+  flex-basis: 100%;
 }
 .cards {
   display: grid;
@@ -852,11 +871,21 @@ button {
   margin-left: auto;
 }
 .drawer-body {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
   padding: 6px 16px 24px;
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+.drawer-foot {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--line);
+  background: var(--ink-3);
 }
 .ws-group {
   border-top: 1px solid var(--line);
@@ -1185,6 +1214,12 @@ button {
   grid-template-rows: auto minmax(0, 1fr);
   min-height: 0;
   border-right: 1px solid var(--line);
+}
+.b-sum {
+  display: none;
+}
+.b-steps .b-step-sheet {
+  display: none;
 }
 .b-steps {
   display: flex;
@@ -1635,32 +1670,12 @@ button {
   }
 }
 
-@media (max-width: 760px) {
+/* Phones, portrait: tach and figures on top, one lab panel below (the tabs
+   switch between the schematic and the instruments), and a thumb deck with
+   the pedals at the edges. Never together with the landscape layout below. */
+@media (max-width: 760px) and (min-height: 521px), (max-width: 760px) and (orientation: portrait) {
   :root {
-    --deck-h: 150px;
-  }
-  .listen {
-    display: none;
-  }
-  .cluster {
-    grid-template-rows: minmax(0, 1fr) !important;
-  }
-  .readouts {
-    align-self: start;
-  }
-  .deck-mid {
-    gap: 6px;
-  }
-  .deck-row {
-    gap: 8px;
-  }
-  .chips {
-    display: none;
-  }
-  .modes button {
-    padding: 4px 8px !important;
-    font-size: 10px !important;
-    letter-spacing: 0.1em !important;
+    --deck-h: 154px;
   }
   .brand {
     display: none;
@@ -1672,9 +1687,13 @@ button {
   .engine-pick {
     flex: 1;
     max-width: none;
+    padding: 6px 10px 6px 12px;
   }
   .ep-name {
     font-size: 19px;
+  }
+  .top-actions {
+    gap: 8px;
   }
   .top-actions .sel,
   .top-actions .vol,
@@ -1684,23 +1703,43 @@ button {
   .icon-btn {
     display: inline-flex;
   }
+  #buildBtn {
+    height: 38px;
+    padding: 0 11px;
+  }
+
   .stage {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1.15fr) minmax(0, 1fr);
-    gap: 8px;
-    padding: 8px 12px;
+    grid-template-rows: clamp(166px, 37%, 250px) minmax(0, 1fr);
+    gap: 10px;
+    padding: 10px 12px;
   }
   .cluster {
-    grid-template-columns: minmax(0, 1fr) 118px;
-    grid-template-rows: minmax(0, 1fr);
-    gap: 8px;
+    grid-template-columns: minmax(0, 1fr) 112px;
+    grid-template-rows: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'tach ro'
+      'tach tags';
+    gap: 6px 10px;
+    container: cluster / size;
+  }
+  .tach-wrap {
+    grid-area: tach;
+  }
+  .listen {
+    display: none;
   }
   .readouts {
-    grid-template-columns: 1fr;
-    align-content: start;
+    grid-area: ro;
+    grid-template-columns: minmax(0, 1fr);
+    align-self: start;
   }
   .readouts > div {
-    padding: 5px 8px 6px;
+    padding: 5px 9px 6px;
+  }
+  .readouts dt {
+    font-size: 9.5px;
+    letter-spacing: 0.12em;
   }
   .readouts dd {
     font-size: 15px;
@@ -1708,41 +1747,335 @@ button {
   .readouts > div.opt {
     display: none;
   }
-  .lab {
-    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 8px;
+  /* more figures when the cluster is tall enough to hold them */
+  @container cluster (min-height: 188px) {
+    .readouts > div.opt:nth-child(4) {
+      display: block;
+    }
   }
-  .engine-note {
+  @container cluster (min-height: 232px) {
+    .readouts > div.opt:nth-child(6) {
+      display: block;
+    }
+  }
+  @container cluster (max-height: 182px) {
+    .readouts > div {
+      padding: 4px 9px 5px;
+    }
+  }
+  .cluster:has(.tag:not([hidden])) .readouts > div.opt {
     display: none;
   }
+  .tags {
+    grid-area: tags;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+  }
+  .tag {
+    text-align: center;
+  }
+  /* while A plays, its tag is the one that matters */
+  .tags:has(#abTag:not([hidden])) #mixTag {
+    display: none;
+  }
+
+  .lab {
+    grid-template-rows: minmax(0, 1fr) auto;
+    gap: 0;
+  }
+  .lab > .schem-panel,
+  .lab > .instr-panel {
+    grid-area: 1 / 1;
+  }
+  .lab[data-view='engine'] > .instr-panel,
+  .lab:not([data-view='engine']) > .schem-panel {
+    display: none;
+  }
+  .lab > .tabs {
+    grid-area: 1 / 1;
+    margin: 1px 1px 0;
+    padding: 3px 6px 0;
+    gap: 2px;
+    border-bottom: 1px solid var(--line);
+    border-radius: calc(var(--r) - 1px) calc(var(--r) - 1px) 0 0;
+    background: var(--ink-2);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .lab > .tabs::-webkit-scrollbar {
+    display: none;
+  }
+  .tabs .tab-engine {
+    display: block;
+  }
+  .tabs button[role='tab'] {
+    flex: none;
+    padding: 9px 7px 8px;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+  }
+  .tabs .btn {
+    flex: none;
+    padding: 4px 8px;
+    font-size: 10.5px;
+  }
+  .schem-panel .panel-head {
+    top: 46px;
+  }
+  .schem-panel canvas {
+    top: 66px;
+    height: calc(100% - 66px);
+  }
+  .instr-panel canvas {
+    top: 40px;
+    height: calc(100% - 40px);
+  }
+  .lab > .flyby-strip {
+    grid-area: 2 / 1;
+    width: 100%;
+    height: 42px;
+    margin: 8px 0 0;
+    border-radius: var(--r);
+  }
+  .lab > .flyby-strip.scene-hud {
+    height: 58px;
+    border-radius: var(--r);
+  }
+  .lab > .flyby-strip.scene-map {
+    height: 112px;
+    margin: 8px 0 0;
+  }
+
+  /* deck: pedals at the edges; modes, start and shifting, then the chips */
   .deck {
-    grid-template-columns: 64px minmax(0, 1fr) 84px;
+    grid-template-columns: 62px minmax(0, 1fr) 82px;
     gap: 8px;
-    padding: 8px 12px 10px;
+    padding: 9px 12px 10px;
   }
   .pedal span {
     letter-spacing: 0.1em;
     font-size: 10px;
   }
+  .deck-mid {
+    gap: 8px;
+    justify-content: space-between;
+  }
+  .deck-mid > .deck-row:first-child {
+    display: contents;
+  }
+  .deck-mid .modes {
+    order: 1;
+  }
+  .deck-mid > .deck-row:nth-child(2) {
+    order: 2;
+    gap: 12px;
+    flex-wrap: nowrap;
+  }
+  .deck-mid .chips {
+    order: 3;
+    gap: 4px;
+  }
   .keys {
     display: none;
   }
+  .modes button {
+    padding: 4px 10px;
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+  }
+  .chip {
+    padding: 5px 8px;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+  }
   .paddle {
-    width: 46px;
-    height: 46px;
+    width: 44px;
+    height: 44px;
   }
   .start {
-    width: 70px;
-    height: 70px;
+    width: 64px;
+    height: 64px;
+    box-shadow: 0 0 0 3px var(--ink), 0 0 0 5px rgba(255, 95, 31, 0.35);
   }
-  .tabs button[role='tab'] {
-    padding: 5px 6px 4px;
+  .start.on {
+    box-shadow: 0 0 0 3px var(--ink), 0 0 0 5px var(--arancio), 0 0 20px rgba(255, 95, 31, 0.55);
+  }
+  .start strong {
+    font-size: 17px;
+  }
+  .start span {
+    font-size: 8px;
+  }
+
+  /* drag tree: above the scene strip, clear of the deck */
+  .tree {
+    top: auto;
+    right: 12px;
+    bottom: calc(var(--deck-h) + 78px + env(safe-area-inset-bottom, 0px));
+    flex-direction: row;
+    gap: 10px;
+    padding: 8px 10px;
+  }
+  .tree-lights {
+    flex-direction: row;
+    gap: 6px;
+  }
+  .lamp {
+    width: 24px;
+    height: 24px;
+  }
+  .tree-go {
+    width: 60px;
+    height: 60px;
+    font-size: 22px;
+  }
+  .tree small,
+  .scene-pick kbd {
+    display: none;
+  }
+  .scene-pick {
+    bottom: calc(var(--deck-h) + 6px + env(safe-area-inset-bottom, 0px));
+  }
+  .scene-pick button {
+    padding: 11px 14px;
+  }
+
+  /* garage: sticky head with the filters as one swipeable row */
+  .sheet {
+    padding: 0;
+    background: rgba(10, 9, 8, 0.96);
+  }
+  .sheet-inner {
+    gap: 12px;
+    padding: 0 12px calc(24px + env(safe-area-inset-bottom, 0px));
+  }
+  .sheet-head {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    margin: 0 -12px;
+    padding: calc(10px + env(safe-area-inset-top, 0px)) 12px 10px;
+    gap: 10px;
+    align-items: center;
+    background: rgba(13, 12, 10, 0.97);
+    border-bottom: 1px solid var(--line);
+  }
+  .sheet-head h2 {
+    font-size: 30px;
+  }
+  .sheet-head p {
+    display: none;
+  }
+  .filters {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    margin: 0 -12px;
+    padding: 0 12px 2px;
+  }
+  .filters::-webkit-scrollbar {
+    display: none;
+  }
+  .filters .chip {
+    flex: none;
+    padding: 7px 13px;
     font-size: 11px;
-    letter-spacing: 0.08em;
+  }
+  .cards {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+  .card {
+    gap: 6px;
+    padding: 13px 14px 14px;
+  }
+  .card:hover {
+    transform: none;
+  }
+  .card h3 {
+    font-size: 25px;
+  }
+  .card .blurb {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .card-actions .link-btn {
+    padding: 6px 14px;
+    font-size: 11px;
+  }
+
+  /* workshop: full screen, finger-sized controls */
+  .drawer {
+    width: 100%;
+    border-left: 0;
+  }
+  .drawer-head {
+    padding: 10px 14px;
+  }
+  .drawer-head h2 {
+    font-size: 24px;
+  }
+  .drawer-body {
+    padding: 4px 14px 20px;
+  }
+  .drawer-foot {
+    padding: 8px 14px;
+  }
+  .ws-group {
+    gap: 12px;
+    padding: 14px 0 10px;
+  }
+  .field label {
+    font-size: 14px;
+  }
+  .field .hint,
+  .ws-note {
+    font-size: 12px;
+  }
+  .seg {
+    gap: 6px;
+  }
+  .seg button {
+    min-height: 36px;
+    padding: 7px 12px;
+    font-size: 13px;
+  }
+  .mix-row {
+    grid-template-columns: 92px minmax(0, 1fr) 42px 38px;
+  }
+  .solo {
+    width: 38px;
+    height: 34px;
+  }
+  .ab-pick {
+    padding: 9px 10px;
+    font-size: 13px;
+  }
+}
+@media (max-width: 370px) {
+  .chip {
+    padding: 5px 6px;
+  }
+  .deck {
+    grid-template-columns: 58px minmax(0, 1fr) 78px;
+  }
+}
+@media (max-width: 335px) {
+  #blipBtn {
+    display: none;
   }
 }
 
 /* phones in landscape: pedals at the thumbs, cluster in the middle */
+@media (max-height: 520px) and (orientation: landscape) and (max-width: 800px) {
+  #tcBtn,
+  #blipBtn {
+    display: none;
+  }
+}
 @media (max-height: 520px) and (orientation: landscape) {
   :root {
     --deck-h: auto;
@@ -1793,8 +2126,10 @@ button {
     grid-column: 3;
     grid-row: 1;
   }
-  .chips {
-    display: none;
+  .chip {
+    padding: 4px 9px;
+    font-size: 10px;
+    letter-spacing: 0.08em;
   }
   .cluster {
     grid-template-rows: minmax(0, 1fr);
@@ -1806,6 +2141,7 @@ button {
     grid-template-rows: minmax(0, 1fr);
   }
   .instr-panel,
+  .lab > .tabs,
   .engine-note {
     display: none;
   }
@@ -1827,6 +2163,7 @@ button {
     left: 50%;
     bottom: calc(6px + env(safe-area-inset-bottom, 0px));
     transform: translateX(-50%);
+    width: max-content;
     flex-direction: row;
     gap: 8px;
     z-index: 5;
@@ -1837,6 +2174,10 @@ button {
   }
   .deck-mid .keys {
     display: none;
+  }
+  .deck-row {
+    flex-wrap: nowrap;
+    gap: 8px;
   }
   .start {
     width: 52px;
@@ -1857,9 +2198,43 @@ button {
     padding: 4px 9px;
     font-size: 10px;
   }
+  .tree {
+    top: 56px;
+    right: 132px;
+    bottom: auto;
+    flex-direction: row;
+    gap: 10px;
+    padding: 8px 10px;
+  }
+  .tree-lights {
+    flex-direction: row;
+    gap: 6px;
+  }
+  .lamp {
+    width: 22px;
+    height: 22px;
+  }
+  .tree-go {
+    width: 54px;
+    height: 54px;
+    font-size: 20px;
+  }
+  .tree small {
+    display: none;
+  }
+  .scene-pick {
+    bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+    max-height: calc(100% - 128px);
+    overflow: auto;
+  }
+  .scene-pick kbd {
+    display: none;
+  }
 }
 
 
+/* Builder on narrow screens: the form first, a one-line summary above the
+   steps, and the spec sheet as its own tab. */
 @media (max-width: 860px) {
   .b-head {
     padding: 10px 14px;
@@ -1870,6 +2245,9 @@ button {
   }
   .b-from span {
     display: none;
+  }
+  .b-from select {
+    max-width: 150px;
   }
   .b-name {
     flex: 1 1 100%;
@@ -1882,45 +2260,116 @@ button {
     justify-content: flex-end;
   }
   .b-body {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr);
-    overflow: auto;
-  }
-  .b-left {
-    border-right: 0;
-    display: block;
-    flex: none;
-  }
-  .b-sheet {
-    order: -1;
-    flex: none;
-    overflow: visible;
-    padding: 12px 14px;
-    gap: 10px;
-  }
-  .b-body {
     display: flex;
     flex-direction: column;
+    overflow: hidden;
   }
-  .b-form {
-    overflow: visible;
-    padding: 14px 14px 24px;
+  .b-left {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+    border-right: 0;
+  }
+  .b-sum {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: none;
+    width: 100%;
+    padding: 10px 14px;
+    background: var(--ink-2);
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    text-align: left;
+    color: var(--smoke);
+    font-family: var(--font-data);
+    font-size: 12px;
+  }
+  .b-sum b {
+    color: var(--bone);
+    font-weight: 400;
+  }
+  .b-sum-figs {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .b-flag {
+    flex: none;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 6px;
+    border-radius: 999px;
+    display: grid;
+    place-items: center;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--ink);
+    background: var(--amber);
+  }
+  .b-flag.bad {
+    background: #ff6a5a;
+  }
+  .b-sum-go {
+    margin-left: auto;
+    flex: none;
+    font-family: var(--font-ui);
+    font-weight: 700;
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--arancio);
+  }
+  .b-sum-go::after {
+    content: ' \203A';
   }
   .b-steps {
-    position: sticky;
-    top: 0;
-    z-index: 2;
-    background: var(--ink);
-    padding: 6px 10px 0;
+    flex: none;
+    padding: 2px 8px 0;
+  }
+  .b-steps button {
+    padding: 10px 9px 9px;
+    font-size: 12px;
+  }
+  .b-steps .b-step-sheet {
+    display: block;
+    color: var(--arancio);
+  }
+  .b-form {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    max-width: none;
+    padding: 16px 14px 24px;
+  }
+  .b-sheet {
+    display: none;
+    padding: 14px 14px 20px;
+    gap: 12px;
+  }
+  .builder[data-step='sheet'] .b-left {
+    flex: none;
+  }
+  .builder[data-step='sheet'] .b-sum,
+  .builder[data-step='sheet'] .b-form {
+    display: none;
+  }
+  .builder[data-step='sheet'] .b-sheet {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
   }
   .b-id h3 {
-    font-size: 26px;
+    font-size: 28px;
   }
   #bFire {
-    height: 96px;
+    height: 104px;
   }
   #bDyno {
-    height: 120px;
+    height: 160px;
   }
   .b-foot {
     padding: 8px 14px;
@@ -1931,28 +2380,13 @@ button {
   #buildBtn {
     padding: 7px 9px;
   }
-  .tree {
-    top: auto;
-    right: 10px;
-    bottom: calc(var(--deck-h) + 10px);
-    flex-direction: row;
-    padding: 8px 10px;
-  }
-  .tree-lights {
-    flex-direction: row;
-    gap: 6px;
-  }
-  .lamp {
-    width: 22px;
-    height: 22px;
-  }
-  .tree-go {
-    width: 58px;
-    height: 58px;
-    font-size: 22px;
-  }
-  .tree small {
-    display: none;
+}
+
+/* touch: taller sliders are easier to grab */
+@media (pointer: coarse) {
+  .field input[type='range'],
+  .mix-row input {
+    min-height: 30px;
   }
 }
 
