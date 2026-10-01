@@ -21,6 +21,8 @@ export class Tach {
     this.unit = 'km/h';
     this.lim = false;
     this.camHi = false;
+    this.knock = 0;
+    this.float = 0;
     this.camSwitch = 0;
     this.label = '';
     this.blink = 0;
@@ -204,11 +206,23 @@ export class Tach {
     g.font = `500 ${Math.round(fr * 0.075)}px "B612 Mono", ui-monospace, monospace`;
     g.fillStyle = '#3d372e';
     g.fillText(this.speedText ?? '', cx, cy + fr * 0.56);
-    if (this.camHi) {
+    // warning lamp: valve float beats knock beats the cam badge
+    const warn = this.float > 0.02 ? ['VALVE FLOAT', '#d62f27'] : this.knock > 0.05 ? ['KNOCK', '#d9822b'] : this.camHi ? ['HIGH CAM', '#1f6fb2'] : null;
+    if (warn) {
+      const lit = warn[0] === 'HIGH CAM' || Math.floor(this.blink * 8) % 2 === 0 || this.float > 0.5;
       g.font = `700 ${Math.round(fr * 0.05)}px "Barlow Semi Condensed", sans-serif`;
-      g.fillStyle = '#1f6fb2';
-      g.fillText('HIGH CAM', cx, cy - fr * 0.23);
+      const tw = g.measureText(warn[0]).width + fr * 0.06;
+      const y = cy - fr * 0.23;
+      if (warn[0] !== 'HIGH CAM') {
+        g.fillStyle = lit ? warn[1] : 'rgba(0,0,0,0.12)';
+        g.beginPath();
+        g.roundRect?.(cx - tw / 2, y - fr * 0.04, tw, fr * 0.08, fr * 0.04);
+        g.fill();
+        g.fillStyle = lit ? '#fff6e6' : '#6b6255';
+      } else g.fillStyle = warn[1];
+      g.fillText(warn[0], cx, y + fr * 0.002);
     }
+    this.knock *= 0.92;
 
     // needle
     const a = this.angleFor(this.pos);

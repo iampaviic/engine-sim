@@ -11,6 +11,7 @@ export class Controls {
     this.touchGas = 0;
     this.touchBrake = 0;
     this.hand = 0;
+    this.external = 0; // e.g. the builder's hold-to-rev button
     this.blipT = 0;
     this.pedal = 0;
     this.brake = 0;
@@ -68,8 +69,20 @@ export class Controls {
         case 'Digit3':
           this.onAction('mode', 'flyby');
           break;
+        case 'Digit4':
+          this.onAction('mode', 'tunnel');
+          break;
+        case 'Digit5':
+          this.onAction('mode', 'drag');
+          break;
+        case 'Digit6':
+          this.onAction('mode', 'mountain');
+          break;
         case 'KeyD':
           this.onAction('dyno');
+          break;
+        case 'KeyB':
+          this.onAction('ab', true);
           break;
         case 'Escape':
           this.onAction('escape');
@@ -79,6 +92,7 @@ export class Controls {
     window.addEventListener('keyup', (e) => {
       this.keys.delete(e.code);
       if (e.code === 'KeyL') this.setLaunch(false);
+      if (e.code === 'KeyB') this.onAction('ab', false);
     });
     window.addEventListener('blur', () => {
       this.keys.clear();
@@ -157,7 +171,7 @@ export class Controls {
     let gas = 0;
     if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) gas = 1;
     else if (this.keys.has('KeyA')) gas = 0.35;
-    gas = Math.max(gas, this.touchGas, this.hand, pad.gas);
+    gas = Math.max(gas, this.touchGas, this.hand, pad.gas, this.external);
     if (this.blipT > 0) {
       gas = Math.max(gas, 0.75);
       this.blipT -= dt;

@@ -32,6 +32,11 @@ const CHOKE = Math.sqrt(GAM / R) * Math.pow(2 / (GAM + 1), (GAM + 1) / (2 * GM1)
 const CHOKE_AIR = Math.sqrt(1.4 / R) * Math.pow(2 / 2.4, 2.4 / 0.8);
 const INV4PI = 1 / (4 * PI);
 const C_AIR = 343;
+// Scales the Douaud-Eyzat ignition delay so factory calibrations sit just
+// under the knock limit on their recommended fuel.
+const KNOCK_CAL = 0.35;
+// Pa of chamber ringing -> Pa at 1 m radiated by the block.
+const KNOCK_RAD = 2.2e-5;
 
 const NODE_JUNCTION = 0, NODE_PORT = 1, NODE_OPEN = 2, NODE_CLOSED = 3, NODE_RESISTOR = 4, NODE_PLENUM = 5;
 const DYN_TURBINE = 1, DYN_WASTEGATE = 2, DYN_VALVE = 3;
@@ -58,6 +63,14 @@ function ftanh(x) {
 }
 function clamp(x, a, b) {
   return x < a ? a : x > b ? b : x;
+}
+// Valve lift (fraction of max) after a floating valve hits its seat: a big
+// first rebound, a smaller second one. ph = crank degrees since closing.
+function bounce(ph) {
+  if (ph < 17) return 0.3 * Math.sin((PI * ph) / 17);
+  if (ph < 23) return 0;
+  if (ph < 36) return 0.12 * Math.sin((PI * (ph - 23)) / 13);
+  return 0;
 }
 function crossed(prev, cur, ev) {
   return prev <= cur ? prev < ev && ev <= cur : ev > prev || ev <= cur;
@@ -398,6 +411,7 @@ class Net {
     src[0] = 0;
     src[1] = 0;
     src[2] = 0;
+    src[6] = 0;
     const op = this.opens, oLp = this.oLp, oAl = this.oAl, oR = this.oR, oQ = this.oQ, oCh = this.oCh;
     for (let i = 0; i < op.length; i++) {
       const e = ends[es[op[i]]];
@@ -438,7 +452,7 @@ class Net {
 // Listener / spatial renderer
 // ---------------------------------------------------------------------------
 
-const N_SRC = 6; // exL, exR, exC, intake, mech, chassis
+const N_SRC = 7; // exL, exR, exC, intake, mech, chassis, wastegate dump
 const SRC_BUF = 1 << 17;
 const SRC_MASK = SRC_BUF - 1;
 
@@ -608,7 +622,9 @@ class EngineSim {
     this.tRtip = 0.024 * Math.sqrt(dPer / 2) * Math.sqrt(size);
     this.tChokeK = 0.00045 * Math.pow(dPer, 0.85) * size; // kg/s per (m/s) tip speed
     this.tA = 9e-4 * Math.pow(dPer / 2, 0.8) * size; // turbine effective area
-    this.tRestr = 4e5 / Math.pow(Math.max(this.nT, 1) * size, 2);
+    // inlet/compressor restriction: a bigger engine per compressor gets a
+    // proportionally bigger wheel
+    this.tRestr = (4e5 * Math.min(1, Math.pow(2.5 / dPer, 2))) / Math.pow(Math.max(this.nT, 1) * size, 2);
     this.wgI = 0;
     this.blades = ind.blades;
     this.bovType = ind.bov;
@@ -633,6 +649,55 @@ class EngineSim {
     this.scRatio = ind.ratio;
     this.scDisp = ind.blowerDisp / 1000;
     this.scLobes = ind.lobes;
+    this.redline = cfg.ecu.limit;
+    if (this.isCentri) this.setCentriRatio();
+
+    // Knock: Livengood-Wu integral of the end-gas ignition delay
+    // (Douaud-Eyzat correlation) during each burn. When the end gas
+    // autoignites, what is left of the charge burns at once and the chamber
+    // rings at its first acoustic modes (1.84 c / (pi B) and ~1.66x that).
+    this.octane = cfg.ecu.octane;
+    this.setOctane(this.octane);
+    this.kF1 = 1.841 / (PI * cfg.bore);
+    this.kDecay = Math.exp(-1 / (fs * 0.0015));
+    this.cKi = new Float64Array(n);
+    this.cPs = new Float64Array(n);
+    this.cTs = new Float64Array(n);
+    this.cKq = new Float64Array(n);
+    this.cKa = new Float64Array(n);
+    this.cKf = new Float64Array(n);
+    this.cKph = new Float64Array(n);
+    this.knockRet = 0;
+    this.tipRet = 0;
+    this.thrPrevC = 0;
+    this.knockCtl = true;
+    this.sparkAdj = 0;
+    this.knockSndS = 0;
+    this.knockN = 0;
+    this.knockMax = 0;
+    // Valve float: above the spring's limit the valves loft off the cam and
+    // bounce on their seats after closing.
+    this.floatRpm = cfg.floatRpm;
+    this.floatMul = 1;
+    this.floatSev = 0;
+    this.cBi = new Float64Array(n);
+    this.cBe = new Float64Array(n);
+    let mxe = 1e-9, mxi = 1e-9;
+    for (let i = 0; i < cfg.exTab.length; i++) {
+      mxe = Math.max(mxe, cfg.exTab[i], cfg.exTabHi[i]);
+      mxi = Math.max(mxi, cfg.inTab[i], cfg.inTabHi[i]);
+    }
+    this.maxAeT = mxe;
+    this.maxAiT = mxi;
+    // per-source mixer gains (shared with the processor)
+    this.mix = new Float64Array(N_SRC).fill(1);
+    // screamer pipe: wastegate resistor whose outlet radiates on its own
+    this.wgRes = -1;
+    if (this.ex.opens.some((_, i) => this.ex.oCh[i] === 6)) {
+      for (let i = 0; i < this.ex.res.length; i++) if (this.ex.rDyn[i] === DYN_WASTEGATE) this.wgRes = i;
+    }
+    this.jetLp = 0;
+    this.jetHp = 0;
 
     // ECU
     const e = cfg.ecu;
@@ -805,6 +870,19 @@ class EngineSim {
     return this.omega * 9.549296585513721;
   }
 
+  setOctane(ron) {
+    this.octane = ron;
+    this.kTauInv = (this.cfg.ecu.knockCal || KNOCK_CAL) / (17.68e-3 * Math.pow(ron / 100, 3.402));
+  }
+
+  // Centrifugal blower: pick the pulley ratio that reaches the boost target
+  // at the rev limit (pressure ratio rises with impeller tip speed squared).
+  setCentriRatio() {
+    const PR = 1 + Math.max(0.1, this.boostTarget / P_AMB);
+    const Ut = Math.sqrt((Math.pow(PR, 1 / 3.5) - 1) / 2.17e-6);
+    this.scRatio = (Ut * 1.3) / (this.tRtip * (this.redline / 9.5493) * 3.2);
+  }
+
   // -------------------------------------------------------------------------
   // Per-cycle cylinder events
   // -------------------------------------------------------------------------
@@ -871,7 +949,9 @@ class EngineSim {
     dur *= 1 + 0.45 * sig * gauss();
     if (dur < 20) dur = 20;
     // Spark advance for best torque (CA50 around 8-10 deg ATDC).
-    let adv = 0.5 * dur - 9 + this.sparkTrim + this.ecu.sparkBase;
+    let adv = 0.5 * dur - 9 + this.sparkTrim + this.ecu.sparkBase + this.sparkAdj - this.knockRet - this.tipRet;
+    // factory spark map: knock-limited retard when lugging and under boost
+    if (load > 0.6) adv -= 10 * clamp((2400 - rpm) / 1400, 0, 1) * Math.min(1, (load - 0.6) / 0.35) + Math.max(0, load - 0.75) * 4 + Math.max(0, load - 1) * 3;
     if (cranking) adv = 5;
     if (this.dfco && this.burbleActive) adv = -18 - 22 * rnd() * this.burble;
     if (this.alsActive) adv = -38 - 16 * rnd();
@@ -1079,6 +1159,16 @@ class EngineSim {
       this.scBypass += (byT - this.scBypass) * Math.min(1, dtc * 12);
     }
 
+    // Valve float above the spring limit; knock retard creeps back.
+    const fRpm = this.floatRpm * this.floatMul;
+    this.floatSev = rpm > fRpm ? Math.min(1.6, (rpm - fRpm) / (0.07 * fRpm)) : 0;
+    if (this.knockRet > 0) this.knockRet = Math.max(0, this.knockRet - dtc * 2);
+    // tip-in retard: a sudden throttle opening fills the cylinders before the
+    // spark map has caught up, so the ECU pulls timing for a moment
+    const dThr = this.thr - this.thrPrevC;
+    this.thrPrevC = this.thr;
+    this.tipRet = Math.max(0, Math.min(8, this.tipRet + (dThr > 0 ? dThr * 30 : 0)) - dtc * 12);
+
     // Friction torque (FMEP from mean piston speed)
     const sp = (2 * this.cfg.stroke * rpm) / 60;
     this.fric = this.fricK * (0.72 + 0.024 * sp + 0.0019 * sp * sp);
@@ -1225,7 +1315,7 @@ class EngineSim {
       const roadRpm = (this.v / v.tire) * G * 9.549;
       const up = this.pedal > 0.6 ? red - 250 : 2600 + 3200 * this.pedal;
       const down = this.pedal > 0.8 ? red * 0.52 : this.pedal > 0.1 ? 1500 + 900 * this.pedal : 1450 + 350 * this.brake;
-      if (this.pedal > 0.12 && rpm > up && roadRpm > up * 0.8 && this.gear < v.gears.length && this.clutch > 0.95) this.requestShift(1);
+      if (this.pedal > 0.12 && rpm > up && roadRpm > up * 0.8 && this.gear < v.gears.length && this.clutch > 0.95 && (!this.holdGear || rpm > red - 200)) this.requestShift(1);
       else if (roadRpm < down && this.gear > 1 && this.v > 3) {
         const G2 = v.gears[this.gear - 2] * v.final;
         if ((this.v / v.tire) * G2 * 9.549 < red - 600) this.requestShift(-1);
@@ -1348,6 +1438,11 @@ class EngineSim {
     const evc = this.cfg.evc;
     const rasp = this.rasp26;
     const kLeak = this.kLeak;
+    const cKi = this.cKi, cPs = this.cPs, cTs = this.cTs, cKq = this.cKq, cKa = this.cKa, cKf = this.cKf, cKph = this.cKph;
+    const kTauInv = this.kTauInv, kDecay = this.kDecay;
+    const floatSev = this.floatSev;
+    const cBi = this.cBi, cBe = this.cBe;
+    let knockSnd = 0;
     const Tint = this.Tpl;
     const sqTint = Math.sqrt(Tint);
     const Tex = Math.max(450, this.egt * 0.85);
@@ -1370,10 +1465,26 @@ class EngineSim {
         if (crossed(caPrev, ca, ivc)) {
           this.onIVC(c, rpm);
           vtExc += 1;
+          if (floatSev > 0) {
+            cBi[c] = floatSev * (0.45 + 0.8 * rnd());
+            vtExc += floatSev * 3;
+          }
         }
-        if (cBurn[c] === 1 && crossed(caPrev, ca, cSpark[c])) cBurn[c] = 2;
+        if (cBurn[c] === 1 && crossed(caPrev, ca, cSpark[c])) {
+          cBurn[c] = 2;
+          // end-gas reference state at the spark
+          cPs[c] = cP1[c];
+          cTs[c] = cU[c] / (cm[c] * CV);
+          cKi[c] = 0;
+        }
         if (crossed(caPrev, ca, evo)) this.onEVO(c);
-        if (crossed(caPrev, ca, evc)) vtExc += 1;
+        if (crossed(caPrev, ca, evc)) {
+          vtExc += 1;
+          if (floatSev > 0) {
+            cBe[c] = floatSev * (0.45 + 0.8 * rnd());
+            vtExc += floatSev * 3;
+          }
+        }
       }
 
       let m = cm[c];
@@ -1397,12 +1508,55 @@ class EngineSim {
         cXb[c] = xb;
         if (xb === 1) cMb[c] = m;
       }
+      if (cKq[c] > 0) {
+        // autoignited end gas releases its heat almost at once
+        const r = cKq[c] * 0.3;
+        U += r;
+        cKq[c] = cKq[c] - r < 1 ? 0 : cKq[c] - r;
+      }
 
       let T = U / (m * CV);
       let p = (GM1 * U) / V;
 
-      // exhaust valve
-      const ae = exTab[i0] + (exTab[i0 + 1] - exTab[i0]) * fr;
+      if (cBurn[c] === 2 && cKi[c] >= 0 && rpm > 500) {
+        // Livengood-Wu: sum dt / tau(p, T_endgas); knock when it reaches 1
+        const Tu = cTs[c] * Math.pow(p / cPs[c], 0.259);
+        cKi[c] += dt * Math.exp(1.7 * Math.log(p * 9.869e-6) - 3800 / Tu) * kTauInv;
+        if (cKi[c] >= 1) {
+          cKi[c] = -1;
+          const rem = 1 - cXb[c];
+          if (rem > 0.03) {
+            cKq[c] += cQ[c] * rem * 0.6; // the rest is lost to the scrubbed walls
+            cXb[c] = 1;
+            cBurn[c] = 3;
+            cMb[c] = m;
+            const amp = 0.35 * rem * p;
+            cKa[c] = amp;
+            cKf[c] = this.kF1 * Math.sqrt(GAM * R * Math.max(1500, T));
+            cKph[c] = 0;
+            this.knockN++;
+            if (amp > this.knockMax) this.knockMax = amp;
+            if (this.knockCtl) this.knockRet = Math.min(15, this.knockRet + 1.5 + amp / 1.5e5);
+          }
+        }
+      }
+      let ring = 0;
+      if (cKa[c] > 20) {
+        const ph = cKph[c] + cKf[c] * dt;
+        cKph[c] = ph;
+        ring = cKa[c] * (Math.sin(TAU * ph) + 0.45 * Math.sin(TAU * 1.66 * ph + 0.5));
+        cKa[c] *= kDecay;
+        knockSnd += ring;
+      }
+
+      // exhaust valve (plus seat bounce when the valves float)
+      let ae = exTab[i0] + (exTab[i0 + 1] - exTab[i0]) * fr;
+      if (cBe[c] > 0) {
+        let ph = ca - evc;
+        if (ph < 0) ph += cycle;
+        if (ph < 40) ae += this.maxAeT * cBe[c] * bounce(ph);
+        else cBe[c] = 0;
+      }
       if (ae > 1e-9) {
         const e = cExEnd[c];
         const zm = exZ[e];
@@ -1436,7 +1590,13 @@ class EngineSim {
       }
 
       // intake valve
-      const ai = inTab[i0] + (inTab[i0 + 1] - inTab[i0]) * fr;
+      let ai = inTab[i0] + (inTab[i0 + 1] - inTab[i0]) * fr;
+      if (cBi[c] > 0) {
+        let ph = ca - ivc;
+        if (ph < 0) ph += cycle;
+        if (ph < 40) ai += this.maxAiT * cBi[c] * bounce(ph);
+        else cBi[c] = 0;
+      }
       if (ai > 1e-9) {
         const e = cInEnd[c];
         const zm = inZ[e];
@@ -1485,12 +1645,13 @@ class EngineSim {
       if (jerk > 0) combExc += jerk;
       cP2[c] = cP1[c];
       cP1[c] = p;
-      cP[c] = p;
+      cP[c] = p + ring;
       torque += (p - P_AMB) * dvdth;
     }
     this.torqueGas = torque;
     this.vtExcS = vtExc;
     this.combExcS = combExc;
+    this.knockSndS = knockSnd;
     return torque;
   }
 
@@ -1821,7 +1982,7 @@ class EngineSim {
     const vtOut = this.valvetrain.tick(this.vtExc * (rnd() * 0.5 + 0.75));
     this.vtExc *= 0.2;
     const cb = this.block.tick(this.combExcS * 1e-4);
-    let mech = (vtOut * 7 + cb * 0.04) * snd.mech;
+    let mech = (vtOut * 7 + cb * 0.04 + this.knockSndS * KNOCK_RAD) * snd.mech;
     // straight-cut / gearbox whine
     if (this.gear > 0 && this.clutch > 0.5) {
       const fin = (this.ww * this.veh.final) / TAU;
@@ -1856,16 +2017,30 @@ class EngineSim {
       chassis += Math.sin(TAU * this.sqPhase) * Math.min(1, (sl - 1.2) / 4) * 1.4;
     }
 
+    // The wastegate dump leaves as a near-sonic jet: broadband turbulent
+    // roar on top of the pulses the pipe carries (Lighthill: power ~ U^8,
+    // so pressure ~ flow^4 relative; a softer power keeps it controllable).
+    if (this.wgRes >= 0) {
+      const u = this.ex.rU[this.wgRes];
+      const nz = rnd() - 0.5;
+      this.jetLp += 0.45 * (nz - this.jetLp);
+      this.jetHp += 0.04 * (this.jetLp - this.jetHp);
+      const a = u > 0 ? u : 0;
+      src[6] = src[6] * 2.5 + (this.jetLp - this.jetHp) * a * a * 9e3;
+    }
+
     // assemble sources (Pa at 1 m)
     const exG = this.exG;
     const buf = lis.buf;
     const w = lis.w;
-    buf[w] = src[0] * exG;
-    buf[SRC_BUF + w] = src[1] * exG;
-    buf[2 * SRC_BUF + w] = src[2] * exG;
-    buf[3 * SRC_BUF + w] = intake;
-    buf[4 * SRC_BUF + w] = mech;
-    buf[5 * SRC_BUF + w] = chassis;
+    const mix = this.mix;
+    buf[w] = src[0] * exG * mix[0];
+    buf[SRC_BUF + w] = src[1] * exG * mix[1];
+    buf[2 * SRC_BUF + w] = src[2] * exG * mix[2];
+    buf[3 * SRC_BUF + w] = intake * mix[3];
+    buf[4 * SRC_BUF + w] = mech * mix[4];
+    buf[5 * SRC_BUF + w] = chassis * mix[5];
+    buf[6 * SRC_BUF + w] = src[6] * exG * mix[6];
     lis.w = (w + 1) & SRC_MASK;
 
     // scope capture (tail pipe sum, cylinder 1 pressure & volume)
@@ -2027,14 +2202,25 @@ function sourcePositions(cfg) {
   const engZ = lay === 'mid' ? -0.7 : lay === 'rear' ? -1.8 : 1.5;
   const intZ = lay === 'mid' ? -0.35 : lay === 'rear' ? -1.4 : 1.9;
   const intY = lay === 'mid' ? 1.15 : 0.85;
+  // side pipes exit just behind the front wheels (front engines) or ahead of
+  // the rear wheels (mid/rear engines)
+  const side = cfg.exhaustExit === 'side';
+  const sideZ = lay === 'front' ? 0.55 : -0.9;
   return [
-    [-0.5, 0.35, -2.3], // exL
-    [0.5, 0.35, -2.3], // exR
-    [0.0, 0.35, -2.3], // exC
+    side ? [-0.98, 0.3, sideZ] : [-0.5, 0.35, -2.3], // exL
+    side ? [0.98, 0.3, sideZ] : [0.5, 0.35, -2.3], // exR
+    side ? [0.98, 0.3, sideZ] : [0.0, 0.35, -2.3], // exC
     [0.0, intY, intZ], // intake
     [0.0, 0.7, engZ], // mech
     [0.0, 0.3, 0.0], // chassis
+    [0.7, 0.3, engZ - 0.25], // wastegate dump (screamer pipe)
   ];
+}
+
+// Direction each pipe mouth points (radiation is brighter on that axis).
+function sourceAxes(cfg) {
+  const side = cfg.exhaustExit === 'side';
+  return [side ? [-1, 0, 0] : [0, 0, -1], side ? [1, 0, 0] : [0, 0, -1], side ? [1, 0, 0] : [0, 0, -1], null, null, null, [0.6, -0.8, 0]];
 }
 
 // ---------------------------------------------------------------------------
@@ -2062,6 +2248,7 @@ class EngineProcessor extends AudioWorkletProcessor {
     this.load = 0;
     this.hot = 0;
     this.upL = this.upR = this.upZL = this.upZR = 0;
+    this.mix = new Float64Array(N_SRC).fill(1);
     this.port.onmessage = (e) => this.onMessage(e.data);
   }
 
@@ -2108,6 +2295,7 @@ class EngineProcessor extends AudioWorkletProcessor {
           this.sim.v = 0;
         } else if (this.sim.gear === 0) this.sim.gear = 1;
         if (m.mode !== 'flyby') this.flyby = null;
+        this.scene = null;
         this.updateScene(0);
         break;
       case 'camera':
@@ -2116,6 +2304,9 @@ class EngineProcessor extends AudioWorkletProcessor {
         break;
       case 'tune':
         if (this.sim) this.applyTune(this.sim, m.tune);
+        break;
+      case 'mix':
+        for (let i = 0; i < N_SRC; i++) this.mix[i] = m.gains[i] ?? 1;
         break;
       case 'dyno':
         if (!this.sim) return;
@@ -2138,7 +2329,17 @@ class EngineProcessor extends AudioWorkletProcessor {
         }
         break;
       case 'flyby':
+        this.scene = null;
         this.startFlyby(m);
+        break;
+      case 'scene':
+        this.startScene(m);
+        break;
+      case 'scene-go':
+        this.sceneGo();
+        break;
+      case 'scene-stop':
+        if (this.scene) this.endScene(true);
         break;
       case 'strobe':
         if (!this.sim) return;
@@ -2159,6 +2360,14 @@ class EngineProcessor extends AudioWorkletProcessor {
     if (t.autoShift != null) sim.autoShift = !!t.autoShift;
     if (t.bov != null) sim.bovType = t.bov;
     if (t.tc != null) sim.tc = !!t.tc;
+    if (t.spark != null) sim.sparkAdj = t.spark;
+    if (t.octane != null) sim.setOctane(t.octane);
+    if (t.knockCtl != null) {
+      sim.knockCtl = !!t.knockCtl;
+      if (!sim.knockCtl) sim.knockRet = 0;
+    }
+    if (t.springs != null) sim.floatMul = t.springs === 'race' ? 1.12 : 1;
+    if (t.boost != null && sim.isCentri) sim.setCentriRatio();
   }
 
   startFlyby(m) {
@@ -2184,21 +2393,207 @@ class EngineProcessor extends AudioWorkletProcessor {
     this.updateScene(0);
   }
 
+  // -------------------------------------------------------------- scenes
+  // Scripted runs: the car drives itself along a course while the scene
+  // switches the surroundings (open road, canyon, tunnel) and records times.
+  startScene(m) {
+    const s = this.sim;
+    if (!s) return;
+    this.flyby = null;
+    const v = s.veh;
+    s.mode = 'drive';
+    s.autoShift = true;
+    s.shift = null;
+    s.brake = 0;
+    s.launch = false;
+    s.pos = 0;
+    const sc = { id: m.id, t: 0, phase: 'run', env: null, track: m.track ?? [], length: m.length ?? 600, marks: m.marks ?? [], times: {}, done: false, shiftT: 0 };
+    if (m.id === 'drag') {
+      // staged at the line on the launch limiter
+      s.gear = 1;
+      s.clutch = 0;
+      s.v = 0;
+      s.ww = 0;
+      sc.phase = 'stage';
+      s.launch = true;
+      sc.world = true;
+      sc.lisPos = [9, 1.4, 14];
+      sc.tree = -1;
+    } else {
+      // rolling start in second gear
+      const g = Math.min(2, v.gears.length);
+      const G = v.gears[g - 1] * v.final;
+      const w = (s.limitRpm * (m.id === 'tunnel' ? 0.32 : 0.42)) / 9.5493;
+      s.gear = g;
+      s.clutch = 1;
+      s.ww = w / G;
+      s.v = s.ww * v.tire;
+      s.omega = Math.max(s.omega, w);
+    }
+    this.scene = sc;
+    this.sceneEnv(0);
+    this.port.postMessage({ type: 'scene', ev: 'start', id: m.id });
+    this.updateScene(0);
+  }
+
+  sceneGo() {
+    const sc = this.scene;
+    if (!sc || sc.id !== 'drag' || sc.phase !== 'stage') return;
+    const s = this.sim;
+    sc.goT = sc.t;
+    sc.foul = sc.greenT == null || sc.t < sc.greenT;
+    s.launch = false;
+    sc.phase = 'run';
+  }
+
+  endScene(aborted) {
+    const sc = this.scene;
+    if (!sc || sc.done) return;
+    sc.done = true;
+    sc.phase = 'stop';
+    this.port.postMessage({ type: 'scene', ev: 'done', id: sc.id, aborted: !!aborted, times: sc.times, foul: sc.foul, rt: sc.rt });
+  }
+
+  // which surroundings the car is in at position x (with a blend zone)
+  sceneEnv(x) {
+    const sc = this.scene;
+    let env = 'open';
+    for (const seg of sc.track) if (x >= seg.s && x < seg.s + seg.len) env = seg.env ?? 'open';
+    if (env !== sc.env) {
+      const fade = sc.env == null ? 0.05 : clamp(18 / Math.max(5, this.sim.v), 0.25, 2.5);
+      sc.env = env;
+      this.port.postMessage({ type: 'scene', ev: 'env', env, fade });
+    }
+  }
+
+  sceneStep(dtb) {
+    const sc = this.scene;
+    const s = this.sim;
+    sc.t += dtb;
+    const x = s.pos;
+    const red = s.limitRpm;
+    const v = s.veh;
+    s.holdGear = false;
+    if (sc.id === 'drag') {
+      if (sc.phase === 'stage') {
+        s.pedal = 1;
+        s.brake = 0;
+        // sportsman tree: three ambers half a second apart, then green
+        const t0 = 2.4;
+        const k = sc.t < t0 ? -1 : Math.min(3, Math.floor((sc.t - t0) / 0.5));
+        if (k !== sc.tree) {
+          sc.tree = k;
+          if (k === 3) sc.greenT = t0 + 1.5;
+          this.port.postMessage({ type: 'scene', ev: 'tree', light: k });
+        }
+        // nobody pressed GO: launch for them after a slow reaction
+        if (sc.greenT != null && sc.t > sc.greenT + 1.2) this.sceneGo();
+      } else if (sc.phase === 'run') {
+        s.pedal = 1;
+        if (sc.leaveT == null && x > 0.3) {
+          sc.leaveT = sc.t;
+          sc.rt = sc.greenT != null ? sc.goT - sc.greenT : 0;
+        }
+        for (const [name, d] of sc.marks) {
+          if (sc.times[name] == null && x >= d && sc.leaveT != null) {
+            // interpolate the crossing within this block
+            const over = (x - d) / Math.max(0.1, s.v);
+            sc.times[name] = sc.t - over - sc.leaveT;
+            sc.times[name + '_v'] = s.v;
+          }
+        }
+        if (x >= sc.length) {
+          sc.phase = 'brake';
+          this.endScene(false);
+        }
+      } else {
+        s.pedal = 0;
+        s.brake = s.v > 0.5 ? 0.7 : 0;
+      }
+      sc.carZ = x;
+      return;
+    }
+    // course driver: brake for the corners ahead, then power out
+    let vt = 1e9;
+    let inCorner = null;
+    for (const seg of sc.track) {
+      if (!seg.v) continue;
+      const vc = seg.v / 3.6;
+      if (x >= seg.s && x < seg.s + seg.len) {
+        inCorner = seg;
+        vt = Math.min(vt, vc);
+      } else if (seg.s > x) vt = Math.min(vt, Math.sqrt(vc * vc + 2 * 8.5 * (seg.s - x)));
+    }
+    let coast = false;
+    if (sc.id === 'tunnel') {
+      // cruise to the portal, drop a gear and floor it through the tunnel
+      const tun = sc.track.find((q) => q.env === 'tunnel');
+      if (x < tun.s - 45) vt = Math.min(vt, s.v < 14 ? 16 : s.v);
+      if (x > tun.s + tun.len - 70 && x < tun.s + tun.len + 40) coast = true; // lift: let it crackle in the tunnel
+      else if (x >= tun.s + tun.len + 40) vt = Math.min(vt, s.v);
+    }
+    if (sc.phase === 'run') {
+      const err = vt - s.v;
+      s.holdGear = !!inCorner;
+      if (coast) {
+        s.pedal = 0;
+        s.brake = 0;
+      } else if (inCorner) {
+        // hold the line: smooth part throttle, brake only if far too fast
+        s.pedal = clamp(0.3 + err * 0.25, 0.05, 0.8);
+        s.brake = err < -3 ? clamp(-err / 8, 0, 0.6) : 0;
+      } else if (err > 1.5) {
+        s.pedal = 1;
+        s.brake = 0;
+      } else if (err < -1) {
+        s.pedal = 0;
+        s.brake = clamp(-err / 6, 0.15, 1);
+      } else {
+        s.pedal = inCorner ? clamp(0.35 + err * 0.3, 0.15, 0.7) : clamp(0.5 + err * 0.4, 0, 1);
+        s.brake = 0;
+      }
+      // a quick driver goes down the box under braking, blipping each time
+      sc.shiftT -= dtb;
+      if (s.brake > 0.1 && !s.shift && s.gear > 1 && sc.shiftT <= 0) {
+        const G2 = v.gears[s.gear - 2] * v.final;
+        const r2 = (s.v / v.tire) * G2 * 9.549;
+        if (r2 < red * 0.82) {
+          s.requestShift(-1);
+          sc.shiftT = 0.35;
+        }
+      }
+      if (sc.id === 'tunnel' && !sc.kicked && x > sc.track.find((q) => q.env === 'tunnel').s - 40 && s.gear > 1) {
+        sc.kicked = true;
+        s.requestShift(-1);
+      }
+      if (x >= sc.length) {
+        sc.phase = 'stop';
+        this.endScene(false);
+      }
+    } else {
+      s.pedal = 0;
+      s.brake = s.v > 0.5 ? 0.6 : 0;
+    }
+    this.sceneEnv(x);
+  }
+
   // Compute listener tap targets for the current camera and car pose.
   updateScene(blockLen) {
     const sim = this.sim;
     const L = this.L;
     if (!sim) return;
     const cam = CAMERAS[this.camera] ?? CAMERAS.rear;
-    const flyby = sim.mode === 'flyby' && this.flyby;
+    const flyby = (sim.mode === 'flyby' && this.flyby) || (this.scene?.world && this.camera === 'scene');
     const srcs = sourcePositions(sim.cfg);
+    const axes = sourceAxes(sim.cfg);
     const fs = sim.fs;
     let carX = 0, carZ = 0;
     let lisPos, lisRight;
     if (flyby) {
-      carZ = this.flyby.x;
+      const sc = this.scene?.world ? this.scene : null;
+      carZ = sc ? sc.carZ ?? 0 : this.flyby.x;
       carX = 0;
-      lisPos = [CAMERAS.flyby.lateral, 1.4, 0];
+      lisPos = sc ? sc.lisPos : [CAMERAS.flyby.lateral, 1.4, 0];
       lisRight = [0, 0, 1]; // facing the road (-x): right ear toward +z
     } else {
       lisPos = cam.pos;
@@ -2219,7 +2614,8 @@ class EngineProcessor extends AudioWorkletProcessor {
       sim.ex.opens.some((_, i) => sim.ex.oCh[i] === 2),
       true,
       true,
-      sim.mode === 'drive' || sim.mode === 'flyby',
+      sim.mode === 'drive' || sim.mode === 'flyby' || sim.mode === 'scene',
+      sim.ex.opens.some((_, i) => sim.ex.oCh[i] === 6),
     ];
     const n = blockLen || 1;
     const layout = sim.cfg.vehicle.layout;
@@ -2246,9 +2642,10 @@ class EngineProcessor extends AudioWorkletProcessor {
             gain *= 0.62;
             fc = Math.min(fc, 5200);
           }
-          // tail pipes radiate backwards: brighter on axis
-          if (s <= 2) {
-            const cosA = dz / (r || 1); // +1 when the listener is right behind the pipes
+          // pipe mouths radiate along their axis: brighter on axis
+          const ax = axes[s];
+          if (ax) {
+            const cosA = -(ax[0] * dx + ax[1] * dy + ax[2] * dz) / (r || 1); // +1 on axis
             fc *= 0.35 + 0.65 * (0.5 + 0.5 * cosA);
             gain *= 0.8 + 0.35 * cosA;
           }
@@ -2263,14 +2660,17 @@ class EngineProcessor extends AudioWorkletProcessor {
             if (path === 1) {
               gain = 0;
             } else if (s <= 2) {
-              gain *= 0.3;
-              fc = 520;
+              gain *= sim.cfg.exhaustExit === 'side' ? 0.45 : 0.3;
+              fc = sim.cfg.exhaustExit === 'side' ? 900 : 520;
+            } else if (s === 6) {
+              gain *= 0.4;
+              fc = 1400;
             } else if (s === 3) {
               gain *= layout === 'front' ? 0.35 : 0.9;
               fc = layout === 'front' ? 1500 : 3200;
             } else if (s === 4) {
               gain *= 0.45;
-              fc = 1800;
+              fc = 2600;
             } else {
               gain *= 1.3;
               fc = 900;
@@ -2307,8 +2707,13 @@ class EngineProcessor extends AudioWorkletProcessor {
       sim.strobeOn = old.strobeOn;
       sim.tc = old.tc;
       sim.strobeStep = old.strobeStep;
-      for (const k of ['limitRpm', 'limiterType', 'burble', 'antilag', 'boostTarget', 'launchRpm', 'bovType']) if (!tune) sim[k] = old[k];
+      for (const k of ['limitRpm', 'limiterType', 'burble', 'antilag', 'boostTarget', 'launchRpm', 'bovType', 'sparkAdj', 'knockCtl', 'floatMul']) if (!tune) sim[k] = old[k];
+      if (!tune) {
+        sim.setOctane(old.octane);
+        if (sim.isCentri) sim.setCentriRatio();
+      }
     }
+    sim.mix = this.mix;
     if (tune) this.applyTune(sim, tune);
     if (hot && old) {
       // Same car, new hardware: carry the running state across.
@@ -2386,9 +2791,10 @@ class EngineProcessor extends AudioWorkletProcessor {
       if (Rr !== L) Rr.fill(0);
       return true;
     }
-    // flyby script
+    // flyby / scene scripts
     if (sim.mode === 'flyby' && this.flyby) this.flybyStep(nF / this.fs);
-    if (sim.mode === 'flyby') this.updateScene(sim.fs === this.fs ? nF : nF >> 1);
+    if (this.scene && sim.mode === 'drive') this.sceneStep(nF / this.fs);
+    if (sim.mode === 'flyby' || (this.scene?.world && this.camera === 'scene')) this.updateScene(sim.fs === this.fs ? nF : nF >> 1);
     const t0 = Date.now();
     const Rw = Rr !== L ? Rr : this.monoR || (this.monoR = new Float32Array(nF));
     this.renderSim(sim, this.L, L, Rw, nF);
@@ -2500,9 +2906,16 @@ class EngineProcessor extends AudioWorkletProcessor {
       launch: s.launchCut,
       load: this.load,
       eco: this.eco,
+      scene: this.scene ? { id: this.scene.id, x: s.pos, phase: this.scene.phase, env: this.scene.env } : null,
+      knock: s.knockMax,
+      knockN: s.knockN,
+      knockRet: s.knockRet,
+      float: s.floatSev,
     };
     s.afEvents = 0;
     s.afIntensity = 0;
+    s.knockMax = 0;
+    s.knockN = 0;
     if (s.mode === 'dyno' && s.dyno && s.dyno.phase === 'sweep') msg.dyno = { rpm: s.rpm, tq: s.torqueAvg };
     this.port.postMessage(msg);
     if (s.scopeReady) {

@@ -41,7 +41,7 @@ const V12_65 = {
     tailDia: 76,
   },
   induction: { type: 'na' },
-  ecu: { idle: 900, limit: 8900, limiter: 'fuel', afr: 12.6, burble: 0.25, launchRpm: 3500 },
+  ecu: { idle: 900, limit: 8900, limiter: 'fuel', afr: 12.6, burble: 0.25, launchRpm: 3500, knockCal: 0.298},
   inertia: 0.28,
   combustion: 0.72,
   vehicle: {
@@ -93,7 +93,7 @@ const V12_60 = {
     tailDia: 80,
   },
   induction: { type: 'na' },
-  ecu: { idle: 950, limit: 8700, limiter: 'spark', afr: 12.4, burble: 0.65, launchRpm: 4000 },
+  ecu: { idle: 950, limit: 8700, limiter: 'spark', afr: 12.4, burble: 0.65, launchRpm: 4000, knockCal: 0.42},
   inertia: 0.24,
   combustion: 0.72,
   vehicle: {
@@ -145,7 +145,7 @@ const V8_LS = {
     tailLen: 0.6,
   },
   induction: { type: 'na' },
-  ecu: { idle: 700, limit: 6600, limiter: 'fuel', afr: 12.8, burble: 0, launchRpm: 3600 },
+  ecu: { idle: 700, limit: 6600, limiter: 'fuel', afr: 12.8, burble: 0, launchRpm: 3600, knockCal: 0.451},
   inertia: 0.32,
   combustion: 0.7,
   vehicle: {
@@ -196,7 +196,7 @@ const V8_BIGBLOCK = {
     tailLen: 0.25,
   },
   induction: { type: 'na' },
-  ecu: { idle: 950, limit: 6800, limiter: 'spark', afr: 12.3, burble: 0.35, launchRpm: 3800 },
+  ecu: { idle: 950, limit: 6800, limiter: 'spark', afr: 12.3, burble: 0.35, launchRpm: 3800, knockCal: 0.544},
   inertia: 0.42,
   combustion: 0.66,
   vehicle: {
@@ -248,7 +248,7 @@ const V8_BLOWER = {
     tailLen: 0.35,
   },
   induction: { type: 'twinscrew', displacement: 2.38, ratio: 2.4, lobes: 5 },
-  ecu: { idle: 750, limit: 6200, limiter: 'fuel', afr: 11.8, burble: 0.2, launchRpm: 2600 },
+  ecu: { idle: 750, limit: 6200, limiter: 'fuel', afr: 11.8, burble: 0.2, launchRpm: 2600, knockCal: 0.271},
   inertia: 0.3,
   combustion: 0.68,
   vehicle: {
@@ -262,7 +262,7 @@ const V8_BLOWER = {
     layout: 'front',
     shiftTime: 0.16,
   },
-  sound: { exhaust: 1, intake: 1, mech: 1, valvetrain: 'ohv', gear: 0.2, trim: 0.74 },
+  sound: { exhaust: 1, intake: 1, mech: 1, valvetrain: 'ohv', gear: 0.2, trim: 0.8 },
 };
 
 const V8_FLAT = {
@@ -300,7 +300,7 @@ const V8_FLAT = {
     tailDia: 70,
   },
   induction: { type: 'na' },
-  ecu: { idle: 1000, limit: 9000, limiter: 'fuel', afr: 12.6, burble: 0.3, launchRpm: 4200 },
+  ecu: { idle: 1000, limit: 9000, limiter: 'fuel', afr: 12.6, burble: 0.3, launchRpm: 4200, knockCal: 0.349},
   inertia: 0.17,
   combustion: 0.72,
   vehicle: {
@@ -314,7 +314,7 @@ const V8_FLAT = {
     layout: 'mid',
     shiftTime: 0.08,
   },
-  sound: { exhaust: 1, intake: 1.2, mech: 0.8, valvetrain: 'dohc', trim: 0.45 },
+  sound: { exhaust: 1, intake: 1.2, mech: 0.8, valvetrain: 'dohc', trim: 0.44 },
 };
 
 const I6_TURBO = {
@@ -347,7 +347,7 @@ const I6_TURBO = {
     tailDia: 100,
   },
   induction: { type: 'turbo', count: 1, size: 1.2, boost: 1.4, blades: 7, bov: 'atm' },
-  ecu: { idle: 850, limit: 7400, limiter: 'spark', afr: 11.8, burble: 0.3, launchRpm: 4500 },
+  ecu: { idle: 850, limit: 7400, limiter: 'spark', afr: 11.8, burble: 0.3, launchRpm: 4500, knockCal: 0.316},
   inertia: 0.2,
   combustion: 0.72,
   vehicle: {
@@ -361,7 +361,7 @@ const I6_TURBO = {
     layout: 'front',
     shiftTime: 0.2,
   },
-  sound: { exhaust: 1.1, intake: 1, mech: 0.9, valvetrain: 'dohc', trim: 0.58 },
+  sound: { exhaust: 1.1, intake: 1, mech: 0.9, valvetrain: 'dohc', trim: 0.56 },
 };
 
 const F6_GT = {
@@ -398,7 +398,7 @@ const F6_GT = {
     tailLen: 0.25,
   },
   induction: { type: 'na' },
-  ecu: { idle: 850, limit: 9000, limiter: 'fuel', afr: 12.6, burble: 0.2, launchRpm: 4500 },
+  ecu: { idle: 850, limit: 9000, limiter: 'fuel', afr: 12.6, burble: 0.2, launchRpm: 4500, knockCal: 0.309},
   inertia: 0.16,
   combustion: 0.73,
   vehicle: {
@@ -450,7 +450,7 @@ const V10_72 = {
     tailLen: 0.25,
   },
   induction: { type: 'na' },
-  ecu: { idle: 1000, limit: 9000, limiter: 'fuel', afr: 12.6, burble: 0.15, launchRpm: 4000 },
+  ecu: { idle: 1000, limit: 9000, limiter: 'fuel', afr: 12.6, burble: 0.15, launchRpm: 4000, knockCal: 0.37},
   inertia: 0.13,
   combustion: 0.73,
   vehicle: {
@@ -502,7 +502,7 @@ const F1_V10 = {
     tailDia: 76,
   },
   induction: { type: 'na' },
-  ecu: { idle: 4000, limit: 19000, limiter: 'spark', hyst: 300, afr: 12.2, burble: 0.2, launchRpm: 11000, startFlare: 1500 },
+  ecu: { idle: 4000, limit: 19000, limiter: 'spark', hyst: 300, afr: 12.2, burble: 0.2, launchRpm: 11000, startFlare: 1500, knockCal: 0.584},
   inertia: 0.045,
   friction: 0.75,
   combustion: 0.76,
@@ -520,7 +520,7 @@ const F1_V10 = {
     shiftTime: 0.04,
     mu: 1.9,
   },
-  sound: { exhaust: 1, intake: 1.2, mech: 1, valvetrain: 'pneumatic', gear: 0.8, trim: 0.13 },
+  sound: { exhaust: 1, intake: 1.2, mech: 1, valvetrain: 'pneumatic', gear: 0.8, trim: 0.12 },
 };
 
 const I4_RALLY = {
@@ -553,7 +553,7 @@ const I4_RALLY = {
     tailDia: 90,
   },
   induction: { type: 'turbo', count: 1, size: 0.85, boost: 1.6, blades: 6, bov: 'atm' },
-  ecu: { idle: 1100, limit: 7800, limiter: 'spark', afr: 11.8, burble: 0.4, antilag: true, launchRpm: 5000 },
+  ecu: { idle: 1100, limit: 7800, limiter: 'spark', afr: 11.8, burble: 0.4, antilag: true, launchRpm: 5000, knockCal: 0.264},
   inertia: 0.11,
   combustion: 0.73,
   vehicle: {
@@ -570,7 +570,7 @@ const I4_RALLY = {
     shiftTime: 0.05,
     mu: 1.05,
   },
-  sound: { exhaust: 1.1, intake: 1, mech: 1, valvetrain: 'dohc', gear: 0.7, trim: 0.85 },
+  sound: { exhaust: 1.1, intake: 1, mech: 1, valvetrain: 'dohc', gear: 0.7, trim: 0.84 },
 };
 
 const I4_VTEC = {
@@ -604,7 +604,7 @@ const I4_VTEC = {
     tailLen: 0.3,
   },
   induction: { type: 'na' },
-  ecu: { idle: 850, limit: 9000, limiter: 'fuel', afr: 12.8, burble: 0.05, launchRpm: 5500 },
+  ecu: { idle: 850, limit: 9000, limiter: 'fuel', afr: 12.8, burble: 0.05, launchRpm: 5500, knockCal: 0.316},
   inertia: 0.1,
   combustion: 0.74,
   vehicle: {
@@ -618,7 +618,7 @@ const I4_VTEC = {
     layout: 'front',
     shiftTime: 0.22,
   },
-  sound: { exhaust: 1, intake: 1.4, mech: 1.1, valvetrain: 'dohc', trim: 0.69 },
+  sound: { exhaust: 1, intake: 1.4, mech: 1.1, valvetrain: 'dohc', trim: 0.68 },
 };
 
 const F4_TURBO = {
@@ -654,7 +654,7 @@ const F4_TURBO = {
     tailLen: 0.3,
   },
   induction: { type: 'turbo', count: 1, size: 0.95, boost: 1.1, blades: 6, bov: 'atm' },
-  ecu: { idle: 800, limit: 6800, limiter: 'fuel', afr: 11.8, burble: 0.15, launchRpm: 4000 },
+  ecu: { idle: 800, limit: 6800, limiter: 'fuel', afr: 11.8, burble: 0.15, launchRpm: 4000, knockCal: 0.353},
   inertia: 0.16,
   combustion: 0.72,
   vehicle: {
@@ -669,7 +669,7 @@ const F4_TURBO = {
     layout: 'front',
     shiftTime: 0.2,
   },
-  sound: { exhaust: 1.1, intake: 1, mech: 1, valvetrain: 'dohc', trim: 0.5 },
+  sound: { exhaust: 1.1, intake: 1, mech: 1, valvetrain: 'dohc', trim: 0.48 },
 };
 
 const ROTARY = {
@@ -705,7 +705,7 @@ const ROTARY = {
     tailLen: 0.3,
   },
   induction: { type: 'na' },
-  ecu: { idle: 1150, limit: 9000, limiter: 'spark', afr: 12.4, burble: 0.5, launchRpm: 5000 },
+  ecu: { idle: 1150, limit: 9000, limiter: 'spark', afr: 12.4, burble: 0.5, launchRpm: 5000, knockCal: 0.577},
   inertia: 0.12,
   friction: 1.1,
   combustion: 0.62,
@@ -755,7 +755,7 @@ const VTWIN = {
     tailLen: 0.2,
   },
   induction: { type: 'na' },
-  ecu: { idle: 900, limit: 5600, limiter: 'spark', afr: 12.8, burble: 0.35, launchRpm: 3000, startFlare: 400 },
+  ecu: { idle: 900, limit: 5600, limiter: 'spark', afr: 12.8, burble: 0.35, launchRpm: 3000, startFlare: 400, knockCal: 0.46},
   inertia: 0.15,
   combustion: 0.68,
   vehicle: {
@@ -770,10 +770,112 @@ const VTWIN = {
     shiftTime: 0.25,
     mu: 1.0,
   },
-  sound: { exhaust: 1.2, intake: 1.2, mech: 1.6, valvetrain: 'ohv', trim: 0.73 },
+  sound: { exhaust: 1.2, intake: 1.2, mech: 1.6, valvetrain: 'ohv', trim: 0.72 },
 };
 
-export const PRESETS = [V12_65, V12_60, V8_LS, V8_BIGBLOCK, V8_BLOWER, V8_FLAT, V10_72, F1_V10, F6_GT, I6_TURBO, I4_RALLY, I4_VTEC, F4_TURBO, ROTARY, VTWIN];
+const V8_HOTVEE = {
+  id: 'v8-hotvee',
+  name: 'Hot-Vee V8',
+  tagline: '4.0 L cross-plane V8 · twin turbos in the vee',
+  origin: 'Germany',
+  family: 'V8',
+  blurb:
+    'Both turbos sit inside the vee on very short manifolds, one per bank. Each bank keeps its cross-plane 90/180/270° pulse spacing, so the burble survives the turbines, and the overrun map crackles on every lift.',
+  listen: 'Lift off from high revs for the crackle. On full boost the turbines round off the pulses and the whistle comes through.',
+  cylinders: 8,
+  bore: 83,
+  stroke: 92,
+  rod: 148,
+  compression: 10.5,
+  firingOrder: [1, 5, 4, 8, 6, 3, 7, 2],
+  intervals: 90,
+  banks: [
+    [1, 2, 3, 4],
+    [5, 6, 7, 8],
+  ],
+  valves: { inCount: 2, exCount: 2, inDia: 32, exDia: 27 },
+  cam: { in: [10, 50, 10.5], ex: [48, 12, 10] },
+  intake: { runnerLen: 0.3, runnerDia: 42, plenum: 5, throttleDia: 82, airbox: 'stock' },
+  exhaust: {
+    headers: { style: 'n-1', len: 0.32, dia: 38 },
+    cat: true,
+    resonator: true,
+    midLen: 1.5,
+    pipeDia: 70,
+    merge: 'h',
+    muffler: 'valved',
+    tips: 4,
+    tailLen: 0.3,
+    tailDia: 80,
+  },
+  induction: { type: 'turbo', count: 2, size: 0.6, boost: 1.1, blades: 11, bov: 'atm' },
+  ecu: { idle: 750, limit: 7200, limiter: 'fuel', afr: 12.2, burble: 0.75, launchRpm: 3200, octane: 98, knockCal: 0.22 },
+  inertia: 0.22,
+  combustion: 0.72,
+  vehicle: {
+    mass: 1650,
+    gears: [3.4, 2.19, 1.63, 1.29, 1.03, 0.84, 0.63],
+    final: 3.67,
+    tire: 0.35,
+    cd: 0.36,
+    area: 2.0,
+    rearBias: 0.53,
+    layout: 'front',
+    shiftTime: 0.1,
+  },
+  sound: { exhaust: 1, intake: 1, mech: 0.9, valvetrain: 'dohc', trim: 1.74 },
+};
+
+const I5_TURBO = {
+  id: 'i5-turbo',
+  name: 'Turbo Five',
+  tagline: '2.5 L inline-5 · turbo · fires 1-2-4-5-3',
+  origin: 'Germany',
+  family: 'I5',
+  blurb:
+    'Five cylinders fire every 144°, two and a half pulses per crank turn, so the note sits between a four and a six. The 1-2-4-5-3 order hops back and forth along the block, and each pulse reaches the turbo from a different distance. That is the warble.',
+  listen: 'Rev it slowly from idle: the warble is the 2.5th engine order beating against its neighbours.',
+  cylinders: 5,
+  bore: 82.5,
+  stroke: 92.8,
+  rod: 144,
+  compression: 10,
+  firingOrder: [1, 2, 4, 5, 3],
+  intervals: 144,
+  valves: { inCount: 2, exCount: 2, inDia: 33, exDia: 28 },
+  cam: { in: [12, 48, 10.5], ex: [46, 10, 10] },
+  intake: { runnerLen: 0.32, runnerDia: 42, plenum: 3.5, throttleDia: 74, airbox: 'stock' },
+  exhaust: {
+    headers: { style: 'n-1', len: 0.42, dia: 40, lens: [0.62, 0.5, 0.4, 0.32, 0.26] },
+    cat: true,
+    resonator: true,
+    midLen: 1.6,
+    pipeDia: 76,
+    muffler: 'valved',
+    tips: 2,
+    tailLen: 0.3,
+    tailDia: 80,
+  },
+  induction: { type: 'turbo', count: 1, size: 1.0, boost: 1.3, blades: 7, bov: 'atm' },
+  ecu: { idle: 800, limit: 7000, limiter: 'fuel', afr: 12, burble: 0.45, launchRpm: 4000, octane: 98, knockCal: 0.226 },
+  inertia: 0.14,
+  combustion: 0.72,
+  vehicle: {
+    mass: 1500,
+    gears: [3.56, 2.53, 1.68, 1.21, 0.95, 0.76, 0.63],
+    final: 4.2,
+    tire: 0.33,
+    cd: 0.33,
+    area: 2.1,
+    rearBias: 0.45,
+    drive: 'awd',
+    layout: 'front',
+    shiftTime: 0.08,
+  },
+  sound: { exhaust: 1.1, intake: 1.1, mech: 1, valvetrain: 'dohc', trim: 1.13 },
+};
+
+export const PRESETS = [V12_65, V12_60, V8_LS, V8_BIGBLOCK, V8_BLOWER, V8_HOTVEE, V8_FLAT, V10_72, F1_V10, F6_GT, I6_TURBO, I5_TURBO, I4_RALLY, I4_VTEC, F4_TURBO, ROTARY, VTWIN];
 
 export function presetById(id) {
   return PRESETS.find((p) => p.id === id) ?? PRESETS[0];

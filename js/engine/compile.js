@@ -170,12 +170,15 @@ function component(net, inNode, kind, dia, x0, x1, y, opts = {}) {
 
 // Add a radiating tail pipe. ch: 0 = left, 1 = right, 2 = centre. Several
 // tips on one side are acoustically one pipe; they are only drawn separately.
-function tails(net, inNode, { tips = 1, len = 0.5, dia = 0.07, ch = 0, x1 = 0.985, temp = 0.4 }) {
+function tails(net, inNode, { tips = 1, len = 0.5, dia = 0.07, ch = 0, x1 = 0.985, temp = 0.4, side = 0 }) {
   const [x0, y0] = net.pt(inNode);
   const area = tips * Math.pow(tips > 1 ? dia * 0.8 : dia, 2);
   const d = Math.sqrt(area);
-  const o = net.node(NODE.OPEN, { x: x1, y: y0, ch, radius: d / 2, tips });
-  net.pipe(inNode, o, { len: len + 0.6 * d / 2, dia: d, temp, pts: [[x0, y0], [x1, y0]], label: 'tail' });
+  // side pipes turn out through the sill (up = left side, down = right side)
+  const end = side ? [x0 + 0.03, side < 0 ? 0.03 : 0.97] : [x1, y0];
+  const o = net.node(NODE.OPEN, { x: end[0], y: end[1], ch, radius: d / 2, tips, dir: side < 0 ? 'up' : side > 0 ? 'down' : 'right' });
+  const pts = side ? [[x0, y0], [end[0], y0], end] : [[x0, y0], end];
+  net.pipe(inNode, o, { len: len + 0.6 * d / 2, dia: d, temp, pts, label: 'tail' });
   return [o];
 }
 
@@ -275,7 +278,15 @@ function turbine(net, inNode, x, y, t, idx) {
   const wy = y + (y < 0.5 ? -0.07 : 0.07);
   const w = net.node(NODE.RESISTOR, { x: x + 0.035, y: wy, R: 0, K: 0, dyn: DYN.WASTEGATE, turbo: idx, closedK: 3e8 });
   net.pipe(house, w, { len: 0.1, dia: mm(38), temp: 1, pts: [[x, y], [x, wy], [x + 0.035, wy]], label: 'wastegate' });
-  net.pipe(w, out, { len: 0.1, dia: mm(38), temp: 0.9, pts: [[x + 0.035, wy], [x + 0.075, wy], [x + 0.075, y]], label: 'wastegate' });
+  if (t.screamer) {
+    // Screamer pipe: the wastegate dumps straight to the air through its own
+    // short pipe instead of rejoining the exhaust.
+    const up = y < 0.5;
+    const so = net.node(NODE.OPEN, { x: x + 0.06, y: up ? 0.03 : 0.97, ch: 6, radius: mm(19), tips: 1, dir: up ? 'up' : 'down' });
+    net.pipe(w, so, { len: 0.5, dia: mm(38), temp: 0.95, pts: [[x + 0.035, wy], [x + 0.06, wy], [x + 0.06, up ? 0.03 : 0.97]], label: 'screamer' });
+  } else {
+    net.pipe(w, out, { len: 0.1, dia: mm(38), temp: 0.9, pts: [[x + 0.035, wy], [x + 0.075, wy], [x + 0.075, y]], label: 'wastegate' });
+  }
   return out;
 }
 
@@ -297,9 +308,11 @@ function buildExhaust(spec) {
   if (spec.kind === 'rotary') {
     // Each rotor has one peripheral exhaust port shared by its three faces.
     const coll = net.junction(0.42, 0.5, { collector: true });
-    for (let r = 0; r < 2; r++) {
+    const nr = spec.cylinders / 3;
+    const pitch = Math.min(0.14, 0.3 / Math.max(1, nr - 1));
+    for (let r = 0; r < nr; r++) {
       const cyls = [r * 3, r * 3 + 1, r * 3 + 2];
-      const p = net.node(NODE.PORT, { cyls, x: 0.12 + r * 0.14, y: 0.3 });
+      const p = net.node(NODE.PORT, { cyls, x: 0.12 + r * pitch, y: 0.3 });
       net.pipe(p, coll, { len: ex.headers?.len ?? 0.55, dia: mm(ex.headers?.dia ?? 50), temp: 1, nl: 1, pts: elbow(net, p, coll, 'drop'), label: 'primary' });
     }
     buildSingleTail(net, spec, coll, 0.5);
@@ -332,8 +345,11 @@ function buildExhaust(spec) {
     return finishNet(net, lay);
   }
 
-  // Dual bank (V / boxer).
-  const sides = lay.banks.map((bank, bi) => {
+  // Dual bank (V / boxer). With 180-degree headers the cylinders are regrouped
+  // across the banks so each collector sees evenly spaced pulses (the Ford
+  // GT40 'bundle of snakes').
+  const groups = ex.headers?.style === '180' ? evenGroups(spec) : lay.banks;
+  const sides = groups.map((bank, bi) => {
     const y = bi === 0 ? 0.36 : 0.64;
     let n = bankHeaders(net, spec, lay, bank, bi, ex, [0.36, y]);
     if (turbo && nTurbo >= 2) n = turbine(net, n, 0.44, y, spec.induction, bi);
@@ -348,24 +364,47 @@ function buildExhaust(spec) {
     return finishNet(net, lay);
   }
 
-  const xStart = turbo ? 0.53 : 0.4;
-  // cats
-  if (ex.cat) sides.forEach((s) => (s.n = component(net, s.n, 'cat', midDia, xStart + 0.01, xStart + 0.12, s.y, { temp: 0.85 })));
-  const xMidEnd = 0.7;
-  const merge = ex.merge ?? 'dual';
+  const side = ex.exit === 'side';
+  const merge = side ? 'dual' : ex.merge ?? 'dual';
+  // cats and resonators in each bank's pipe, squeezed to fit before the crossover
+  const inline = [ex.cat && ['cat', 0.85], ex.resonator && ['resonator', 0.75]].filter(Boolean);
+  const xoverW = merge === 'x' ? 0.08 : merge === 'h' ? 0.03 : 0;
+  let x = turbo ? 0.53 : 0.4;
+  if (inline.length) {
+    const w = Math.max(0.045, Math.min(0.11, (0.56 - x - 0.02) / inline.length - 0.01));
+    for (const [kind, temp] of inline) {
+      sides.forEach((s) => (s.n = component(net, s.n, kind, midDia, x + 0.01, x + 0.01 + w, s.y, { temp })));
+      x += w + 0.01;
+    }
+  }
+
+  if (side) {
+    // Side pipes: a short run to a side silencer, then out under the doors.
+    sides.forEach((s, i) => {
+      const j = net.junction(x + 0.04, s.y);
+      net.pipe(s.n, j, { len: Math.min(midLen, 0.45), dia: midDia, temp: 0.7, pts: elbow(net, s.n, j, 'straight'), label: 'mid' });
+      let n = j;
+      if (muff !== 'none') n = component(net, n, muff, midDia, x + 0.05, x + 0.2, s.y, { temp: 0.6 });
+      tails(net, n, { tips: tipsPerSide, len: 0.12, dia: tailDia, ch: i === 0 ? 0 : 1, side: i === 0 ? -1 : 1, temp: 0.5 });
+    });
+    return finishNet(net, lay);
+  }
+
   if (merge === 'y' || merge === 'y-dual') {
     // Both banks merge into a single pipe (maybe split again at the back).
-    const m = net.junction(0.6, 0.5);
+    const xm0 = Math.max(0.6, x + 0.04);
+    const m = net.junction(xm0, 0.5);
     sides.forEach((s, i) => {
       net.pipe(s.n, m, { len: midLen * 0.6 + (i ? ex.asym ?? 0.18 : 0), dia: midDia, temp: 0.75, pts: elbow(net, s.n, m, 'hv'), label: 'mid' });
     });
     let n = m;
-    const mf = net.junction(0.68, 0.5);
+    const mf = net.junction(Math.max(0.68, xm0 + 0.05), 0.5);
     net.pipe(n, mf, { len: midLen * 0.4, dia: midDia * 1.25, temp: 0.65, pts: [net.pt(n), net.pt(mf)], label: 'mid' });
     n = mf;
+    const mx = net.pt(mf)[0];
     if (merge === 'y-dual') {
       // single muffler box feeding both sides
-      n = component(net, n, muff === 'none' ? 'straight' : muff, midDia * 1.25, 0.69, 0.86, 0.5, { temp: 0.55 });
+      n = component(net, n, muff === 'none' ? 'straight' : muff, midDia * 1.25, mx + 0.01, 0.86, 0.5, { temp: 0.55 });
       const yl = 0.4, yr = 0.6;
       const jl = net.junction(0.9, yl), jr = net.junction(0.9, yr);
       net.pipe(n, jl, { len: 0.25, dia: tailDia, temp: 0.45, pts: [net.pt(n), [0.88, 0.5], [0.88, yl], [0.9, yl]] });
@@ -373,14 +412,14 @@ function buildExhaust(spec) {
       tails(net, jl, { tips: tipsPerSide, len: tailLen, dia: tailDia, ch: 0 });
       tails(net, jr, { tips: tipsPerSide, len: tailLen, dia: tailDia, ch: 1 });
     } else {
-      if (muff !== 'none') n = component(net, n, muff, midDia * 1.25, 0.69, 0.88, 0.5, { temp: 0.55 });
+      if (muff !== 'none') n = component(net, n, muff, midDia * 1.25, mx + 0.01, 0.88, 0.5, { temp: 0.55 });
       tails(net, n, { tips, len: tailLen, dia: tailDia, ch: 2 });
     }
     return finishNet(net, lay);
   }
 
   // Mid pipes with optional crossover
-  const xc = 0.56;
+  const xc = Math.max(0.56, x + 0.03);
   const cx = sides.map((s, i) => {
     const j = net.junction(xc, s.y);
     // the second bank's pipe is routed a little longer, as under a real car
@@ -400,16 +439,25 @@ function buildExhaust(spec) {
   } else {
     sides.forEach((s, i) => (s.n = cx[i]));
   }
+  const xmid = Math.max(0.66, xc + xoverW + 0.02);
   sides.forEach((s, i) => {
-    const j = net.junction(0.66, s.y);
+    const j = net.junction(xmid, s.y);
     net.pipe(s.n, j, { len: midLen * 0.5, dia: midDia, temp: 0.65, pts: elbow(net, s.n, j, 'straight'), label: 'mid' });
     let n = j;
     if (muff !== 'none') {
-      n = component(net, n, muff, midDia, 0.67, 0.86, s.y, { temp: 0.55, bypassDy: i === 0 ? -0.07 : 0.07 });
+      n = component(net, n, muff, midDia, xmid + 0.01, 0.86, s.y, { temp: 0.55, bypassDy: i === 0 ? -0.07 : 0.07 });
     }
     tails(net, n, { tips: tipsPerSide, len: tailLen, dia: tailDia, ch: i === 0 ? 0 : 1 });
   });
   return finishNet(net, lay);
+}
+
+// Split the cylinders into two collectors that each fire at even intervals:
+// alternate cylinders in firing order.
+function evenGroups(spec) {
+  const ang = firingAngles(spec);
+  const order = ang.map((a, i) => [a, i + 1]).sort((p, q) => p[0] - q[0]).map((p) => p[1]);
+  return [order.filter((_, k) => k % 2 === 0), order.filter((_, k) => k % 2 === 1)];
 }
 
 function headers421(net, spec, lay, ex) {
@@ -436,8 +484,22 @@ function buildSingleTail(net, spec, n, y) {
   const tailDia = mm(ex.tailDia ?? ex.pipeDia ?? 63);
   const muff = ex.muffler ?? 'sport';
   const [x0] = net.pt(n);
-  const x = Math.max(x0 + 0.03, 0.46);
-  if (ex.cat) n = component(net, n, 'cat', midDia, x, x + 0.1, y, { temp: 0.85 });
+  let x = Math.max(x0 + 0.03, 0.46);
+  if (ex.cat) {
+    n = component(net, n, 'cat', midDia, x, x + 0.1, y, { temp: 0.85 });
+    x += 0.11;
+  }
+  if (ex.resonator) n = component(net, n, 'resonator', midDia, x, Math.min(x + 0.08, 0.64), y, { temp: 0.75 });
+  if (ex.exit === 'side') {
+    // one side pipe on the right: short run to the silencer, out under the door
+    const [xs] = net.pt(n);
+    const j = net.junction(xs + 0.04, y);
+    net.pipe(n, j, { len: Math.min(ex.midLen ?? 1.2, 0.5), dia: midDia, temp: 0.7, pts: [net.pt(n), [xs + 0.04, y]], label: 'mid' });
+    n = j;
+    if (muff !== 'none') n = component(net, n, muff, midDia, xs + 0.05, xs + 0.2, y, { temp: 0.6 });
+    tails(net, n, { tips: 1, len: 0.12, dia: tailDia, ch: 1, side: 1, temp: 0.5 });
+    return;
+  }
   const j1 = net.junction(0.66, y);
   net.pipe(n, j1, { len: ex.midLen ?? 1.2, dia: midDia, temp: 0.7, pts: [net.pt(n), [0.66, y]], label: 'mid' });
   n = j1;
@@ -471,8 +533,10 @@ function buildIntake(spec) {
   const dia = mm(it.runnerDia ?? 45);
   const len = it.runnerLen ?? 0.3;
   if (spec.kind === 'rotary') {
-    for (let r = 0; r < 2; r++) {
-      const p = net.node(NODE.PORT, { cyls: [r * 3, r * 3 + 1, r * 3 + 2], x: 0.12 + r * 0.14, y: 0.1 });
+    const nr = spec.cylinders / 3;
+    const pitch = Math.min(0.14, 0.3 / Math.max(1, nr - 1));
+    for (let r = 0; r < nr; r++) {
+      const p = net.node(NODE.PORT, { cyls: [r * 3, r * 3 + 1, r * 3 + 2], x: 0.12 + r * pitch, y: 0.1 });
       net.pipe(p, plenum, { len, dia, temp: 0, hf: 0.15, g: 0.965, pts: [net.pt(p), net.pt(plenum)] });
     }
   } else {
@@ -660,14 +724,11 @@ function geometryTables(spec) {
 // Main entry
 // ---------------------------------------------------------------------------
 
-export function compileEngine(spec) {
-  const g = geometryTables(spec);
-  const cycle = g.cycle;
+// Crank angle (0..cycle) at which each cylinder fires.
+export function firingAngles(spec) {
   const n = spec.cylinders;
-  const tdcFire = cycle / 2;
-
-  // Firing offsets
-  let angles = new Array(n);
+  const cycle = spec.kind === 'rotary' ? 1080 : 720;
+  const angles = new Array(n);
   if (spec.firingAngles) {
     for (let i = 0; i < n; i++) angles[i] = spec.firingAngles[i];
   } else {
@@ -679,6 +740,17 @@ export function compileEngine(spec) {
       a += Array.isArray(iv) ? iv[k % iv.length] : iv;
     }
   }
+  return angles;
+}
+
+export function compileEngine(spec) {
+  const g = geometryTables(spec);
+  const cycle = g.cycle;
+  const n = spec.cylinders;
+  const tdcFire = cycle / 2;
+
+  // Firing offsets
+  const angles = firingAngles(spec);
   const cylOffset = new Float64Array(n);
   for (let i = 0; i < n; i++) cylOffset[i] = (((tdcFire - angles[i]) % cycle) + cycle) % cycle;
 
@@ -691,7 +763,7 @@ export function compileEngine(spec) {
   const inNet = buildIntake(spec);
 
   const displacement = g.vd * n * (spec.kind === 'rotary' ? 2 / 3 : 1); // swept volume per 720 deg equiv.
-  const dispLitres = spec.kind === 'rotary' ? (spec.chamberDisplacement * 2) / 1000 : (g.vd * n) * 1000;
+  const dispLitres = spec.kind === 'rotary' ? (spec.chamberDisplacement * (n / 3)) / 1000 : (g.vd * n) * 1000;
 
   const it = spec.intake ?? {};
   const ind = spec.induction ?? { type: 'na' };
@@ -758,12 +830,18 @@ export function compileEngine(spec) {
       launchRpm: ecu.launchRpm ?? 4000,
       sparkBase: ecu.sparkBase ?? 0,
       startFlare: ecu.startFlare ?? 600,
+      octane: ecu.octane ?? 98,
+      knockCal: ecu.knockCal ?? 0, // 0 = generic calibration
     },
     inertia: spec.inertia ?? 0.2,
     friction: spec.friction ?? 1,
     combustion: spec.combustion ?? 0.8,
     burnScale: spec.burnScale ?? 1,
     stroke: mm(spec.stroke ?? 70),
+    bore: mm(spec.bore ?? 90),
+    // valve springs: float a little above the factory rev limit
+    floatRpm: ecu.floatRpm ?? (snd.valvetrain === 'pneumatic' || snd.valvetrain === 'none' ? 40000 : (ecu.limit ?? 6500) * 1.07),
+    exhaustExit: spec.exhaust?.exit ?? 'rear',
     vehicle: {
       mass: veh.mass ?? 1500,
       gears: veh.gears ?? [3.2, 2.1, 1.5, 1.15, 0.92, 0.75],

@@ -7,6 +7,9 @@ import { Scope } from './ui/scope.js';
 import { Controls } from './ui/controls.js';
 import { Garage } from './ui/garage.js';
 import { Workshop, CAMERAS, clone, applyHeaderEqualize } from './ui/workshop.js';
+import { Builder } from './ui/builder.js';
+import { SCENES, drawSceneHud, timeSlip } from './ui/scenes.js';
+import { buildSpecs, loadBuilds, saveBuilds } from './engine/builder.js';
 
 const $ = (id) => document.getElementById(id);
 const store = {
@@ -49,6 +52,7 @@ const app = {
   dynoActive: false,
   lastRun: null,
   timer: { state: 'idle', t0: 0, result: null },
+  warned: {},
 };
 
 // ---------------------------------------------------------------- UI objects
@@ -70,16 +74,39 @@ const controls = new Controls({
   onAction: (a, v) => action(a, v),
 });
 
+// Factory engines plus the builds saved in this browser.
+function allEngines() {
+  return [...PRESETS, ...buildSpecs()];
+}
+function engineById(id) {
+  if (id?.startsWith('my-')) return buildSpecs().find((s) => s.id === id) ?? presetById('v12-65');
+  return presetById(id);
+}
+
 const garage = new Garage({
   root: $('garage'),
   cards: $('garageCards'),
   filters: $('garageFilters'),
   close: $('garageClose'),
-  presets: PRESETS,
+  getEngines: allEngines,
   onPick: (id) => loadEngine(id, { autostart: true }),
+  onBuild: () => app.openBuilder({ from: 'new' }),
+  onEdit: (id) => {
+    const s = engineById(id);
+    if (s.custom) {
+      loadEngine(id, { autostart: true });
+      app.openBuilder({ design: s.design });
+    }
+  },
+  onDelete: (id) => {
+    saveBuilds(loadBuilds().filter((d) => d.id !== id));
+    toast('Build deleted');
+    if (app.presetId === id) loadEngine('v12-65', { autostart: true });
+  },
 });
 
 const workshop = new Workshop({ root: $('workshop'), body: $('wsBody'), close: $('wsClose'), reset: $('wsReset'), app });
+const builder = new Builder({ root: $('builder'), app, presets: PRESETS });
 
 // ------------------------------------------------------------ engine / tune
 function defaultTune(f) {
@@ -94,6 +121,10 @@ function defaultTune(f) {
     tc: true,
     autoShift: true,
     valve: 'auto',
+    spark: 0,
+    octane: f.ecu.octane ?? 98,
+    knockCtl: true,
+    springs: 'stock',
   };
 }
 
@@ -101,14 +132,20 @@ function compile(spec) {
   return compileEngine(applyHeaderEqualize(spec));
 }
 
-function describeMods() {
-  const f = app.factory, s = app.spec;
+function describeMods(s = app.spec, f = app.factory) {
   const d = [];
   if ((s.exhaust.muffler ?? '') !== (f.exhaust.muffler ?? '')) d.push(s.exhaust.muffler === 'none' ? 'straight pipes' : `${s.exhaust.muffler} silencer`);
   if ((s.exhaust.merge ?? 'dual') !== (f.exhaust.merge ?? 'dual')) d.push(`${s.exhaust.merge}-merge`);
+  if ((s.exhaust.headers?.style ?? 'n-1') !== (f.exhaust.headers?.style ?? 'n-1')) d.push(s.exhaust.headers.style === '180' ? '180° headers' : `${s.exhaust.headers.style} headers`);
   if (!!s.exhaust.cat !== !!f.exhaust.cat) d.push(s.exhaust.cat ? 'cats' : 'decat');
-  if (app.camLevel) d.push(app.camLevel === 1 ? 'fast-road cams' : 'race cams');
-  if ((s.induction?.type ?? 'na') !== (f.induction?.type ?? 'na')) d.push(s.induction.type);
+  if (!!s.exhaust.resonator !== !!f.exhaust.resonator) d.push(s.exhaust.resonator ? 'resonators' : 'resonator delete');
+  if ((s.exhaust.exit ?? 'rear') !== (f.exhaust.exit ?? 'rear')) d.push(s.exhaust.exit === 'side' ? 'side pipes' : 'rear exit');
+  if ((s.intake?.airbox ?? 'stock') !== (f.intake?.airbox ?? 'stock')) d.push(s.intake.airbox === 'open' ? 'open filter' : s.intake.airbox === 'ram' ? 'ram air' : 'airbox');
+  if (!!s.intake?.itb !== !!f.intake?.itb) d.push(s.intake.itb ? 'ITBs' : 'single throttle');
+  if (s === app.spec && app.camLevel) d.push(app.camLevel === 1 ? 'fast-road cams' : 'race cams');
+  if ((s.induction?.type ?? 'na') !== (f.induction?.type ?? 'na') || (s.induction?.count ?? 1) !== (f.induction?.count ?? 1)) d.push(s.induction.type === 'na' ? 'atmospheric' : s.induction.type === 'turbo' && s.induction.count > 1 ? 'twin-turbo' : s.induction.type);
+  if (!!s.induction?.screamer !== !!f.induction?.screamer) d.push(s.induction.screamer ? 'screamer pipe' : 'wastegate plumbed back');
+  if ((s.induction?.ratio ?? 0) !== (f.induction?.ratio ?? 0) && (s.induction?.type === 'twinscrew' || s.induction?.type === 'roots')) d.push(`${s.induction.ratio}:1 pulley`);
   if (s.exhaust.headers?.len !== f.exhaust.headers?.len) d.push(`${s.exhaust.headers.len.toFixed(2)} m primaries`);
   return d.length ? d.join(', ') : 'factory';
 }
@@ -118,7 +155,8 @@ function updateEngineUI() {
   $('epName').textContent = f.name;
   $('epTag').textContent = f.tagline;
   $('engineNote').innerHTML = `<b>Listen</b> ${f.listen}`;
-  tach.configure({ limit: app.tune.limit, idle: f.ecu.idle, label: f.family === 'Rotary' ? 'ROTARY' : `${f.family} · ${app.compiled.dispLitres.toFixed(1)} L`, camSwitch: f.camSwitchRpm });
+  tach.labelB = f.family === 'Rotary' ? 'ROTARY' : `${f.family} · ${app.compiled.dispLitres.toFixed(1)} L`;
+  tach.configure({ limit: app.tune.limit, idle: f.ecu.idle, label: tach.labelB, camSwitch: f.camSwitchRpm });
   schem.setEngine(app.compiled, app.spec);
   scope.setEngine(app.compiled, app.spec);
   const hasBoost = (app.spec.induction?.type ?? 'na') !== 'na';
@@ -130,7 +168,9 @@ function updateEngineUI() {
 function loadEngine(id, { autostart = false } = {}) {
   const wasRunning = app.tel?.running;
   app.presetId = id;
-  app.factory = presetById(id);
+  app.factory = engineById(id);
+  if (app.ab && !app.ab.keep) app.ab = null;
+  app.abCompiled = null;
   app.spec = clone(app.factory);
   app.tune = defaultTune(app.factory);
   app.camLevel = 0;
@@ -158,6 +198,7 @@ app.rebuild = (mutate) => {
   if (h?.lens && old?.len && h.len !== old.len) h.lens = h.lens.map((x) => (x * h.len) / old.len);
   app.spec = s;
   app.compiled = compile(s);
+  if (!app.ab) app.abCompiled = null;
   updateEngineUI();
   if (app.started) app.audio.post({ type: 'config', cfg: workletConfig(app.compiled), tune: app.tune, hot: true });
   toast('Rebuilt: ' + describeMods());
@@ -187,6 +228,7 @@ app.setCamera = (c) => {
   store.set('camera', c);
   $('camSel').value = c;
   if (app.started && app.mode !== 'flyby') app.audio.post({ type: 'camera', camera: c });
+  if (app.scene) app.scene.cache.cam = c;
 };
 app.setEnv = (e) => {
   app.env = e;
@@ -207,13 +249,101 @@ app.setVolume = (v) => {
   app.audio.setVolume(v);
 };
 
+// Load an engine spec directly (the builder's live audition). hot: keep the
+// engine running through the swap.
+app.loadSpec = (spec, { hot = false, quiet = false, remember = false } = {}) => {
+  const keep = app.tune;
+  app.presetId = spec.id;
+  app.factory = spec;
+  app.spec = clone(spec);
+  app.tune = defaultTune(spec);
+  if (keep) for (const k of ['tc', 'autoShift', 'valve']) app.tune[k] = keep[k];
+  app.camLevel = 0;
+  app.flyLevel = 1;
+  app.compiled = compile(app.spec);
+  if (app.ab && !app.ab.keep) app.ab = null;
+  app.abCompiled = null;
+  if (remember) store.set('engine', spec.id);
+  updateEngineUI();
+  if (app.started) app.audio.post({ type: 'config', cfg: workletConfig(app.compiled), tune: app.tune, hot: hot && !!(app.tel?.running || app.tel?.starter) });
+  if (!quiet) toast(spec.name);
+  if (workshop.open) workshop.render();
+};
+app.holdGas = (v) => {
+  controls.external = v;
+  if (v > 0 && app.started && app.tel && !app.tel.running && !app.tel.starter) app.audio.post({ type: 'ignition', on: true, crank: true });
+};
+app.toast = (m) => toast(m);
+app.openBuilder = (opts) => {
+  workshop.hide();
+  garage.hide();
+  builder.show(opts);
+};
+
+// ------------------------------------------------------------------ mixer
+// Gains per simulated source: left/right/centre tail pipes, intake (with the
+// turbo or blower), mechanical, road, wastegate dump.
+app.mix = { exL: 1, exR: 1, intake: 1, mech: 1, road: 1, solo: null, ...store.get('mix', {}) };
+function mixGains() {
+  const m = app.mix;
+  const on = (k) => (m.solo == null || m.solo === k || (m.solo === 'ex' && (k === 'exL' || k === 'exR')) ? 1 : 0);
+  const exL = m.exL * on('exL'), exR = m.exR * on('exR');
+  return [exL, exR, (exL + exR) / 2, m.intake * on('intake'), m.mech * on('mech'), m.road * on('road'), (exL + exR) / 2];
+}
+app.setMix = (patch) => {
+  Object.assign(app.mix, patch);
+  store.set('mix', app.mix);
+  if (app.started) app.audio.post({ type: 'mix', gains: mixGains() });
+  $('mixTag').hidden = !(app.mix.solo || ['exL', 'exR', 'intake', 'mech', 'road'].some((k) => Math.abs(app.mix[k] - 1) > 0.01));
+};
+
+// -------------------------------------------------------------------- A/B
+// Slot A is the current engine's factory spec unless something else was
+// stored. Holding A/B hot-swaps the running engine for slot A.
+app.ab = null;
+app.abActive = false;
+app.allEngines = () => allEngines();
+app.abLabel = () => (app.ab ? app.ab.label : `${app.factory.name}, factory spec`);
+app.setAB = (what) => {
+  if (what == null) app.ab = null;
+  else if (what === 'current') app.ab = { spec: clone(app.spec), tune: { ...app.tune }, label: `${app.factory.name}, ${describeMods()}` };
+  else if (what.engine) {
+    const f = engineById(what.engine);
+    app.ab = { spec: clone(f), tune: defaultTune(f), label: `${f.name}, factory spec` };
+  }
+  app.abCompiled = null;
+  toast('A: ' + app.abLabel());
+};
+app.abHold = (on) => abSwitch(on);
+function abSwitch(on) {
+  $('abBtn').classList.toggle('held', on);
+  if (!app.started || on === app.abActive) return;
+  app.abActive = on;
+  const a = app.ab ?? { spec: app.factory, tune: defaultTune(app.factory) };
+  if (on && !app.abCompiled) app.abCompiled = compile(a.spec);
+  const spec = on ? a.spec : app.spec;
+  const tune = on ? { ...a.tune, autoShift: app.tune.autoShift, tc: app.tune.tc } : app.tune;
+  const compiled = on ? app.abCompiled : app.compiled;
+  app.audio.post({ type: 'config', cfg: workletConfig(compiled), tune, hot: true });
+  schem.setEngine(compiled, spec);
+  scope.setEngine(compiled, spec);
+  tach.configure({ limit: tune.limit, idle: spec.ecu.idle, label: on ? 'A' : tach.labelB, camSwitch: spec.camSwitchRpm });
+  $('abTag').hidden = !on;
+  $('abTag').textContent = on ? `A · ${app.abLabel()}` : '';
+}
+
 // ------------------------------------------------------------------ modes
 function setMode(m) {
   if (!app.started) return;
   if (app.dynoActive) stopDyno();
+  endScene();
+  $('scenePick').hidden = true;
   app.mode = m;
-  document.querySelectorAll('.modes button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.mode === m)));
-  if (m === 'flyby') {
+  const scene = !!SCENES[m];
+  document.querySelectorAll('.modes button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.mode === m || (b.dataset.mode === 'scene' && scene))));
+  if (scene && m !== 'flyby') {
+    startScene(m);
+  } else if (m === 'flyby') {
     app.audio.post({ type: 'camera', camera: 'flyby' });
     app.audio.post({ type: 'flyby', style: 'wot' });
     $('flybyStrip').hidden = false;
@@ -225,6 +355,109 @@ function setMode(m) {
     if (m === 'drive') toast('First gear. Floor it');
   }
   app.timer = { state: 'idle', t0: 0, result: app.timer.result };
+}
+
+// ----------------------------------------------------------------- scenes
+function startScene(id) {
+  const def = SCENES[id];
+  const wasRunning = app.tel?.running;
+  if (!wasRunning) app.audio.post({ type: 'ignition', on: true, crank: true });
+  app.scene = { id, leaveT: null, finished: false, cache: {}, staging: id === 'drag' };
+  $('flybyStrip').className = 'flyby-strip scene-hud' + (id === 'mountain' ? ' scene-map' : '');
+  $('flybyStrip').hidden = false;
+  if (id === 'drag') {
+    app.audio.post({ type: 'camera', camera: 'scene' });
+    setTree(-1);
+    $('treeGo').disabled = false;
+    $('slip').hidden = true;
+    $('tree').hidden = false;
+  } else app.audio.post({ type: 'camera', camera: app.camera });
+  const go = () => {
+    if (app.scene?.id === id) app.audio.post({ type: 'scene', id, track: def.track, length: def.length, marks: def.marks });
+  };
+  if (wasRunning) go();
+  else setTimeout(go, 1800);
+  toast(id === 'drag' ? 'Staged on the launch limiter. GO on green' : `${def.title}: the car drives itself`);
+}
+
+function endScene() {
+  if (!app.scene) return;
+  app.scene = null;
+  $('tree').hidden = true;
+  $('flybyStrip').hidden = true;
+  $('flybyStrip').className = 'flyby-strip';
+  app.audio.setEnvironment(app.env, 0.6);
+  app.audio.post({ type: 'scene-stop' });
+}
+
+function sceneGo() {
+  if (!app.scene?.staging) return;
+  app.scene.staging = false;
+  $('treeGo').disabled = true;
+  app.audio.post({ type: 'scene-go' });
+}
+
+function setTree(k, red) {
+  // ambers light in turn, then green; red for a jump start
+  document.querySelectorAll('#tree .lamp').forEach((el) => {
+    const i = +el.dataset.k;
+    el.classList.toggle('on', red ? i === 4 : i === k);
+  });
+}
+
+function toggleScenePick(force) {
+  const p = $('scenePick');
+  const show = force ?? p.hidden;
+  if (show) {
+    p.innerHTML = '';
+    for (const [id, def] of Object.entries(SCENES)) {
+      const b = document.createElement('button');
+      b.setAttribute('role', 'menuitem');
+      b.innerHTML = `<b>${def.title}</b><span>${def.sub}</span><kbd>${def.key}</kbd>`;
+      b.addEventListener('click', () => {
+        p.hidden = true;
+        if (!app.started) start().then(() => setTimeout(() => setMode(id), 600));
+        else setMode(id);
+      });
+      p.appendChild(b);
+    }
+  }
+  p.hidden = !show;
+}
+
+function onScene(m) {
+  const sc = app.scene;
+  if (!sc && m.ev !== 'done') return;
+  switch (m.ev) {
+    case 'env':
+      app.audio.setEnvironment(m.env, m.fade);
+      break;
+    case 'tree':
+      setTree(m.light);
+      if (m.light === 3) sc.greenAt = performance.now();
+      break;
+    case 'done': {
+      if (!sc) return;
+      sc.finished = true;
+      if (sc.id === 'drag' && !m.aborted) {
+        if (m.foul) setTree(-1, true);
+        const key = 'best.' + app.presetId;
+        const best = store.get(key, null);
+        const et = m.times.quarter;
+        if (et && !m.foul && (!best || et < best)) store.set(key, et);
+        const slip = timeSlip(m, `${app.factory.name}`, store.get(key, null));
+        $('slipSub').textContent = `${slip.head} · ${describeMods()}`;
+        $('slipBody').textContent = slip.lines.join('\n');
+        $('slip').hidden = false;
+      } else if (!m.aborted) {
+        toast(`${SCENES[sc.id].title} done`);
+        setTimeout(() => {
+          if (app.scene === sc) setMode('rev');
+        }, 2500);
+      }
+      break;
+    }
+  }
 }
 
 function runDyno() {
@@ -262,7 +495,11 @@ function action(a, v) {
       if (app.started) app.audio.post({ type: 'shift', dir: v });
       break;
     case 'startstop':
-      startStop();
+      if (app.scene?.staging) sceneGo();
+      else startStop();
+      break;
+    case 'scene-menu':
+      toggleScenePick();
       break;
     case 'launch':
       if (app.started) app.audio.post({ type: 'input', launch: v });
@@ -295,13 +532,22 @@ function action(a, v) {
     case 'dyno':
       app.dynoActive ? stopDyno() : runDyno();
       break;
+    case 'ab':
+      abSwitch(!!v);
+      break;
+    case 'builder':
+      app.openBuilder({ from: 'current' });
+      break;
     case 'escape':
       garage.hide();
       workshop.hide();
+      if (builder.open) builder.hide();
+      $('scenePick').hidden = true;
       break;
   }
 }
 
+app.start = () => start();
 async function start() {
   if (app.started || app.starting) return;
   app.starting = true;
@@ -320,6 +566,7 @@ async function start() {
   app.starting = false;
   app.audio.post({ type: 'config', cfg: workletConfig(app.compiled), tune: app.tune });
   app.audio.post({ type: 'camera', camera: app.camera });
+  app.audio.post({ type: 'mix', gains: mixGains() });
   if (app.quality !== 'auto') app.audio.post({ type: 'quality', quality: app.quality });
   app.audio.post({ type: 'ignition', on: true, crank: true, cold: true });
   $('intro').hidden = true;
@@ -362,6 +609,9 @@ function onMessage(m) {
     case 'quality':
       toast(m.eco ? 'Busy device: physics now runs at half rate' : 'Full-rate physics');
       break;
+    case 'scene':
+      onScene(m);
+      break;
     case 'flyby-done':
       setTimeout(() => {
         if (app.mode === 'flyby') setMode('rev');
@@ -373,9 +623,11 @@ function onMessage(m) {
 function onTelemetry(t) {
   app.tel = t;
   tach.target = t.rpm;
+  if (builder.open) $('bRpm').textContent = t.running || t.starter ? `${Math.round(t.rpm).toLocaleString('en-US')} rpm` : 'engine off';
   tach.lim = t.lim;
   tach.camHi = t.camHi;
   const inGear = t.mode === 'drive' || t.mode === 'flyby';
+  if (app.scene?.id === 'drag' && app.scene.leaveT == null && t.scene?.phase === 'run' && t.scene.x > 0.3) app.scene.leaveT = performance.now();
   tach.gear = inGear ? (t.gear ? String(t.gear) : 'N') : t.mode === 'dyno' ? 'D' : 'N';
   tach.speedText = inGear ? `${Math.round(t.speed * 3.6)} km/h` : t.mode === 'dyno' ? 'DYNO' : t.running ? 'NEUTRAL' : t.starter ? 'CRANKING' : 'OFF';
   if (inGear && t.gear !== app.lastGear && app.lastGear) navigator.vibrate?.(12);
@@ -385,6 +637,18 @@ function onTelemetry(t) {
     if (t.afI > 0.35) navigator.vibrate?.(8);
   }
   $('startBtn').classList.toggle('on', !!t.running);
+  if (t.knockN > 0) {
+    tach.knock = Math.max(tach.knock, Math.min(1, 0.3 + t.knock / 3e5));
+    if (!app.warned.knock) {
+      app.warned.knock = true;
+      toast(app.tune.knockCtl ? 'Knock: the ECU hears it and pulls timing' : 'Knock, and the sensor is off: it keeps pinging');
+    }
+  }
+  tach.float = t.float;
+  if (t.float > 0.05 && !app.warned.float) {
+    app.warned.float = true;
+    toast('Valve float: the springs can no longer keep the valves on the cams');
+  }
   if (t.dyno && app.dynoActive) {
     const last = app.dynoPts[app.dynoPts.length - 1];
     if (!last || t.dyno.rpm > last.rpm + 25) app.dynoPts.push({ rpm: t.dyno.rpm, tq: t.dyno.tq });
@@ -487,7 +751,8 @@ function frame(now) {
   schem.draw(now / 1000, app.tel);
   scope.draw(app.audio.analyser, app.tel);
   updateReadouts(dt);
-  drawFlyby();
+  if (app.scene) drawSceneHud($('flybyStrip'), app.scene, app.tel, app.scene.cache);
+  else drawFlyby();
   if (toastT > 0) {
     toastT -= dt;
     if (toastT <= 0) toastEl.classList.remove('show');
@@ -516,6 +781,36 @@ function wire() {
   $('vol').addEventListener('input', (e) => app.setVolume(+e.target.value));
   $('pickEngine').addEventListener('click', () => garage.show(app.presetId));
   $('workshopBtn').addEventListener('click', () => (workshop.open ? workshop.hide() : workshop.show()));
+  $('buildBtn').addEventListener('click', () => app.openBuilder({ from: 'current' }));
+  // A/B: hold for a momentary listen to A; a quick tap latches A until the
+  // next tap.
+  const ab = $('abBtn');
+  let abT = 0, unlatched = false;
+  ab.addEventListener('pointerdown', (e) => {
+    ab.setPointerCapture(e.pointerId);
+    if (app.abLatched) {
+      app.abLatched = false;
+      unlatched = true;
+      abSwitch(false);
+      return;
+    }
+    abT = performance.now();
+    abSwitch(true);
+  });
+  const abUp = () => {
+    if (unlatched) {
+      unlatched = false;
+      return;
+    }
+    if (app.abActive && performance.now() - abT < 250) {
+      app.abLatched = true;
+      toast('A stays on: tap A/B again for B');
+      return;
+    }
+    abSwitch(false);
+  };
+  ab.addEventListener('pointerup', abUp);
+  ab.addEventListener('pointercancel', abUp);
   $('menuBtn').addEventListener('click', () => (workshop.open ? workshop.hide() : workshop.show()));
   $('keyBtn').addEventListener('click', start);
   $('startBtn').addEventListener('click', startStop);
@@ -534,7 +829,24 @@ function wire() {
     app.setTune({ tc: !app.tune.tc });
     toast(app.tune.tc ? 'Traction control on' : 'Traction control off: burnouts allowed');
   });
-  document.querySelectorAll('.modes button').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode)));
+  document.querySelectorAll('.modes button').forEach((b) =>
+    b.addEventListener('click', () => (b.dataset.mode === 'scene' ? toggleScenePick() : setMode(b.dataset.mode)))
+  );
+  $('treeGo').addEventListener('click', sceneGo);
+  $('slipAgain').addEventListener('click', () => {
+    $('slip').hidden = true;
+    setMode('drag');
+  });
+  $('slipClose').addEventListener('click', () => {
+    $('slip').hidden = true;
+    setMode('rev');
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' && app.scene?.staging) sceneGo();
+  });
+  document.addEventListener('pointerdown', (e) => {
+    if (!$('scenePick').hidden && !e.target.closest('#scenePick') && !e.target.closest('[data-mode="scene"]')) $('scenePick').hidden = true;
+  });
   document.querySelectorAll('.tabs [role=tab]').forEach((b) => b.addEventListener('click', () => selectTab(b.dataset.mode)));
   $('dynoRun').addEventListener('click', () => action('dyno'));
   $('strobeBtn').addEventListener('click', () => {

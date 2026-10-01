@@ -7,7 +7,7 @@ const WORKLET_URL = new URL('./engine-worklet.js', import.meta.url);
 export const ENVIRONMENTS = {
   open: { label: 'Open road', wet: 0.1 },
   garage: { label: 'Garage', wet: 0.28 },
-  tunnel: { label: 'Tunnel', wet: 0.5 },
+  tunnel: { label: 'Tunnel', wet: 0.5, boost: 1.25 },
   canyon: { label: 'Canyon', wet: 0.3 },
   dry: { label: 'Anechoic', wet: 0 },
 };
@@ -49,8 +49,13 @@ export class AudioEngine {
     this.node = node;
 
     this.dry = ctx.createGain();
-    this.wet = ctx.createGain();
-    this.conv = ctx.createConvolver();
+    // two reverbs so one place can fade into another (tunnel portals)
+    this.conv = [ctx.createConvolver(), ctx.createConvolver()];
+    this.wetG = [ctx.createGain(), ctx.createGain()];
+    this.wetG[0].gain.value = 0;
+    this.wetG[1].gain.value = 0;
+    this.cur = 0;
+    this.envNow = null;
     this.comp = ctx.createDynamicsCompressor();
     this.comp.threshold.value = -22;
     this.comp.knee.value = 12;
@@ -74,10 +79,12 @@ export class AudioEngine {
     this.analyser.maxDecibels = -10;
 
     node.connect(this.dry);
-    node.connect(this.conv);
-    this.conv.connect(this.wet);
+    for (let i = 0; i < 2; i++) {
+      node.connect(this.conv[i]);
+      this.conv[i].connect(this.wetG[i]);
+      this.wetG[i].connect(this.comp);
+    }
     this.dry.connect(this.comp);
-    this.wet.connect(this.comp);
     this.comp.connect(this.makeup);
     this.makeup.connect(this.limit);
     this.limit.connect(this.master);
@@ -97,17 +104,27 @@ export class AudioEngine {
     if (this.master) this.master.gain.setTargetAtTime(v, this.ctx.currentTime, 0.03);
   }
 
-  setEnvironment(name) {
+  // Switch the surroundings; fade (s) crossfades the two reverbs, e.g. while
+  // a car drives through a tunnel portal.
+  setEnvironment(name, fade = 0.15) {
     this.env = name;
-    if (!this.ctx) return;
+    if (!this.ctx || name === this.envNow) return;
+    this.envNow = name;
     const e = ENVIRONMENTS[name] ?? ENVIRONMENTS.open;
     const t = this.ctx.currentTime;
+    const tc = Math.max(0.01, fade / 3);
+    const nxt = 1 - this.cur;
     if (e.wet > 0) {
       this.irCache[name] ??= makeIR(this.ctx, name);
-      this.conv.buffer = this.irCache[name];
+      this.wetG[nxt].gain.cancelScheduledValues(t);
+      this.wetG[nxt].gain.setValueAtTime(0, t);
+      this.conv[nxt].buffer = this.irCache[name];
+      this.wetG[nxt].gain.setTargetAtTime(e.wet, t + 0.01, tc);
     }
-    this.wet.gain.setTargetAtTime(e.wet, t, 0.05);
-    this.dry.gain.setTargetAtTime(1 - e.wet * 0.35, t, 0.05);
+    this.wetG[this.cur].gain.cancelScheduledValues(t);
+    this.wetG[this.cur].gain.setTargetAtTime(0, t, tc);
+    this.dry.gain.setTargetAtTime((1 - e.wet * 0.35) * (e.boost ?? 1), t, tc);
+    this.cur = nxt;
   }
 
   suspend() {

@@ -26,6 +26,7 @@
         <div class="top-actions">
           <label class="sel"><span>Mic</span><select id="camSel" aria-label="Microphone position"></select></label>
           <label class="sel"><span>Place</span><select id="envSel" aria-label="Environment"></select></label>
+          <button class="btn" id="buildBtn" title="Engine builder">Build</button>
           <button class="btn" id="workshopBtn" title="Tune the engine (T)">Workshop</button>
           <label class="vol" title="Volume">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4z" fill="currentColor" /><path d="M16 8.5a5 5 0 010 7M18.5 6a8.5 8.5 0 010 12" fill="none" stroke="currentColor" stroke-width="1.6" /></svg>
@@ -40,6 +41,7 @@
       <main class="stage">
         <section class="cluster" aria-label="Instruments">
           <div class="tach-wrap"><canvas id="tach" aria-label="Tachometer"></canvas></div>
+          <div class="tags"><span class="tag tag-a" id="abTag" hidden></span><span class="tag" id="mixTag" hidden>Mixer on</span></div>
           <p class="listen" id="engineNote"></p>
           <dl class="readouts">
             <div><dt>Torque</dt><dd id="roTq">—<small> Nm</small></dd></div>
@@ -80,12 +82,13 @@
             <div class="modes" role="radiogroup" aria-label="Mode">
               <button role="radio" data-mode="rev" aria-checked="true" title="Free-rev in neutral (1)">Rev</button>
               <button role="radio" data-mode="drive" aria-checked="false" title="Drive (2)">Drive</button>
-              <button role="radio" data-mode="flyby" aria-checked="false" title="Roadside flyby (3)">Flyby</button>
+              <button role="radio" data-mode="scene" aria-checked="false" aria-haspopup="menu" title="Fly-by, tunnel run, quarter mile, mountain road (3-6)">Scenes</button>
             </div>
             <div class="chips">
               <button class="chip" id="launchBtn" title="Hold with full throttle, release to launch (L)">Launch</button>
               <button class="chip" id="tcBtn" aria-pressed="true" title="Traction control">TC</button>
               <button class="chip" id="blipBtn" title="Throttle blip (Space)">Blip</button>
+              <button class="chip" id="abBtn" title="Hold to hear A, tap to latch (B)">A/B</button>
             </div>
           </div>
           <div class="deck-row">
@@ -93,7 +96,7 @@
             <button class="start" id="startBtn" aria-label="Engine start / stop" title="Start / stop (Enter)"><span>ENGINE</span><strong>START</strong><span>STOP</span></button>
             <button class="paddle" id="shiftUp" aria-label="Shift up" title="Shift up (E)">+</button>
           </div>
-          <div class="keys"><kbd>W</kbd>/<kbd>↑</kbd> throttle · <kbd>A</kbd> part · <kbd>Space</kbd> blip · <kbd>S</kbd> brake · <kbd>Q</kbd> <kbd>E</kbd> shift · <kbd>C</kbd> mic · <kbd>Enter</kbd> start · scroll = hand throttle</div>
+          <div class="keys"><kbd>W</kbd>/<kbd>↑</kbd> throttle · <kbd>A</kbd> part · <kbd>Space</kbd> blip · <kbd>S</kbd> brake · <kbd>Q</kbd> <kbd>E</kbd> shift · <kbd>C</kbd> mic · <kbd>B</kbd> A/B · <kbd>Enter</kbd> start · scroll = hand throttle</div>
         </div>
         <div class="pedal gas" id="gas" role="slider" aria-label="Throttle" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="pedal-fill"></div><span class="pedal-val" id="gasVal"></span><span>THROTTLE</span></div>
       </footer>
@@ -113,7 +116,7 @@
       <div class="sheet-inner">
         <div class="sheet-head">
           <h2 id="garageTitle">Garage</h2>
-          <p>Fifteen engines, each defined by its geometry, cams, firing order and pipes.</p>
+          <p>Seventeen engines, each defined by its geometry, cams, firing order and pipes, and your own builds.</p>
           <button class="btn" id="garageClose">Close</button>
         </div>
         <div class="filters" id="garageFilters"></div>
@@ -129,6 +132,60 @@
       </div>
       <div class="drawer-body" id="wsBody"></div>
     </aside>
+
+    <div class="builder" id="builder" role="dialog" aria-modal="true" aria-labelledby="bTitle" hidden>
+      <header class="b-head">
+        <h2 id="bTitle">Engine builder</h2>
+        <input id="bName" class="b-name" maxlength="40" aria-label="Engine name" spellcheck="false" autocomplete="off" />
+        <label class="sel b-from"><span>Start from</span><select id="bFrom" aria-label="Start from"><option value="">Start from…</option><option value="default">Default V8</option></select></label>
+        <div class="b-actions">
+          <button class="btn" id="bLive" aria-pressed="true" title="Hear every change immediately">Live</button>
+          <button class="btn btn-accent" id="bSave">Save build</button>
+          <button class="btn" id="bClose">Done</button>
+        </div>
+      </header>
+      <div class="b-body">
+        <section class="b-left">
+          <nav class="b-steps" id="bSteps" role="tablist" aria-label="Builder steps"></nav>
+          <div class="b-form" id="bForm"></div>
+        </section>
+        <aside class="b-sheet" aria-label="Spec sheet">
+          <div class="b-id"><h3 id="bTitle2"></h3><p id="bTag"></p></div>
+          <div class="b-fire-wrap"><span class="eyebrow">Firing events, one cycle</span><canvas id="bFire" aria-label="Firing diagram"></canvas></div>
+          <dl class="b-figs" id="bFigs"></dl>
+          <div class="b-dyno-wrap"><div class="b-dyno-head" id="bDynoHead"></div><canvas id="bDyno" aria-label="Estimated torque and power"></canvas></div>
+          <ul class="b-notes" id="bNotes"></ul>
+        </aside>
+      </div>
+      <footer class="b-foot">
+        <button class="b-rev" id="bRev">Hold to rev</button>
+        <span class="b-rpm" id="bRpm">engine off</span>
+        <small class="b-keys"><kbd>W</kbd> revs too</small>
+      </footer>
+    </div>
+
+    <div class="scene-pick" id="scenePick" role="menu" aria-label="Scenes" hidden></div>
+
+    <div class="tree" id="tree" hidden>
+      <div class="tree-lights" aria-hidden="true">
+        <span class="lamp amber" data-k="0"></span>
+        <span class="lamp amber" data-k="1"></span>
+        <span class="lamp amber" data-k="2"></span>
+        <span class="lamp green" data-k="3"></span>
+        <span class="lamp red" data-k="4"></span>
+      </div>
+      <button class="tree-go" id="treeGo">GO</button>
+      <small>on green · Space</small>
+    </div>
+
+    <div class="slip-wrap" id="slip" role="dialog" aria-modal="true" aria-labelledby="slipTitle" hidden>
+      <div class="slip">
+        <div class="slip-head" id="slipTitle">Firing Order Dragway</div>
+        <div class="slip-sub" id="slipSub"></div>
+        <pre class="slip-body" id="slipBody"></pre>
+        <div class="slip-actions"><button class="btn btn-accent" id="slipAgain">Run again</button><button class="btn" id="slipClose">Close</button></div>
+      </div>
+    </div>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script type="module" src="js/main.js"></script>

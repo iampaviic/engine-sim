@@ -233,11 +233,12 @@ export class Schematic {
     // tail pipe exits: sound rings + flames
     const tails = this.net.nodes.filter((nd) => nd.type === 2);
     const spl = tel?.spl ?? 0;
+    const dirA = (t) => (t.dir === 'up' ? -Math.PI / 2 : t.dir === 'down' ? Math.PI / 2 : 0);
     if (tails.length && Math.random() < 0.5) {
-      for (const t of tails) this.rings.push({ x: t.x, y: t.y, r: 0, a: Math.min(1, spl / 8) });
+      for (const t of tails) this.rings.push({ x: t.x, y: t.y, r: 0, a: Math.min(1, spl / 8), d: dirA(t) });
     }
     if (this.pendingFlame > 0) {
-      for (const t of tails) this.flames.push({ x: t.x, y: t.y, life: 1, size: this.pendingFlame });
+      for (const t of tails) if (t.ch !== 6) this.flames.push({ x: t.x, y: t.y, life: 1, size: this.pendingFlame, d: dirA(t) });
       this.pendingFlame = 0;
     }
     g.lineWidth = 1.5 * dpr;
@@ -248,7 +249,7 @@ export class Schematic {
       if (al <= 0.01) return false;
       g.strokeStyle = `rgba(235,227,208,${al * 0.5})`;
       g.beginPath();
-      g.arc(X, Y, ring.r, -0.9, 0.9);
+      g.arc(X, Y, ring.r, ring.d - 0.9, ring.d + 0.9);
       g.stroke();
       return true;
     });
@@ -257,13 +258,14 @@ export class Schematic {
       if (f.life <= 0) return false;
       const [X, Y] = this.map(f.x, f.y);
       const len = (8 + 26 * f.size) * dpr * (0.6 + 0.4 * f.life);
-      const grd = g.createRadialGradient(X, Y, 0, X + len * 0.4, Y, len);
+      const cx = Math.cos(f.d), sy = Math.sin(f.d);
+      const grd = g.createRadialGradient(X, Y, 0, X + len * 0.4 * cx, Y + len * 0.4 * sy, len);
       grd.addColorStop(0, `rgba(255,245,210,${f.life})`);
       grd.addColorStop(0.35, `rgba(255,140,40,${0.8 * f.life})`);
       grd.addColorStop(1, 'rgba(255,60,20,0)');
       g.fillStyle = grd;
       g.beginPath();
-      g.ellipse(X + len * 0.45, Y, len * 0.55, len * 0.22 * (0.7 + Math.random() * 0.5), 0, 0, TAU);
+      g.ellipse(X + len * 0.45 * cx, Y + len * 0.45 * sy, len * 0.55, len * 0.22 * (0.7 + Math.random() * 0.5), f.d, 0, TAU);
       g.fill();
       return true;
     });
@@ -273,7 +275,7 @@ export class Schematic {
       g.strokeStyle = '#9b9180';
       g.lineWidth = 1.5 * dpr;
       g.beginPath();
-      g.ellipse(X, Y, 3 * dpr, 6 * dpr, 0, 0, TAU);
+      g.ellipse(X, Y, 3 * dpr, 6 * dpr, dirA(t), 0, TAU);
       g.fill();
       g.stroke();
     }
@@ -374,9 +376,11 @@ export class Schematic {
     const g = this.g;
     const dpr = this.dpr;
     const snap = this.snap;
-    for (let r = 0; r < 2; r++) {
-      const [X, Y] = this.map(0.12 + r * 0.14, 0.14);
-      const R = Math.min(this.c.height * 0.12, 34 * dpr);
+    const nr = Math.round(this.cfg.nCyl / 3);
+    const pitch = Math.min(0.14, 0.3 / Math.max(1, nr - 1));
+    for (let r = 0; r < nr; r++) {
+      const [X, Y] = this.map(0.12 + r * pitch, 0.14);
+      const R = Math.min(this.c.height * 0.12, (nr > 2 ? 26 : 34) * dpr);
       // housing (epitrochoid-ish)
       g.strokeStyle = 'rgba(235,227,208,0.4)';
       g.fillStyle = '#1b1916';
@@ -393,7 +397,7 @@ export class Schematic {
       g.fill();
       g.stroke();
       // rotor: turns at 1/3 shaft speed, orbiting eccentrically
-      const shaft = ((crank + r * 180) * Math.PI) / 180;
+      const shaft = ((crank + (r * 360) / nr) * Math.PI) / 180;
       const rot = shaft / 3;
       const ex = X + Math.cos(shaft) * R * 0.12;
       const ey = Y + Math.sin(shaft) * R * 0.12;

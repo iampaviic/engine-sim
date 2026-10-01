@@ -71,7 +71,7 @@ export const SCENARIOS = {
 export async function render(presetId, scenarioName, opts = {}) {
   const { compileEngine, workletConfig } = await import(pathToFileURL(path.join(root, 'js/engine/compile.js')).href);
   const { PRESETS } = await import(pathToFileURL(path.join(root, 'js/engine/presets.js')).href);
-  const spec = PRESETS.find((p) => p.id === presetId);
+  const spec = typeof presetId === 'object' ? presetId : PRESETS.find((p) => p.id === presetId);
   if (!spec) throw new Error('no preset ' + presetId);
   const fs = opts.fs ?? 48000;
   const { Proc, posted } = await loadWorklet(fs);
@@ -92,6 +92,7 @@ export async function render(presetId, scenarioName, opts = {}) {
     while (ev < scen.length && scen[ev][0] <= t) send(scen[ev++][1]);
     const l = L.subarray(i, i + 128), r = R.subarray(i, i + 128);
     proc.process([], [[l, r]]);
+    if (opts.onBlock) opts.onBlock(proc, t);
     while (posted.length) {
       const m = posted.shift();
       if (m.type === 'tel') tel.push({ t, ...m });
