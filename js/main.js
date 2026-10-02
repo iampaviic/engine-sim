@@ -238,7 +238,7 @@ function describeMods(s = app.spec, f = app.factory) {
   if ((s.intake?.airbox ?? 'stock') !== (f.intake?.airbox ?? 'stock')) d.push(s.intake.airbox === 'open' ? 'open filter' : s.intake.airbox === 'ram' ? 'ram air' : 'airbox');
   if (!!s.intake?.itb !== !!f.intake?.itb) d.push(s.intake.itb ? 'ITBs' : 'single throttle');
   if (s === app.spec && app.camLevel) d.push(app.camLevel === 1 ? 'fast-road cams' : 'race cams');
-  if ((s.induction?.type ?? 'na') !== (f.induction?.type ?? 'na') || (s.induction?.count ?? 1) !== (f.induction?.count ?? 1)) d.push(s.induction.type === 'na' ? 'atmospheric' : s.induction.type === 'turbo' && s.induction.count > 1 ? 'twin-turbo' : s.induction.type);
+  if ((s.induction?.type ?? 'na') !== (f.induction?.type ?? 'na') || (s.induction?.count ?? 1) !== (f.induction?.count ?? 1)) d.push(s.induction.type === 'na' ? 'atmospheric' : s.induction.type === 'turbo' && s.induction.count > 1 ? (s.induction.count >= 4 ? 'quad-turbo' : 'twin-turbo') : s.induction.type);
   if (!!s.induction?.screamer !== !!f.induction?.screamer) d.push(s.induction.screamer ? 'screamer pipe' : 'wastegate plumbed back');
   if ((s.induction?.ratio ?? 0) !== (f.induction?.ratio ?? 0) && (s.induction?.type === 'twinscrew' || s.induction?.type === 'roots')) d.push(`${s.induction.ratio}:1 pulley`);
   if (s.exhaust.headers?.len !== f.exhaust.headers?.len) d.push(`${s.exhaust.headers.len.toFixed(2)} m primaries`);

@@ -22,7 +22,7 @@ Sound is pressure changing over time, so the simulator computes pressures:
 4. **Radiation**. Each tail pipe (and the intake) radiates the time derivative of its mass outflow, like a monopole. A listener model adds distance delay (so fly-bys Doppler-shift on their own), a ground reflection, air absorption, head shadow and the cabin.
 5. **Knock and valve float**. The unburned end gas in every cylinder integrates its autoignition delay (Livengood-Wu with the Douaud-Eyzat correlation, so octane, compression, boost, intake temperature and spark timing all matter). When it autoignites, the rest of the charge burns at once and the chamber rings at its first acoustic modes (1.84·c/πB, about 5–7 kHz), which the block radiates as the ping. Past the spring limit the valves loft off the cams and bounce on their seats, letting gas back the wrong way: power collapses and the sound turns ragged.
 6. **Starting**. The starter is a DC motor on the battery (permanent-magnet with planetary gears, series-wound direct drive, a motorcycle starter, or a race car's external starter), sized to the engine's compression and cold friction. It turns the flywheel through its pinion and a one-way clutch, and its armature inertia, current and speed come from the same crank dynamics: every compression stroke loads it and slows it, and past top centre the engine runs ahead until the next compression catches it up. What you hear follows from that: pinion teeth meeting the ring gear, the brushes and the planetary whine rising and falling with each stroke, the solenoid's clunk, the engine rocking on its mounts, then the catch and the armature running down after the pinion lets go. The ECU fires only once it has synced to the cam and crank, and on a cold start the first squirts of fuel wet the port walls.
-7. **Everything else is also simulated**: an ECU (idle control, fuel cut on overrun, rev limiter, spark map with knock control, launch control, traction control, two-stage cam switching, anti-lag), turbochargers (compressor map with surge, wastegate, blow-off valve or compressor flutter, screamer pipe), twin-screw, Roots and centrifugal superchargers, afterfire in the exhaust, a drivetrain, tyres and a dyno.
+7. **Everything else is also simulated**: an ECU (idle control, fuel cut on overrun, rev limiter, spark map with knock control, launch control, traction control, two-stage cam switching, anti-lag), turbochargers (compressor map with surge, wastegate, blow-off valve or compressor flutter, screamer pipe, sequential stages with their own shafts and valves), twin-screw, Roots and centrifugal superchargers, afterfire in the exhaust, a drivetrain, tyres and a dyno.
 
 Each engine's character comes out of its geometry: firing order, crank and bank angle, header lengths and how they merge. A cross-plane V8 burbles because each bank fires unevenly. A flat-plane V8 or a V12 screams because the pulses arrive evenly. An unequal-length boxer rumbles because the pulses arrive at the collector unevenly.
 
@@ -32,6 +32,7 @@ Each engine's character comes out of its geometry: firing order, crank and bank 
 | --- | --- |
 | Berlinetta V12 | 6.5 L 65° V12, naturally aspirated |
 | Toro V12 | 60° V12, tri-Y headers |
+| Quad-Turbo W16 | 8.0 L W16, four sequential turbos: two below 3,800 rpm, all four above |
 | Small-Block V8 | 6.2 L cross-plane pushrod V8 |
 | Big-Block 427 | Cross-plane V8, race cam with 84° overlap |
 | Blower V8 | Cross-plane V8 with a twin-screw supercharger |
@@ -117,7 +118,7 @@ In portrait the tach and figures sit on top and one lab panel shows below: the t
 
 ## Performance
 
-A V12 needs about 12–15% of one desktop core. On slower phones the simulator detects the load and runs the physics at half rate, upsampled. You can force this under Workshop → Physics rate.
+A V12 needs about 12–15% of one desktop core, the W16 about 20%. On slower phones the simulator detects the load and runs the physics at half rate, upsampled. You can force this under Workshop → Physics rate.
 
 ## Development tools
 

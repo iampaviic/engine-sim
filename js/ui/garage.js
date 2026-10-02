@@ -5,6 +5,7 @@ import { PREVIEW_SECONDS } from '../config.js';
 const FILTERS = [
   ['all', 'All'],
   ['V12', 'V12'],
+  ['W16', 'W16'],
   ['V10', 'V10'],
   ['V8', 'V8'],
   ['six', 'Sixes'],
@@ -94,7 +95,7 @@ export class Garage {
       const fo = p.kind === 'rotary' ? `${p.cylinders / 3} rotors · every ${Math.round(1080 / p.cylinders)}°` : p.firingOrder.join('-');
       const ind =
         p.induction?.type === 'turbo'
-          ? `${p.induction.count > 1 ? 'twin-turbo' : 'turbo'} ${p.induction.boost} bar`
+          ? `${p.induction.count >= 4 ? (p.induction.sequential ? 'sequential quad-turbo' : 'quad-turbo') : p.induction.count > 1 ? 'twin-turbo' : 'turbo'} ${p.induction.boost} bar`
           : p.induction?.type === 'twinscrew' || p.induction?.type === 'roots'
             ? 'supercharged'
             : p.induction?.type === 'centrifugal'

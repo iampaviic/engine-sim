@@ -43,7 +43,6 @@ export class Schematic {
     this.scale = 20000;
     this.rings = [];
     this.flames = [];
-    this.turboAngle = 0;
     this.turboRpm = 0;
     this.virtCrank = 0;
     this.virtRate = 0;
@@ -212,12 +211,15 @@ export class Schematic {
       }
     });
 
-    // turbos
-    for (const nd of this.net.nodes) {
-      if (nd.turbo == null || nd.type !== 0) continue;
+    // turbos (a sequential second stage spins on its own)
+    const turbos = this.net.nodes.filter((nd) => nd.turbo != null && nd.type === 0);
+    const half = tel?.turbo2 != null ? turbos.length / 2 : Infinity;
+    this.turboAngles ??= [];
+    for (const [i, nd] of turbos.entries()) {
       const [X, Y] = this.map(nd.x, nd.y);
       const r = 13 * dpr;
-      this.turboAngle += (tel?.turbo ?? 0) * 0.0000012;
+      const rpm = nd.turbo >= half ? tel.turbo2 : tel?.turbo ?? 0;
+      const ang = (this.turboAngles[i] = ((this.turboAngles[i] ?? 0) + rpm * 0.0000012 * turbos.length) % TAU);
       g.fillStyle = '#2b2723';
       g.strokeStyle = '#8a8174';
       g.lineWidth = 1.5 * dpr;
@@ -226,8 +228,8 @@ export class Schematic {
       g.fill();
       g.stroke();
       g.strokeStyle = '#d8cdb5';
-      for (let i = 0; i < 7; i++) {
-        const a = this.turboAngle + (i * TAU) / 7;
+      for (let k = 0; k < 7; k++) {
+        const a = ang + (k * TAU) / 7;
         g.beginPath();
         g.moveTo(X + Math.cos(a) * r * 0.2, Y + Math.sin(a) * r * 0.2);
         g.quadraticCurveTo(X + Math.cos(a + 0.5) * r * 0.6, Y + Math.sin(a + 0.5) * r * 0.6, X + Math.cos(a + 0.9) * r * 0.85, Y + Math.sin(a + 0.9) * r * 0.85);

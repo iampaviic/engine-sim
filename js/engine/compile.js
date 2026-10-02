@@ -20,6 +20,7 @@ export const DYN = {
   TURBINE: 1,
   WASTEGATE: 2,
   VALVE: 3, // exhaust bypass valve (sport / race mode)
+  STAGE: 4, // sequential turbos: the valve in front of the second-stage turbine
 };
 
 // Output channels for radiating open ends.
@@ -264,15 +265,21 @@ function bankHeaders(net, spec, lay, bank, bi, ex, collectorXY) {
   return coll;
 }
 
-// Turbine stage: housing volume + turbine resistor, with a wastegate branch.
+// Turbine stage: housing volume + turbine resistor, with a wastegate branch
+// (or, given an outlet node, no wastegate: it blows into that node).
 // Returns outlet node.
-function turbine(net, inNode, x, y, t, idx) {
+function turbine(net, inNode, x, y, t, idx, { out = null } = {}) {
   const house = net.junction(x, y, { turbo: idx });
   const [ix, iy] = net.pt(inNode);
   net.pipe(inNode, house, { len: 0.12, dia: mm(t.housingDia ?? 75), temp: 1, pts: [[ix, iy], [x, y]], label: 'turbine housing' });
   const r = net.node(NODE.RESISTOR, { x: x + 0.035, y, R: 0, K: t.K, dyn: DYN.TURBINE, turbo: idx });
   net.pipe(house, r, { len: 0.06, dia: mm(t.housingDia ?? 75) * 0.8, temp: 1, pts: [[x, y], [x + 0.035, y]], label: 'turbine' });
-  const out = net.junction(x + 0.075, y);
+  if (out != null) {
+    const [ox, oy] = net.pt(out);
+    net.pipe(r, out, { len: 0.12, dia: mm(t.downpipeDia ?? 76), temp: 0.85, pts: [[x + 0.035, y], [ox, y], [ox, oy]], label: 'turbine' });
+    return out;
+  }
+  out = net.junction(x + 0.075, y);
   net.pipe(r, out, { len: 0.08, dia: mm(t.downpipeDia ?? 76), temp: 0.85, pts: [[x + 0.035, y], [x + 0.075, y]], label: 'turbine' });
   // wastegate branch
   const wy = y + (y < 0.5 ? -0.07 : 0.07);
@@ -349,10 +356,12 @@ function buildExhaust(spec) {
   // across the banks so each collector sees evenly spaced pulses (the Ford
   // GT40 'bundle of snakes').
   const groups = ex.headers?.style === '180' ? evenGroups(spec) : lay.banks;
+  const staged = turbo && nTurbo >= 4 && spec.induction.sequential > 0;
   const sides = groups.map((bank, bi) => {
     const y = bi === 0 ? 0.36 : 0.64;
-    let n = bankHeaders(net, spec, lay, bank, bi, ex, [0.36, y]);
-    if (turbo && nTurbo >= 2) n = turbine(net, n, 0.44, y, spec.induction, bi);
+    let n = bankHeaders(net, spec, lay, bank, bi, ex, [staged ? 0.32 : 0.36, y]);
+    if (staged) n = turbinePair(net, n, y, spec.induction, bi, bi + 2);
+    else if (turbo && nTurbo >= 2) n = turbine(net, n, 0.44, y, spec.induction, bi);
     return { n, y };
   });
   if (turbo && nTurbo === 1) {
@@ -458,6 +467,20 @@ function evenGroups(spec) {
   const ang = firingAngles(spec);
   const order = ang.map((a, i) => [a, i + 1]).sort((p, q) => p[0] - q[0]).map((p) => p[1]);
   return [order.filter((_, k) => k % 2 === 0), order.filter((_, k) => k % 2 === 1)];
+}
+
+// Sequential pair on one side: the primary turbine always takes the exhaust;
+// the secondary sits behind a valve that only opens for the second stage and
+// blows into the primary's outlet. The primary's wastegate holds the boost
+// for both. Returns the outlet node.
+function turbinePair(net, coll, y, t, idxA, idxB) {
+  const y2 = y + (y < 0.5 ? 0.075 : -0.075);
+  const out = turbine(net, coll, 0.41, y, t, idxA);
+  const v = net.node(NODE.RESISTOR, { x: 0.4, y: y2, R: 0, K: 0, dyn: DYN.STAGE, turbo: idxB, closedK: 3e8 });
+  const [cx, cy] = net.pt(coll);
+  net.pipe(coll, v, { len: 0.16, dia: mm(t.housingDia ?? 75), temp: 1, pts: [[cx, cy], [0.37, cy], [0.37, y2], [0.4, y2]], label: 'stage valve' });
+  turbine(net, v, 0.45, y2, t, idxB, { out });
+  return out;
 }
 
 function headers421(net, spec, lay, ex) {
@@ -895,6 +918,7 @@ export function compileEngine(spec) {
       blades: ind.blades ?? 6,
       bov: ind.bov ?? 'atm',
       K: ind.K ?? 1,
+      sequential: ind.count >= 4 ? ind.sequential ?? 0 : 0, // rpm where the second stage joins (0 = all at once)
     },
     ecu: {
       idle: ecu.idle ?? 800,

@@ -435,13 +435,15 @@ export class Workshop {
       );
     }
     const indType = spec.induction?.type ?? 'na';
-    const indKey = indType === 'turbo' ? ((spec.induction.count ?? 1) > 1 ? 'twin' : 'turbo') : indType;
+    const count = spec.induction?.count ?? 1;
+    const indKey = indType === 'turbo' ? (count >= 4 ? 'quad' : count > 1 ? 'twin' : 'turbo') : indType;
     if (spec.kind !== 'rotary') {
       const opts = [
         ['na', 'Atmospheric'],
         ['turbo', 'Turbo'],
       ];
       if ((spec.banks?.length ?? 1) > 1) opts.push(['twin', 'Twin-turbo']);
+      if ((factory.induction?.count ?? 1) >= 4) opts.push(['quad', 'Quad-turbo']);
       opts.push(['twinscrew', 'Twin-screw'], ['roots', 'Roots'], ['centrifugal', 'Centrifugal']);
       seg(
         g,
@@ -456,6 +458,7 @@ export class Workshop {
             else if (v === 'twinscrew') s.induction = { type: 'twinscrew', displacement: +(L * 0.4).toFixed(2), ratio: 2.4, lobes: 5 };
             else if (v === 'roots') s.induction = { type: 'roots', displacement: +(L * 0.45).toFixed(2), ratio: 2.1, lobes: 3 };
             else if (v === 'centrifugal') s.induction = { type: 'centrifugal', boost: 0.7, size: 1, blades: 10, bov: tune.bov ?? 'atm' };
+            else if (v === 'quad') s.induction = { ...factory.induction, bov: tune.bov ?? factory.induction.bov };
             else {
               const twin = v === 'twin';
               const k = keep.type === 'turbo' ? keep : {};
