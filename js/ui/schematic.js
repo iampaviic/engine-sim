@@ -43,6 +43,8 @@ export class Schematic {
     this.scale = 20000;
     this.rings = [];
     this.flames = [];
+    this.puffs = []; // nitrous purge cloud
+    this.purging = false;
     this.turboRpm = 0;
     this.virtCrank = 0;
     this.virtRate = 0;
@@ -291,6 +293,7 @@ export class Schematic {
 
     // cylinders
     this.drawCylinders(now);
+    this.drawPurge();
 
     // legend
     g.font = `500 ${Math.round(10 * dpr)}px "B612 Mono", ui-monospace, monospace`;
@@ -431,6 +434,38 @@ export class Schematic {
 
   flame(intensity) {
     this.pendingFlame = Math.max(this.pendingFlame || 0, Math.min(1.2, intensity));
+  }
+
+  purge(on) {
+    this.purging = on;
+  }
+
+  // Nitrous purge: a white plume blown up out of the engine bay
+  drawPurge() {
+    if (this.purging) {
+      for (let k = 0; k < 2; k++) this.puffs.push({ x: 0.01, y: 0.02, vx: 0.006 + Math.random() * 0.012, vy: -0.001 + Math.random() * 0.004, r: 0.006, life: 1 });
+    }
+    if (!this.puffs.length) return;
+    const g = this.g;
+    const W = this.c.width;
+    this.puffs = this.puffs.filter((p) => {
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vx *= 0.96;
+      p.r += 0.004;
+      p.life -= 0.025;
+      if (p.life <= 0) return false;
+      const [X, Y] = this.map(p.x, p.y);
+      const R = p.r * W;
+      const grd = g.createRadialGradient(X, Y, 0, X, Y, R);
+      grd.addColorStop(0, `rgba(245,248,252,${0.16 * p.life})`);
+      grd.addColorStop(1, 'rgba(245,248,252,0)');
+      g.fillStyle = grd;
+      g.beginPath();
+      g.arc(X, Y, R, 0, Math.PI * 2);
+      g.fill();
+      return true;
+    });
   }
 }
 

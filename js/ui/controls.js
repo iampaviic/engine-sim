@@ -16,6 +16,7 @@ export class Controls {
     this.pedal = 0;
     this.brake = 0;
     this.launchHeld = false;
+    this.nosHeld = false;
     this.padPrev = {};
     this.bindKeys();
     this.bindPedal(gas, (v) => (this.touchGas = v));
@@ -47,6 +48,9 @@ export class Controls {
           break;
         case 'KeyL':
           this.setLaunch(true);
+          break;
+        case 'KeyN':
+          this.setNos(true);
           break;
         case 'KeyG':
           this.onAction('garage');
@@ -92,12 +96,14 @@ export class Controls {
     window.addEventListener('keyup', (e) => {
       this.keys.delete(e.code);
       if (e.code === 'KeyL') this.setLaunch(false);
+      if (e.code === 'KeyN') this.setNos(false);
       if (e.code === 'KeyB') this.onAction('ab', false);
     });
     window.addEventListener('blur', () => {
       this.keys.clear();
       this.touchGas = this.touchBrake = 0;
       this.setLaunch(false);
+      this.setNos(false);
     });
   }
 
@@ -105,6 +111,12 @@ export class Controls {
     if (this.launchHeld === on) return;
     this.launchHeld = on;
     this.onAction('launch', on);
+  }
+
+  setNos(on) {
+    if (this.nosHeld === on) return;
+    this.nosHeld = on;
+    this.onAction('nos', on);
   }
 
   bindPedal(el, set) {
@@ -162,6 +174,11 @@ export class Controls {
     if (l !== !!this.padPrev.launch) {
       this.padPrev.launch = l;
       this.setLaunch(l);
+    }
+    const n = pad.buttons[11]?.pressed ?? false; // right stick click
+    if (n !== !!this.padPrev.nos) {
+      this.padPrev.nos = n;
+      this.setNos(n);
     }
     return { gas: b(7), brake: b(6) };
   }

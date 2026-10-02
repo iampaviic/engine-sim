@@ -727,6 +727,36 @@ export class Workshop {
         'With the sensor on, the ECU hears the ping and pulls timing. Off, the engine keeps knocking.'
       );
     range(g, 'Launch control', 2000, Math.round(factory.ecu.limit * 0.8), 100, tune.launchRpm, (v) => `${v.toLocaleString('en-US')} rpm`, (v) => app.setTune({ launchRpm: v }));
+    const nz = app.compiled.nitrous;
+    range(
+      g,
+      'Nitrous shot',
+      5,
+      nz.max,
+      5,
+      tune.nosShot ?? nz.shot,
+      (v) => `${v} hp`,
+      (v) => app.setTune({ nosShot: v }),
+      'Hold NOS (or N) at full throttle above twice idle: liquid nitrous oxide sprays into the intake, flashes to gas and chills the charge, and brings half again the oxygen of air, so the kit adds fuel to match. The controller pulls timing as the charge burns faster. Hold it with the throttle shut to purge the line.'
+    );
+    const nr = document.createElement('div');
+    nr.className = 'btn-row';
+    g.appendChild(nr);
+    const bl = document.createElement('span');
+    bl.className = 'ws-note';
+    bl.textContent = `Bottle ${Math.round((app.tel?.bottle ?? 1) * 100)}% of ${nz.bottle} kg`;
+    const rf = document.createElement('button');
+    rf.className = 'btn';
+    rf.textContent = 'Refill the bottle';
+    rf.addEventListener('click', () => {
+      app.setTune({ nosRefill: true });
+      delete app.tune.nosRefill;
+      bl.textContent = `Bottle 100% of ${nz.bottle} kg`;
+    });
+    nr.append(rf, bl);
+    if (!app.isPro()) {
+      rf.disabled = true;
+    }
     seg(
       g,
       'Traction control',

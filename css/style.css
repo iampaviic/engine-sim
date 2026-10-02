@@ -617,6 +617,16 @@ button {
   background: var(--amber);
   color: var(--ink);
 }
+/* nitrous: blue, with the bottle level as a bar along the bottom */
+.chip.nos {
+  border-color: rgba(88, 174, 224, 0.55);
+  color: #8cc8ee;
+  background: linear-gradient(to right, rgba(88, 174, 224, 0.5) var(--fill, 100%), transparent var(--fill, 100%)) bottom / 100% 2px no-repeat, var(--ink-3);
+}
+.chip.nos.held {
+  background-color: #58aee0;
+  color: var(--ink);
+}
 .keys {
   font-size: 11px;
   color: var(--dim);
@@ -1908,9 +1918,9 @@ button {
     letter-spacing: 0.1em;
   }
   .chip {
-    padding: 5px 8px;
-    font-size: 10px;
-    letter-spacing: 0.08em;
+    padding: 5px 6px;
+    font-size: 9.5px;
+    letter-spacing: 0.06em;
   }
   .paddle {
     width: 44px;
@@ -2080,7 +2090,8 @@ button {
 }
 @media (max-width: 370px) {
   .chip {
-    padding: 5px 6px;
+    padding: 5px 4px;
+    letter-spacing: 0.03em;
   }
   .deck {
     grid-template-columns: 58px minmax(0, 1fr) 78px;

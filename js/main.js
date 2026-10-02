@@ -176,6 +176,7 @@ function syncPro() {
   const locked = !pro.active;
   document.querySelectorAll('.tabs [role=tab]').forEach((b) => b.classList.toggle('pro-lock', locked && !FREE.tabs.has(b.dataset.mode)));
   $('launchBtn').classList.toggle('pro-lock', locked);
+  $('nosBtn').classList.toggle('pro-lock', locked);
   $('abBtn').classList.toggle('pro-lock', locked);
   if (pro.active) {
     if (app.preview) {
@@ -747,6 +748,14 @@ function action(a, v) {
       $('launchBtn').classList.toggle('held', !!v);
       if (v && app.mode !== 'drive' && app.started) setMode('drive');
       break;
+    case 'nos':
+      if (v && !app.requirePro('Nitrous is part of Pro')) {
+        controls.nosHeld = false;
+        break;
+      }
+      if (app.started) app.audio.post({ type: 'input', nos: !!v });
+      $('nosBtn').classList.toggle('held', !!v);
+      break;
     case 'garage':
       garage.open ? garage.hide() : garage.show(app.presetId);
       break;
@@ -864,6 +873,26 @@ function onMessage(m) {
   }
 }
 
+// Nitrous button: the bottle level as a bar, and a word when it runs dry
+function nitrousTel(t) {
+  if (t.bottle == null) return;
+  const pct = Math.round(t.bottle * 100);
+  if (pct !== app.nosPct) {
+    app.nosPct = pct;
+    $('nosBtn').style.setProperty('--fill', `${pct}%`);
+    $('nosBtn').title = `Hold for nitrous: sprays at full throttle, purges with the throttle shut (N) · bottle ${pct}%`;
+  }
+  if (t.nos && !app.warned.nos) {
+    app.warned.nos = true;
+    toast(`Nitrous: a ${app.tune.nosShot ?? app.compiled.nitrous.shot} hp shot`);
+  }
+  if (controls.nosHeld && t.bottle <= 0 && !app.warned.nosEmpty) {
+    app.warned.nosEmpty = true;
+    toast('The bottle is empty. Refill it in the workshop');
+  }
+  if (t.bottle > 0.05) app.warned.nosEmpty = false;
+}
+
 function onTelemetry(t) {
   app.tel = t;
   tach.target = t.rpm;
@@ -873,6 +902,9 @@ function onTelemetry(t) {
   tach.lim = t.lim;
   tach.camHi = t.camHi;
   tach.onPipe = !!t.onPipe;
+  tach.nos = !!t.nos;
+  schem.purge(!!t.purge);
+  nitrousTel(t);
   const inGear = t.mode === 'drive' || t.mode === 'flyby';
   if (app.scene?.id === 'drag' && app.scene.leaveT == null && t.scene?.phase === 'run' && t.scene.x > 0.3) app.scene.leaveT = performance.now();
   if (app.scene?.staging && t.scene?.phase === 'run') {
@@ -881,7 +913,7 @@ function onTelemetry(t) {
     $('treeGo').disabled = true;
   }
   tach.gear = inGear ? (t.gear ? String(t.gear) : 'N') : t.mode === 'dyno' ? 'D' : 'N';
-  tach.speedText = inGear ? speedText(t.speed) : t.mode === 'dyno' ? 'DYNO' : t.running ? 'NEUTRAL' : t.starter ? 'CRANKING' : 'OFF';
+  tach.speedText = inGear ? speedText(t.speed) : t.mode === 'dyno' ? 'DYNO' : t.running ? 'NEUTRAL' : t.starter ? (t.kick ? 'KICKING' : 'CRANKING') : 'OFF';
   if (inGear && t.gear !== app.lastGear && app.lastGear) navigator.vibrate?.(12);
   app.lastGear = t.gear;
   if (t.af > 0 && t.afI > 0.12) {
@@ -1120,6 +1152,15 @@ function wire() {
   const lu = () => controls.setLaunch(false);
   lb.addEventListener('pointerup', lu);
   lb.addEventListener('pointercancel', lu);
+  const nb = $('nosBtn');
+  nb.addEventListener('pointerdown', (e) => {
+    nb.setPointerCapture(e.pointerId);
+    controls.setNos(true);
+  });
+  const nu = () => controls.setNos(false);
+  nb.addEventListener('pointerup', nu);
+  nb.addEventListener('pointercancel', nu);
+  nb.addEventListener('contextmenu', (e) => e.preventDefault());
   $('tcBtn').addEventListener('click', () => {
     app.setTune({ tc: !app.tune.tc });
     toast(app.tune.tc ? 'Traction control on' : 'Traction control off: burnouts allowed');

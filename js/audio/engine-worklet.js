@@ -37,6 +37,13 @@ const C_AIR = 343;
 const KNOCK_CAL = 0.35;
 // Pa of chamber ringing -> Pa at 1 m radiated by the block.
 const KNOCK_RAD = 2.2e-5;
+// Nitrous oxide: oxygen per kg relative to air (36.4% vs 23.1% by mass),
+// heat released as it splits into nitrogen and oxygen (J/kg), heat it soaks
+// up flashing from liquid to gas (J/kg), and flow per horsepower of shot.
+const NOS_O2 = 1.57;
+const NOS_DH = 1.86e6;
+const NOS_LAT = 2.5e5;
+const NOS_PER_HP = 3.5e-4;
 
 const NODE_JUNCTION = 0, NODE_PORT = 1, NODE_OPEN = 2, NODE_CLOSED = 3, NODE_RESISTOR = 4, NODE_PLENUM = 5;
 const DYN_TURBINE = 1, DYN_WASTEGATE = 2, DYN_VALVE = 3, DYN_STAGE = 4;
@@ -834,6 +841,26 @@ class EngineSim {
     this.coldT = 0;
     this.camHi = false;
     this.camSwitch = cfg.camSwitchRpm;
+    // Nitrous: liquid N2O through a solenoid into the intake
+    this.nosShot = cfg.nitrous.shot; // hp
+    this.nosBottle = cfg.nitrous.bottle; // kg when full
+    this.bottle = this.nosBottle;
+    this.nosBtn = false;
+    this.nosOn = false; // spraying
+    this.nosPurge = false;
+    this.nosFlow = 0; // kg/s into the intake
+    this.purgeFlow = 0; // kg/s out of the purge valve
+    this.nosX = 0; // N2O share of the fresh charge
+    this.mNos = 0; // N2O in the plenum, kg
+    this.nosCool = 0; // charge cooling, K
+    this.nosRet = 0; // timing pulled while spraying
+    this.nosClick = 0;
+    this.nosRing = 0;
+    this.nosSol = new Modes([2350, 3900, 6200], [0.005, 0.0035, 0.0025], [0.9, 0.6, 0.35], fs);
+    this.hsA = lpCoef(5200, fs);
+    this.hsB = lpCoef(900, fs);
+    this.hs1 = 0;
+    this.hs2 = 0;
     this.valveOpen = 0; // exhaust bypass valve 0..1
     this.valveMode = 'auto';
     this.sinceStart = 0;
@@ -1313,6 +1340,9 @@ class EngineSim {
     const load = fresh / (1.18 * this.vd);
     this.cAirIn[c] = fresh;
     this.telAir += fresh;
+    // nitrous in the charge: its oxygen counts 1.57 times
+    const nos = fresh * this.nosX;
+    const o2 = nos > 0 ? fresh + (NOS_O2 - 1) * nos : fresh;
 
     const cranking = rpm < 350;
     let fuelOn = this.ignition && !this.dfco && this.crankRevs >= this.syncRevs;
@@ -1335,8 +1365,9 @@ class EngineSim {
     }
     if (this.launchCut) afr = 11.5;
     if (this.tcCut > 0.45 && rnd() < (this.tcCut - 0.45) * 1.6) fuelOn = false; // TC cuts fuel
-    const fuel = fuelOn ? fresh / afr : 0;
-    const burnable = Math.min(fuel, fresh / AFR_ST);
+    // (the nitrous kit adds the fuel to match its oxygen)
+    const fuel = fuelOn ? o2 / afr : 0;
+    const burnable = Math.min(fuel, o2 / AFR_ST);
     this.cFuel[c] = fuel;
     this.cBurnable[c] = burnable;
     this.telFuel += fuel;
@@ -1379,11 +1410,17 @@ class EngineSim {
     if (this.dfco && this.burbleActive) adv = -18 - 22 * rnd() * this.burble;
     if (this.alsActive) adv = -38 - 16 * rnd();
     if (this.launchCut) adv = -15 - 10 * rnd();
+    if (nos > 0) {
+      // oxygen-rich charge burns faster; the nitrous controller pulls timing
+      dur /= 1 + (2 * nos) / fresh;
+      adv -= this.nosRet;
+    }
     if (this.shiftRetard > 0) adv -= 25 * this.shiftRetard;
     if (this.tcCut > 0) adv -= 28 * Math.min(1, this.tcCut * 2);
     // A flame lit after TDC burns into an expanding, cooling charge: slower.
     if (adv < 0) dur *= 1 + -adv / 16;
-    const q = burnable * LHV * this.cfg.combustion * Math.max(0.2, 1 + sig * gauss());
+    let q = burnable * LHV * this.cfg.combustion * Math.max(0.2, 1 + sig * gauss());
+    if (nos > 0) q += nos * NOS_DH * this.cfg.combustion;
     this.cQ[c] = q;
     this.cDur[c] = dur;
     let sp = this.tdcFire - adv;
@@ -1562,6 +1599,8 @@ class EngineSim {
     if (this.shiftCut > 0) this.shiftCut -= dtc;
     if (this.shiftRetard > 0) this.shiftRetard = Math.max(0, this.shiftRetard - dtc * 8);
 
+    this.nitrousControl(dtc, rpm);
+
     // Exhaust bypass valve
     let vt = 0;
     if (this.valveMode === 'open') vt = 1;
@@ -1666,6 +1705,64 @@ class EngineSim {
       this.inn.setGasTemp(this.Tpl);
     }
     this.updateResistors();
+  }
+
+  // Nitrous. A WOT switch and an rpm window gate the solenoids; with the
+  // throttle shut the button opens the purge valve instead, which vents
+  // the line to the air. The bottle drains with every second of either.
+  nitrousControl(dtc, rpm) {
+    const win = rpm > Math.max(2500, this.ecu.idle * 2) && rpm < this.limitRpm - 300;
+    const spray = this.nosBtn && this.running && this.pedal > 0.85 && win && !this.limCut && this.bottle > 0;
+    const purge = this.nosBtn && this.pedal < 0.1 && this.bottle > 0;
+    if (spray !== this.nosOn) {
+      this.nosOn = spray;
+      this.nosClick += spray ? 1 : 0.6; // the solenoids snap
+    }
+    if (purge !== this.nosPurge) {
+      this.nosPurge = purge;
+      this.nosClick += purge ? 0.8 : 0.5;
+    }
+    // the last of the bottle comes out as a sputter of gas
+    const full = this.nosShot * NOS_PER_HP;
+    const left = clamp(this.bottle / (0.06 * this.nosBottle), 0, 1);
+    this.nosFlow += ((spray ? full * left : 0) - this.nosFlow) * Math.min(1, dtc / 0.03);
+    this.purgeFlow += ((purge ? 1.5 * full * left + 0.004 : 0) - this.purgeFlow) * Math.min(1, dtc / (purge ? 0.01 : 0.12));
+    if (this.nosFlow < 1e-7) this.nosFlow = 0;
+    if (this.purgeFlow < 1e-6) this.purgeFlow = 0;
+    this.bottle = Math.max(0, this.bottle - (this.nosFlow + this.purgeFlow) * dtc);
+    // the chill of it flashing to gas, for its share of the charge
+    if (this.nosX > 0) {
+      const cool = Math.min(40, (this.nosX * NOS_LAT) / 1005);
+      this.nosCool += (cool - this.nosCool) * Math.min(1, dtc / 0.4);
+      this.nosRet = 24 * this.nosX;
+    } else if (this.nosCool > 0) {
+      this.nosCool *= Math.exp(-dtc / 0.8);
+      if (this.nosCool < 0.01) this.nosCool = 0;
+    }
+    if (!this.boosted) this.Tpl = T_AMB - this.nosCool;
+  }
+
+  // Nitrous sounds: the solenoids' snap, the purge valve's roar of gas and,
+  // much quieter, the hiss of the nozzle while it sprays.
+  nitrousSound() {
+    let x = 0;
+    const f = this.purgeFlow + 0.12 * this.nosFlow;
+    if (f > 0) {
+      const nz = rnd() - 0.5;
+      this.hs1 += this.hsA * (nz - this.hs1);
+      this.hs2 += this.hsB * (this.hs1 - this.hs2);
+      // (level set against the engine's own loudness trim, so every car's
+      // purge sits the same distance under its full-throttle roar)
+      x = ((this.hs1 - this.hs2) * 60 * Math.sqrt(f)) / this.snd.trim;
+    }
+    const k = this.nosClick;
+    this.nosClick = 0;
+    if (k > 0) this.nosRing = this.fs * 0.06;
+    if (this.nosRing > 0) {
+      this.nosRing--;
+      x += this.nosSol.tick(k);
+    }
+    return x;
   }
 
   // Valves, wastegates and turbines change at control rate; each resistor
@@ -2352,7 +2449,14 @@ class EngineSim {
     if (D >= 0) md = orifice(A, D, pUp / (R * Tup), kpl, pUp, Math.sqrt(Tup), CHOKE_AIR);
     else md = -orifice(A, -D, this.pPl / (R * this.Tpl), kpl, this.pPl, Math.sqrt(this.Tpl), CHOKE_AIR);
     this.mdTh = md;
-    this.mPl += (md - qr) * dt;
+    if (this.nosFlow > 0 || this.mNos > 0) {
+      // nitrous mixes into the plenum and leaves with the charge
+      const x = this.mNos / this.mPl;
+      this.mNos += (this.nosFlow - (md < 0 ? qr - md : qr) * x) * dt;
+      if (this.mNos < 1e-10) this.mNos = 0;
+      this.nosX = x;
+    }
+    this.mPl += (md + this.nosFlow - qr) * dt;
     if (this.mPl < 1e-6) this.mPl = 1e-6;
     this.pPl = (this.mPl * R * this.Tpl) / this.Vpl;
   }
@@ -2441,7 +2545,7 @@ class EngineSim {
     }
     const Tc = T_AMB * (1 + (Math.pow(Math.max(PR, 1), 0.2857) - 1) / 0.7);
     this.TB = Tc - 0.72 * (Tc - T_AMB);
-    this.Tpl = this.TB;
+    this.Tpl = this.TB - this.nosCool;
     // sound: blade-pass whistle, shaft whine, inlet whoosh, BOV hiss
     const fShaft = this.wt / TAU;
     this.tPhase += (fShaft * this.blades) / fs;
@@ -2505,7 +2609,7 @@ class EngineSim {
     const P = (msc * 1005 * T_AMB * (Math.pow(Math.max(PR, 1), 0.2857) - 1)) / eta + msc * 2000;
     const Tc = T_AMB * (1 + (Math.pow(Math.max(PR, 1), 0.2857) - 1) / eta);
     this.TB = Tc - 0.65 * (Tc - T_AMB);
-    this.Tpl = this.TB;
+    this.Tpl = this.TB - this.nosCool;
     // rotor whine at the lobe-passing frequency
     this.scPhase += ((wb / TAU) * this.scLobes) / fs;
     this.scPhase -= Math.floor(this.scPhase);
@@ -2620,6 +2724,7 @@ class EngineSim {
     }
     this.runnerFlowPrev = this.runnerFlow;
     intake = intake * INV4PI * snd.intake + this.turboSnd;
+    if (this.nosFlow > 0 || this.purgeFlow > 0 || this.nosClick > 0 || this.nosRing > 0) intake += this.nitrousSound();
 
     // mechanical: valve seating ticks + combustion knock through the block
     if (rpm > 30 && this.vtExcS > 0) {
@@ -2908,6 +3013,7 @@ class EngineProcessor extends AudioWorkletProcessor {
         if (m.brake != null) this.sim.brake = clamp(m.brake, 0, 1);
         if (m.clutch != null) this.sim.clutchPedal = m.clutch;
         if (m.launch != null) this.sim.launch = !!m.launch;
+        if (m.nos != null) this.sim.nosBtn = !!m.nos;
         break;
       case 'ignition':
         if (!this.sim) return;
@@ -2998,6 +3104,8 @@ class EngineProcessor extends AudioWorkletProcessor {
       if (!sim.knockCtl) sim.knockRet = 0;
     }
     if (t.springs != null) sim.floatMul = t.springs === 'race' ? 1.12 : 1;
+    if (t.nosShot != null) sim.nosShot = t.nosShot;
+    if (t.nosRefill) sim.bottle = sim.nosBottle;
     if (t.boost != null && sim.isCentri) sim.setCentriRatio();
   }
 
@@ -3346,7 +3454,7 @@ class EngineProcessor extends AudioWorkletProcessor {
       sim.strobeOn = old.strobeOn;
       sim.tc = old.tc;
       sim.strobeStep = old.strobeStep;
-      for (const k of ['limitRpm', 'limiterType', 'burble', 'antilag', 'boostTarget', 'launchRpm', 'bovType', 'sparkAdj', 'knockCtl', 'floatMul']) if (!tune) sim[k] = old[k];
+      for (const k of ['limitRpm', 'limiterType', 'burble', 'antilag', 'boostTarget', 'launchRpm', 'bovType', 'sparkAdj', 'knockCtl', 'floatMul', 'nosShot']) if (!tune) sim[k] = old[k];
       if (!tune) {
         sim.setOctane(old.octane);
         if (sim.isCentri) sim.setCentriRatio();
@@ -3368,6 +3476,9 @@ class EngineProcessor extends AudioWorkletProcessor {
         sim.kickWait = 0.3;
       }
       if (sim.twoStroke) sim.pv = old.pv ?? 0;
+      // same car: the bottle stays as full as it was
+      sim.bottle = sim.nosBottle * (old.bottle / old.nosBottle);
+      sim.nosBtn = old.nosBtn;
       sim.crank = old.crank % sim.cycle;
       for (let c = 0; c < sim.n; c++) sim.cCA[c] = (sim.crank + sim.off[c]) % sim.cycle;
       sim.pPl = old.pPl;
@@ -3548,6 +3659,10 @@ class EngineProcessor extends AudioWorkletProcessor {
       mode: s.mode,
       camHi: s.camHi,
       pv: s.twoStroke ? s.pv : null,
+      nos: s.nosOn,
+      purge: s.nosPurge,
+      bottle: s.bottle / s.nosBottle,
+      kick: s.kick,
       // a two-stroke "on the pipe": the chamber is stuffing charge back in
       onPipe: s.twoStroke && s.plug > 0.05 && s.thr > 0.5,
       valve: s.valveOpen,

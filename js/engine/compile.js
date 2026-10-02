@@ -984,6 +984,16 @@ function twoStrokeSpec(spec, g, exLo, exHi) {
   };
 }
 
+// A nitrous kit sized for the engine: a shot of about 30% of its power and a
+// bottle that lasts about a minute and a half at that shot.
+export function nitrousSpec(spec, litres) {
+  const ind = spec.induction ?? {};
+  const boost = ind.type && ind.type !== 'na' ? 1 + 0.8 * (ind.boost ?? 0.8) : 1;
+  const hp = litres * (spec.kind === 'twostroke' ? 180 : spec.kind === 'rotary' ? 140 : 80) * boost;
+  const shot = spec.nitrous?.shot ?? Math.max(5, Math.round((0.3 * hp) / 5) * 5);
+  return { shot, max: Math.max(50, Math.round((0.9 * hp) / 25) * 25), bottle: spec.nitrous?.bottle ?? +(shot * 0.03).toFixed(2) };
+}
+
 export function compileEngine(spec) {
   const g = geometryTables(spec);
   const cycle = g.cycle;
@@ -1095,6 +1105,7 @@ export function compileEngine(spec) {
     friction: spec.friction ?? 1,
     // cold cranking friction: the worklet's FMEP at a crawl, cold oil
     starter: starterSpec(spec, dispLitres, compressionTorque(g, cylOffset, twoStroke ? exLo.close : inLo.close, exLo.open), (displacement / (4 * Math.PI)) * 1.52e5 * (spec.friction ?? 1)),
+    nitrous: nitrousSpec(spec, dispLitres),
     combustion: spec.combustion ?? 0.8,
     burnScale: spec.burnScale ?? 1,
     stroke: mm(spec.stroke ?? 70),
