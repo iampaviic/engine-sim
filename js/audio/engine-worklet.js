@@ -608,6 +608,40 @@ class EngineSim {
       this.cP2[c] = P_AMB;
     }
 
+    // Two-stroke: a sealed crankcase under each piston, fed through a reed
+    // valve and emptied up the transfer ports; an exhaust power valve.
+    const ts = cfg.twoStroke;
+    this.twoStroke = !!ts;
+    if (ts) {
+      this.ccTot = ts.ccTot;
+      this.reedA = ts.reedArea;
+      this.reedP0 = ts.reedP0;
+      this.reedPf = ts.reedPf;
+      this.scavK = ts.scav;
+      this.exPool = 0.7 * cfg.vd; // kg of gas the header holds, about
+      this.pvRpm = ts.pv;
+      this.pv = 0; // power valve 0 = low-speed port .. 1 = raised
+      this.reedK = lpCoef(650, fs); // petals can't follow faster than this
+      this.ccM = new Float64Array(n);
+      this.ccU = new Float64Array(n);
+      this.ccB = new Float64Array(n); // burned gas blown back into the crankcase
+      this.ccV = new Float64Array(n);
+      this.ccP = new Float64Array(n).fill(P_AMB);
+      this.cTf = new Float64Array(n).fill(T_AMB); // fresh charge temperature in the cylinder
+      this.evapH = 350e3 / cfg.ecu.afr; // latent heat of the fuel per kg of air
+      this.cReed = new Float64Array(n);
+      for (let c = 0; c < n; c++) {
+        const V = this.ccTot - this.cV[c];
+        this.ccV[c] = V;
+        this.ccM[c] = (P_AMB * V) / (R * T_AMB);
+        this.ccU[c] = this.ccM[c] * CV * T_AMB;
+      }
+    }
+    this.egtOut = 0; // two-stroke: outflow-weighted exhaust temperature
+    this.egtOutW = 0;
+    this.plugAcc = 0; // two-stroke: charge the chamber pushed back this cycle
+    this.plug = 0;
+
     // Afterfire pools per exhaust node
     const N = this.ex.N;
     this.afFuel = new Float64Array(N);
@@ -639,6 +673,8 @@ class EngineSim {
     this.runnerFlow = 0;
     this.runnerFlowPrev = 0;
     this.Ath = cfg.throttleArea;
+    // air that gets past a closed throttle: less on a small engine
+    this.thrLeak = 2e-6 * clamp(cfg.dispLitres, 0.25, 1);
 
     // Boost system
     const ind = cfg.induction;
@@ -819,7 +855,8 @@ class EngineSim {
     this.fric = 0;
 
     // Feed-forward idle air
-    const needed = 1.18 * cfg.displacement * (e.idle / 120) * 0.092;
+    // (a two-stroke has no intake stroke to pump against: it idles on less)
+    const needed = 1.18 * cfg.displacement * (e.idle / 120) * (cfg.twoStroke ? 0.04 : 0.092);
     this.bypassFF = needed / ((CHOKE_AIR * P_AMB) / Math.sqrt(T_AMB)) / 0.8;
 
     // Vehicle / drivetrain
@@ -1039,6 +1076,24 @@ class EngineSim {
     // cylinders seal quite alike.
     this.cLeak = new Float64Array(this.n).fill(1);
     this.cLeakVar = Float64Array.from({ length: this.n }, () => clamp(0.6 * gauss(), -0.9, 1.5));
+
+    this.kick = st.type === 'kick';
+    this.kicking = false;
+    if (this.kick) {
+      this.kickTq = st.torque;
+      this.kickW = st.rpm / 9.5493;
+      this.kickRevs = st.revs;
+      this.kickN = 0;
+      this.kickT = 0;
+      this.kickRev = 0;
+      this.kickWait = 0;
+      this.kickGrip = 1;
+      this.kickClick = 0;
+      this.kickClickT = 0;
+      // the leg alone spins it this fast: running means faster than that
+      this.runRpm = st.rpm * 1.15;
+      this.offRpm = this.runRpm;
+    }
   }
 
   // Key to START: the solenoid clicks in, and ~40 ms later the pinion is in
@@ -1049,19 +1104,57 @@ class EngineSim {
     this.starter = true;
     this.starterT = 0;
     this.stHold = 0;
-    // a cold battery sags further under the cranking current
-    this.stV = this.st.volts * (cold ? 0.98 : 1);
-    this.stR = this.st.ohms * (cold ? 1.06 : 1);
-    this.stKickC += 0.6;
     this.rk1 = this.rk2 = this.rkH = this.J * this.alpha;
     this.stActive = true;
+    if (this.kick) {
+      // a moment to find compression before the first kick
+      this.kickN = 0;
+      this.kickWait = 0.3;
+    } else {
+      // a cold battery sags further under the cranking current
+      this.stV = this.st.volts * (cold ? 0.98 : 1);
+      this.stR = this.st.ohms * (cold ? 1.06 : 1);
+      this.stKickC += 0.6;
+    }
     if (!this.running) {
       // The ECU fires only once it has seen the cam and crank signals (a
-      // dry-sump race engine is spun up for oil pressure first), and a cold
-      // port wall soaks up the first squirts of fuel.
+      // dry-sump race engine is spun up for oil pressure first; a magneto
+      // sparks at once), and a cold port wall soaks up the first squirts.
       this.crankRevs = 0;
-      this.syncRevs = (this.st.type === 'external' ? 7 : 1.1) + 1.3 * rnd();
+      this.syncRevs = this.kick ? 0.05 : (this.st.type === 'external' ? 7 : 1.1) + 1.3 * rnd();
       this.filmLeft = cold ? Math.round(this.n * (0.3 + 0.4 * rnd())) + 1 : 0;
+    }
+  }
+
+  // Kick start: one stroke of the lever turns the crank ~2.5 times, then the
+  // gear lets go and the lever springs back up over its ratchet. Another
+  // kick follows if the engine didn't catch.
+  kickControl(dtc) {
+    if (this.kicking) {
+      this.kickT += dtc;
+      if (this.kickRev >= this.kickRevs || this.kickT > 0.45 || !this.starter) {
+        this.kicking = false;
+        this.kickClick = 6;
+        this.kickClickT = 0.06;
+        this.kickWait = 0.8 + 0.4 * rnd();
+        this.stActive = true;
+      }
+    } else if (this.starter && !this.running) {
+      this.kickWait -= dtc;
+      if (this.kickWait <= 0) {
+        if (this.kickN >= 6) {
+          this.starter = false; // flooded or out of breath
+          return;
+        }
+        this.kicking = true;
+        this.kickN++;
+        this.kickT = 0;
+        this.kickRev = 0;
+        this.kickGrip = 0.85 + 0.3 * rnd(); // no two kicks alike
+        this.stKickG += 2.2; // boot on the lever, the kick gear snaps in
+        this.stKickC += 0.8;
+        this.stActive = true;
+      }
     }
   }
 
@@ -1124,6 +1217,7 @@ class EngineSim {
   // gears' whine, all following current and speed; the solenoid's clunks;
   // and the engine rocking on its mounts.
   starterSound() {
+    if (this.kick) return this.kickSound();
     const st = this.st;
     const fs = this.fs;
     let gx = this.stKickG;
@@ -1168,11 +1262,50 @@ class EngineSim {
     return (this.stGear.tick(gx) + this.stCase.tick(cx) + tone + thud) * this.stNear;
   }
 
+  // Kick start sound: the kick gear snapping in and whirring through the
+  // primary drive, the lever ratcheting back up and topping out on its stop,
+  // and the engine rocking on its mounts.
+  kickSound() {
+    let gx = this.stKickG;
+    let cx = this.stKickC;
+    this.stKickG = 0;
+    this.stKickC = 0;
+    if (this.kicking) {
+      const tooth = ((this.cCA[0] % 360) * 18 / 360) | 0; // primary gear teeth
+      if (tooth !== this.stTooth) {
+        this.stTooth = tooth;
+        gx += 0.12 * (0.6 + 0.8 * rnd());
+      }
+    }
+    if (this.kickClick > 0) {
+      this.kickClickT -= this.dt;
+      if (this.kickClickT <= 0) {
+        this.kickClick--;
+        if (this.kickClick > 0) cx += 0.4 * (0.7 + 0.6 * rnd());
+        else gx += 1.1;
+        this.kickClickT = 0.014 + 0.01 * rnd();
+      }
+    }
+    this.stEnv = this.kicking ? 1 : this.stEnv * this.stEnvK;
+    this.rk1 += this.rkA * (this.J * this.alpha - this.rk1);
+    this.rk2 += this.rkA * (this.rk1 - this.rk2);
+    this.rkH += this.rkB * (this.rk2 - this.rkH);
+    const thud = 0.4 * ftanh(((this.rk2 - this.rkH) * this.rockG * this.stEnv) / 0.4);
+    if (this.kicking || this.kickClick > 0 || this.stEnv > 2e-3) this.stQuiet = 0;
+    else if (++this.stQuiet > this.fs * 0.1) this.stActive = false;
+    return (this.stGear.tick(gx) + this.stCase.tick(cx) + thud) * this.stNear;
+  }
+
   // -------------------------------------------------------------------------
   // Per-cycle cylinder events
   // -------------------------------------------------------------------------
 
   onIVC(c, rpm) {
+    if (this.twoStroke) {
+      // charge pushed back in by the chamber this cycle, per cylinder
+      this.plug += ((this.plugAcc * this.n) / (1.18 * this.vd) - this.plug) * 0.15;
+      this.plugAcc = 0;
+    }
     const m = this.cm[c];
     const mb = this.cMb[c];
     const fresh = Math.max(0, m - mb);
@@ -1286,7 +1419,7 @@ class EngineSim {
     }
     this.cBurn[c] = 0;
     this.cFuel[c] = 0;
-    this.cExB[c] = this.cMb[c] / this.cm[c];
+    if (!this.twoStroke) this.cExB[c] = this.cMb[c] / this.cm[c];
     // EGT estimate weighted by mass
     const T = this.cU[c] / (this.cm[c] * CV);
     this.egtAcc += T * this.cm[c];
@@ -1307,10 +1440,11 @@ class EngineSim {
       this.starterT += dtc;
       this.crankRevs += (rpm / 60) * dtc;
       this.stHold = this.running && rpm > this.offRpm ? this.stHold + dtc : 0;
-      if (!this.ignition || this.stHold > 0.1 || this.starterT > 6) this.starter = false;
+      if (!this.ignition || this.stHold > 0.1 || this.starterT > (this.kick ? 9 : 6)) this.starter = false;
     }
+    if (this.kick) this.kickControl(dtc);
     // the pinion meshes and the main contacts close ~40 ms after the key
-    const eng = this.starter && this.starterT > 0.04;
+    const eng = this.starter && this.starterT > 0.04 && !this.kick;
     if (eng !== this.stEng) {
       this.stEng = eng;
       this.stLock = false;
@@ -1369,13 +1503,14 @@ class EngineSim {
       this.bypass += (this.bypassFF * (1 + this.idleI) - this.bypass) * Math.min(1, dtc * 3);
       this.sparkTrim *= 0.9;
     }
-    if (!this.running) this.bypass = this.bypassFF * 1.6;
+    // cranking air; a two-stroke kicked over at speed needs no extra
+    if (!this.running) this.bypass = this.bypassFF * (this.twoStroke ? 1 : 1.6);
 
     // Decel fuel cut / burble
     // Coast (decel fuel cut) vs idle regulation. Fuel resumes early when the
     // revs are falling fast so the engine lands softly on its idle speed.
     const resume = this.idleTarget + 250 + clamp(-this.rpmRate * 0.15, 0, 900);
-    if (this.pedal < 0.03 && this.running && !this.launch) {
+    if (this.pedal < 0.03 && this.running && !this.launch && !this.twoStroke) {
       if (this.dfco) {
         if (rpm < resume) {
           this.dfco = false;
@@ -1401,6 +1536,13 @@ class EngineSim {
     else if (rpm < lim - (this.launch ? 250 : e.hyst)) this.limCut = false;
     this.launchCut = this.launch && this.v < 1 && this.limCut;
     if (this.launchCut) this.limCut = false;
+
+    // Two-stroke exhaust power valve: a servo raises the port roof through
+    // its rpm range
+    if (this.pvRpm) {
+      const pvT = clamp((rpm - this.pvRpm[0]) / (this.pvRpm[1] - this.pvRpm[0]), 0, 1);
+      this.pv += (pvT - this.pv) * Math.min(1, dtc * 5);
+    }
 
     // VTEC-style cam switch
     if (this.camSwitch > 0) {
@@ -1498,7 +1640,17 @@ class EngineSim {
     this.vehicleControl(dtc, rpm);
 
     // Temperatures -> pipe sound speed
-    if (this.egtW > 0) {
+    if (this.twoStroke) {
+      // everything the port lets out, scavenging air and all, averaged
+      // over the last ~50 ms
+      if (this.egtOutW > 0) this.egtInst = this.egtOut / this.egtOutW;
+      else if (!this.running) this.egtInst += (T_AMB + 40 - this.egtInst) * dtc * 0.3;
+      const k = Math.exp(-dtc / 0.05);
+      this.egtOut *= k;
+      this.egtOutW *= k;
+      this.egtAcc = 0;
+      this.egtW = 0;
+    } else if (this.egtW > 0) {
       this.egtInst = (this.egtAcc / this.egtW) * 0.78;
       this.egtAcc = 0;
       this.egtW = 0;
@@ -1765,9 +1917,22 @@ class EngineSim {
     const hi = this.camHi;
     const exTab = hi ? this.exTabHi : this.exTabLo;
     const inTab = hi ? this.inTabHi : this.inTabLo;
-    const ivc = hi ? this.cfg.ivcHi : this.cfg.ivc;
-    const evo = hi ? this.cfg.evoHi : this.cfg.evo;
+    let ivc = hi ? this.cfg.ivcHi : this.cfg.ivc;
+    let evo = hi ? this.cfg.evoHi : this.cfg.evo;
     const evc = this.cfg.evc;
+    // two-stroke: the power valve blends the exhaust port between its low
+    // and raised roof; the charge is trapped as the port closes
+    const ts = this.twoStroke;
+    const pv = ts ? this.pv : 0;
+    const exTabP = this.exTabHi;
+    if (ts) {
+      ivc += (this.cfg.ivcHi - ivc) * pv;
+      evo += (this.cfg.evoHi - evo) * pv;
+    }
+    const ccM = this.ccM, ccU = this.ccU, ccB = this.ccB, ccV = this.ccV, ccP = this.ccP, cReed = this.cReed;
+    const ccTot = this.ccTot, scavK = this.scavK, exPool = this.exPool, cTf = this.cTf, evapH = this.evapH;
+    const reedA = this.reedA, reedP0 = this.reedP0, reedPf = this.reedPf, reedK = this.reedK;
+    let egtOut = 0, egtOutW = 0, plugAcc = 0;
     const rasp = this.rasp26;
     const kLeak = this.kLeak;
     const cLeak = this.cLeak;
@@ -1825,6 +1990,13 @@ class EngineSim {
       const Vo = cV[c];
       const dV = V - Vo;
       U = (U * (1 - (GM1 * 0.5 * dV) / Vo)) / (1 + (GM1 * 0.5 * dV) / V);
+      if (ts) {
+        // the crankcase grows as the piston rises
+        const Vc = ccTot - V;
+        const dVc = Vc - ccV[c];
+        ccU[c] = (ccU[c] * (1 - (GM1 * 0.5 * dVc) / ccV[c])) / (1 + (GM1 * 0.5 * dVc) / Vc);
+        ccV[c] = Vc;
+      }
 
       if (cBurn[c] === 2) {
         let ph = ca - cSpark[c];
@@ -1884,6 +2056,7 @@ class EngineSim {
 
       // exhaust valve (plus seat bounce when the valves float)
       let ae = exTab[i0] + (exTab[i0 + 1] - exTab[i0]) * fr;
+      if (pv > 0) ae += pv * (exTabP[i0] + (exTabP[i0 + 1] - exTabP[i0]) * fr - ae);
       if (cBe[c] > 0) {
         let ph = ca - evc;
         if (ph < 0) ph += cycle;
@@ -1909,12 +2082,34 @@ class EngineSim {
         exOut[e] += zm * md;
         const dm = md * dt;
         if (dm > 0) {
-          U -= dm * CP * T;
-          cMb[c] -= (cMb[c] * dm) / m;
+          if (ts) {
+            // Loop scavenging: the fresh charge pushes the burned gas ahead
+            // of it, so what leaves is more burned (and hotter) than the
+            // cylinder average. Two zones: fresh charge at the temperature it
+            // came in at, burned gas holding the rest of the energy.
+            const mb = cMb[c] < m ? cMb[c] : m;
+            const xo = mb < m ? 1 - Math.pow(1 - mb / m, scavK) : 1;
+            const mf = m - mb;
+            let Tb = mb > 1e-9 ? (U / CV - mf * cTf[c]) / mb : T;
+            if (Tb < T) Tb = T;
+            const Tout = xo * Tb + (1 - xo) * cTf[c];
+            U -= dm * CP * Tout;
+            egtOut += dm * Tout;
+            egtOutW += dm;
+            cMb[c] -= dm * xo;
+            if (cMb[c] < 0) cMb[c] = 0;
+            // the header holds a mix of what left lately: what the pipe
+            // pushes back in is that mix (short-circuited charge included)
+            cExB[c] += (xo - cExB[c]) * (dm < exPool ? dm / exPool : 1);
+          } else {
+            U -= dm * CP * T;
+            cMb[c] -= (cMb[c] * dm) / m;
+          }
         } else {
           // backflow from the port: only as 'burned' as what went out
           U -= dm * CP * Tex;
           cMb[c] -= dm * cExB[c];
+          if (ts) plugAcc -= dm; // the chamber stuffing charge back in
         }
         m -= dm;
         if (m < 1e-7) m = 1e-7;
@@ -1922,8 +2117,67 @@ class EngineSim {
         p = (GM1 * U) / V;
       }
 
+      if (ts) {
+        // Transfer ports: crankcase charge up into the cylinder, or burned
+        // gas blown back down while the cylinder is still above crankcase
+        // pressure (low revs, big throttle).
+        const at = inTab[i0] + (inTab[i0 + 1] - inTab[i0]) * fr;
+        let mc = ccM[c], Uc = ccU[c];
+        const Vc = ccV[c];
+        if (at > 1e-9) {
+          const Tc = Uc / (mc * CV);
+          const pc = (GM1 * Uc) / Vc;
+          const zs = (GAM * R * T * dt) / V + (GAM * R * Tc * dt) / Vc;
+          const D = pc - p;
+          let md;
+          if (D >= 0) md = orifice(at, D, pc / (R * Tc), zs, pc, Math.sqrt(Tc), CHOKE_AIR);
+          else md = -orifice(at, -D, p / (R * T), zs, p, Math.sqrt(T), CHOKE);
+          const dm = md * dt;
+          if (dm > 0) {
+            const b = (ccB[c] * dm) / mc;
+            cTf[c] += (Tc - cTf[c]) * (dm < m ? dm / m : 1);
+            U += dm * CP * Tc;
+            Uc -= dm * CP * Tc;
+            cMb[c] += b;
+            ccB[c] -= b;
+          } else {
+            const b = (cMb[c] * -dm) / m;
+            U += dm * CP * T;
+            Uc -= dm * CP * T;
+            cMb[c] -= b;
+            ccB[c] += b;
+          }
+          m += dm;
+          mc -= dm;
+          if (m < 1e-7) m = 1e-7;
+          if (mc < 1e-7) mc = 1e-7;
+          T = U / (m * CV);
+          p = (GM1 * U) / V;
+        }
+        // Reed valve: the petals lift with the pressure difference across
+        // them and only ever let the charge in.
+        const e = cInEnd[c];
+        const pu = P_AMB + 2 * inIn[e];
+        const dp = pu - (GM1 * Uc) / Vc;
+        const tgt = dp > reedP0 ? (dp - reedP0 < reedPf ? (dp - reedP0) / reedPf : 1) : 0;
+        const rd = cReed[c] + reedK * (tgt - cReed[c]);
+        cReed[c] = rd;
+        if (rd > 1e-4 && dp > 0) {
+          const zm = inZ[e];
+          const md = orifice(reedA * rd, dp, pu / (R * Tint), zm + (GAM * R * (Uc / (mc * CV)) * dt) / Vc, pu, sqTint, CHOKE_AIR);
+          inOut[e] -= zm * md;
+          const dm = md * dt;
+          // the carburettor's fuel evaporates on the way in and cools it
+          Uc += dm * (CP * Tint - evapH);
+          mc += dm;
+        }
+        ccM[c] = mc;
+        ccU[c] = Uc;
+        ccP[c] = (GM1 * Uc) / Vc;
+      }
+
       // intake valve
-      let ai = inTab[i0] + (inTab[i0 + 1] - inTab[i0]) * fr;
+      let ai = ts ? 0 : inTab[i0] + (inTab[i0 + 1] - inTab[i0]) * fr;
       if (cBi[c] > 0) {
         let ph = ca - ivc;
         if (ph < 0) ph += cycle;
@@ -1964,6 +2218,7 @@ class EngineSim {
       const leak = (p - P_AMB) * kLeak * cLeak[c];
       if (leak > 0 && leak * dt < m * 0.01) {
         U -= leak * dt * CP * T;
+        if (ts) cMb[c] -= (cMb[c] * leak * dt) / m;
         m -= leak * dt;
       }
 
@@ -1979,7 +2234,12 @@ class EngineSim {
       cP2[c] = cP1[c];
       cP1[c] = p;
       cP[c] = p + ring;
-      torque += (p - P_AMB) * dvdth;
+      torque += (p - (ts ? ccP[c] : P_AMB)) * dvdth;
+    }
+    if (ts) {
+      this.egtOut += egtOut;
+      this.egtOutW += egtOutW;
+      this.plugAcc += plugAcc;
     }
     this.torqueGas = torque;
     this.vtExcS = vtExc;
@@ -2086,7 +2346,7 @@ class EngineSim {
     const th = this.thr > 0 ? (this.thr < 1 ? this.thr : 1) : 0;
     this.thrArea = this.Ath * 0.82 * th * Math.sqrt(th * Math.sqrt(th)); // th^1.75
     this.bypassS += this.bypassStep;
-    const A = this.thrArea + this.bypassS + 2e-6;
+    const A = this.thrArea + this.bypassS + this.thrLeak;
     const D = pUp - pPred;
     let md;
     if (D >= 0) md = orifice(A, D, pUp / (R * Tup), kpl, pUp, Math.sqrt(Tup), CHOKE_AIR);
@@ -2258,7 +2518,14 @@ class EngineSim {
   // Crank, clutch, wheels and car. Returns the new crank speed.
   stepDrivetrain(omega, torque, scTorque) {
     const dt = this.dt;
-    const tq = torque - this.fric * ftanh(omega * 0.5) - scTorque;
+    let tq = torque - this.fric * ftanh(omega * 0.5) - scTorque;
+    if (this.kicking) {
+      // the leg pushes hardest from rest and can't drive the crank past the
+      // speed it straightens at
+      const f = 1 - omega / this.kickW;
+      if (f > 0) tq += this.kickTq * this.kickGrip * f;
+      this.kickRev += (omega * dt) / TAU;
+    }
     let load = 0;
     if (this.mode === 'dyno') {
       load = this.dynoLoad;
@@ -3094,6 +3361,13 @@ class EngineProcessor extends AudioWorkletProcessor {
       // a start in progress carries on with the new hardware
       for (const k of ['starter', 'starterT', 'stHold', 'crankRevs', 'syncRevs', 'filmLeft', 'stW', 'stLock', 'stEng', 'stV', 'stR', 'stActive', 'stEnv'])
         sim[k] = old[k];
+      if (sim.kick && old.kick) for (const k of ['kicking', 'kickN', 'kickT', 'kickRev', 'kickWait', 'kickGrip']) sim[k] = old[k];
+      else if (sim.kick !== old.kick) {
+        sim.stEng = false;
+        sim.stW = 0;
+        sim.kickWait = 0.3;
+      }
+      if (sim.twoStroke) sim.pv = old.pv ?? 0;
       sim.crank = old.crank % sim.cycle;
       for (let c = 0; c < sim.n; c++) sim.cCA[c] = (sim.crank + sim.off[c]) % sim.cycle;
       sim.pPl = old.pPl;
@@ -3273,6 +3547,9 @@ class EngineProcessor extends AudioWorkletProcessor {
       spl,
       mode: s.mode,
       camHi: s.camHi,
+      pv: s.twoStroke ? s.pv : null,
+      // a two-stroke "on the pipe": the chamber is stuffing charge back in
+      onPipe: s.twoStroke && s.plug > 0.05 && s.thr > 0.5,
       valve: s.valveOpen,
       shifting: !!s.shift,
       slip: s.slip,

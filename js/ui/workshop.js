@@ -1,7 +1,7 @@
 // Tuning drawer. Some settings are live ECU parameters ("tune"); others change
 // the hardware and recompile the engine ("rebuild").
 
-import { firingAngles } from '../engine/compile.js';
+import { firingAngles, cycleOf } from '../engine/compile.js';
 import { FREE } from '../config.js';
 
 export const CAMERAS = [
@@ -34,7 +34,7 @@ function camShift(cam, deg, lift) {
 // Firing intervals seen by each exhaust group (bank).
 function bankIntervals(spec, groups) {
   const ang = firingAngles(spec);
-  const cyc = spec.kind === 'rotary' ? 1080 : 720;
+  const cyc = cycleOf(spec);
   return groups.map((g) => {
     const a = g.map((c) => ang[c - 1]).sort((x, y) => x - y);
     return a.map((v, i) => (i + 1 < a.length ? a[i + 1] - v : cyc - v + a[0]));
@@ -53,7 +53,7 @@ export function headerStyles(spec) {
   // engine as a whole fires evenly (the cross-plane V8 case).
   if (banks.length === 2 && spec.cylinders >= 6 && spec.cylinders % 2 === 0) {
     const ang = firingAngles(spec).slice().sort((a, b) => a - b);
-    const iv = ang.map((v, i) => (i + 1 < ang.length ? ang[i + 1] - v : 720 - v + ang[0]));
+    const iv = ang.map((v, i) => (i + 1 < ang.length ? ang[i + 1] - v : cycleOf(spec) - v + ang[0]));
     const even = Math.max(...iv) - Math.min(...iv) < 1;
     const bi = bankIntervals(spec, banks).flat();
     const bankEven = Math.max(...bi) - Math.min(...bi) < 1;
@@ -273,6 +273,11 @@ export class Workshop {
     const spec = app.spec;
     const factory = app.factory;
     const tune = app.tune;
+    if (spec.kind === 'twostroke') {
+      this.renderTwoStroke(group, seg, range);
+      this.renderEcu(group, seg, range);
+      return;
+    }
 
     // --- exhaust
     let g = group('Exhaust');
@@ -583,9 +588,98 @@ export class Workshop {
     edit.className = 'btn-row';
     g.appendChild(edit);
     button(edit, 'Open in engine builder', () => app.openBuilder({ from: 'current' }), 'btn btn-accent');
+    this.renderEcu(group, seg, range);
+  }
 
+  // Two-stroke hardware: no valves or cams; the expansion chamber and the
+  // exhaust power valve shape the powerband.
+  renderTwoStroke(group, seg, range) {
+    const app = this.app;
+    const spec = app.spec;
+    const factory = app.factory;
+    let g = group('Expansion chamber');
+    const ch = spec.exhaust.chamber ?? {};
+    range(
+      g,
+      'Pipe tuned for',
+      5600,
+      9600,
+      100,
+      ch.tune ?? 7200,
+      (v) => `${v.toLocaleString('en-US')} rpm`,
+      () => {},
+      'The chamber sends the escaping charge back into the cylinder just as the port closes, but only over a band of revs. A shorter pipe moves that hit up the rev range; a longer one fattens the midrange.',
+      (v) => app.rebuild((s) => (s.exhaust.chamber = { ...(s.exhaust.chamber ?? {}), tune: v }))
+    );
+    seg(
+      g,
+      'Silencer',
+      [
+        ['silencer', 'Packed can'],
+        ['none', 'Open stinger'],
+      ],
+      spec.exhaust.muffler ?? 'silencer',
+      (v) => app.rebuild((s) => (s.exhaust.muffler = v)),
+      'Without the can the stinger blows straight out: louder and harsher, the same power.'
+    );
+    g = group('Intake');
+    seg(
+      g,
+      'Air intake',
+      [
+        ['stock', 'Airbox'],
+        ['open', 'Open filter'],
+      ],
+      spec.intake?.airbox ?? 'stock',
+      (v) => app.rebuild((s) => (s.intake = { ...(s.intake ?? {}), airbox: v })),
+      'The airbox muffles the carburettor honk. An open filter lets you hear it gulp.'
+    );
+    g = group('Engine');
+    const pv = factory.ports?.powerValve;
+    if (pv) {
+      const cur = spec.ports.powerValve.rpm[0] > 20000 ? 'low' : spec.ports.powerValve.rpm[1] < 100 ? 'high' : 'auto';
+      seg(
+        g,
+        'Power valve',
+        [
+          ['auto', 'Working'],
+          ['low', 'Stuck shut'],
+          ['high', 'Stuck open'],
+        ],
+        cur,
+        (v) =>
+          app.rebuild((s) => {
+            const rpm = v === 'low' ? [90000, 90001] : v === 'high' ? [0, 1] : pv.rpm;
+            s.ports = { ...s.ports, powerValve: { ...pv, rpm } };
+          }),
+        `A blade lowers the exhaust port roof at low revs and lifts out of the way from ${pv.rpm[0].toLocaleString('en-US')} to ${pv.rpm[1].toLocaleString('en-US')} rpm. Shut, the engine pulls hard low down and dies on top; open, it is gutless until it hits the pipe.`
+      );
+    }
+    seg(
+      g,
+      'Flywheel',
+      [
+        [0.6, 'Light'],
+        [1, 'Stock'],
+        [1.7, 'Heavy'],
+      ],
+      app.flyLevel,
+      (v) =>
+        app.rebuild((s) => {
+          s.inertia = factory.inertia * v;
+          app.flyLevel = v;
+        })
+    );
+  }
+
+  renderEcu(group, seg, range) {
+    const app = this.app;
+    const spec = app.spec;
+    const factory = app.factory;
+    const tune = app.tune;
+    const two = spec.kind === 'twostroke';
     // --- ECU
-    g = group('Engine control');
+    const g = group(two ? 'Ignition & limiter' : 'Engine control');
     range(
       g,
       'Rev limit',
@@ -607,7 +701,7 @@ export class Workshop {
       (v) => app.setTune({ limiter: v }),
       'Spark cut keeps injecting fuel, which then explodes in the hot exhaust.'
     );
-    range(g, 'Overrun pops', 0, 1, 0.05, tune.burble, (v) => (v === 0 ? 'off' : `${Math.round(v * 100)}%`), (v) => app.setTune({ burble: v }), 'Retarded spark and a little fuel on lift-off: crackle tune.');
+    if (!two) range(g, 'Overrun pops', 0, 1, 0.05, tune.burble, (v) => (v === 0 ? 'off' : `${Math.round(v * 100)}%`), (v) => app.setTune({ burble: v }), 'Retarded spark and a little fuel on lift-off: crackle tune.');
     range(
       g,
       'Ignition timing',
@@ -620,17 +714,18 @@ export class Workshop {
       'More advance builds pressure earlier, until the unburned end gas autoignites: knock. It rings the combustion chamber at its acoustic resonance, a metallic ping.'
     );
     seg(g, 'Fuel', FUELS, tune.octane, (v) => app.setTune({ octane: v }), 'Lower octane fuel autoignites sooner.');
-    seg(
-      g,
-      'Knock sensor',
-      [
-        [true, 'On'],
-        [false, 'Off'],
-      ],
-      tune.knockCtl,
-      (v) => app.setTune({ knockCtl: v }),
-      'With the sensor on, the ECU hears the ping and pulls timing. Off, the engine keeps knocking.'
-    );
+    if (!two)
+      seg(
+        g,
+        'Knock sensor',
+        [
+          [true, 'On'],
+          [false, 'Off'],
+        ],
+        tune.knockCtl,
+        (v) => app.setTune({ knockCtl: v }),
+        'With the sensor on, the ECU hears the ping and pulls timing. Off, the engine keeps knocking.'
+      );
     range(g, 'Launch control', 2000, Math.round(factory.ecu.limit * 0.8), 100, tune.launchRpm, (v) => `${v.toLocaleString('en-US')} rpm`, (v) => app.setTune({ launchRpm: v }));
     seg(
       g,

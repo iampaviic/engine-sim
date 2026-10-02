@@ -207,13 +207,13 @@ export class Tach {
     g.fillStyle = '#3d372e';
     g.fillText(this.speedText ?? '', cx, cy + fr * 0.56);
     // warning lamp: valve float beats knock beats the cam badge
-    const warn = this.float > 0.02 ? ['VALVE FLOAT', '#d62f27'] : this.knock > 0.05 ? ['KNOCK', '#d9822b'] : this.camHi ? ['HIGH CAM', '#1f6fb2'] : null;
+    const warn = this.float > 0.02 ? ['VALVE FLOAT', '#d62f27'] : this.knock > 0.05 ? ['KNOCK', '#d9822b'] : this.camHi ? ['HIGH CAM', '#1f6fb2'] : this.onPipe ? ['ON THE PIPE', '#1f6fb2'] : null;
     if (warn) {
-      const lit = warn[0] === 'HIGH CAM' || Math.floor(this.blink * 8) % 2 === 0 || this.float > 0.5;
+      const lit = warn[1] === '#1f6fb2' || Math.floor(this.blink * 8) % 2 === 0 || this.float > 0.5;
       g.font = `700 ${Math.round(fr * 0.05)}px "Barlow Semi Condensed", sans-serif`;
       const tw = g.measureText(warn[0]).width + fr * 0.06;
       const y = cy - fr * 0.23;
-      if (warn[0] !== 'HIGH CAM') {
+      if (warn[1] !== '#1f6fb2') {
         g.fillStyle = lit ? warn[1] : 'rgba(0,0,0,0.12)';
         g.beginPath();
         g.roundRect?.(cx - tw / 2, y - fr * 0.04, tw, fr * 0.08, fr * 0.04);

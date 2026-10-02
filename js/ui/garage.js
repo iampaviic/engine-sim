@@ -10,6 +10,7 @@ const FILTERS = [
   ['V8', 'V8'],
   ['six', 'Sixes'],
   ['four', 'Fives & fours'],
+  ['two', 'Two-strokes'],
   ['odd', 'Oddballs'],
   ['mine', 'My garage'],
 ];
@@ -20,6 +21,7 @@ function matches(p, f) {
   if (p.custom) return false;
   if (f === 'six') return p.family === 'I6' || p.family === 'F6';
   if (f === 'four') return p.family === 'I4' || p.family === 'F4' || p.family === 'I5';
+  if (f === 'two') return p.kind === 'twostroke';
   if (f === 'odd') return p.family === 'Rotary' || p.family === 'V2';
   return p.family === f;
 }
@@ -92,7 +94,12 @@ export class Garage {
       card.setAttribute('role', 'button');
       card.tabIndex = 0;
       card.setAttribute('aria-current', String(p.id === this.current));
-      const fo = p.kind === 'rotary' ? `${p.cylinders / 3} rotors · every ${Math.round(1080 / p.cylinders)}°` : p.firingOrder.join('-');
+      const fo =
+        p.kind === 'rotary'
+          ? `${p.cylinders / 3} rotors · every ${Math.round(1080 / p.cylinders)}°`
+          : p.kind === 'twostroke' && p.cylinders === 1
+            ? 'every turn'
+            : p.firingOrder.join('-');
       const ind =
         p.induction?.type === 'turbo'
           ? `${p.induction.count >= 4 ? (p.induction.sequential ? 'sequential quad-turbo' : 'quad-turbo') : p.induction.count > 1 ? 'twin-turbo' : 'turbo'} ${p.induction.boost} bar`
@@ -100,7 +107,9 @@ export class Garage {
             ? 'supercharged'
             : p.induction?.type === 'centrifugal'
               ? 'centrifugal blower'
-              : 'NA';
+              : p.kind === 'twostroke'
+                ? 'expansion chamber'
+                : 'NA';
       card.innerHTML = `
         <div class="card-top"><span class="badge">${p.family}</span>${locked ? '<span class="pro-tag">PRO</span>' : ''}<span class="origin">${p.origin}</span></div>
         <h3>${escapeHtml(p.name)}</h3>

@@ -5,7 +5,7 @@ import { pro, buyPro, restorePro, unlockForTesting } from '../platform/purchases
 import { PAYWALL_SAMPLES, PREVIEW_SECONDS } from '../config.js';
 
 const FEATURES = [
-  ['All 18 engines', 'and every engine added later'],
+  ['All 19 engines', 'and every engine added later'],
   ['Every scene', 'tunnel run, quarter mile with time slips, mountain road'],
   ['The whole workshop', 'headers, X-pipes, turbos and blowers, cams, fuel and knock, launch control'],
   ['All the instruments', 'spectrum, p–V diagram, dyno, A/B compare, sound mixer'],

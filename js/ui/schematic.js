@@ -180,9 +180,11 @@ export class Schematic {
     // pipes: steel base, then pressure overlay
     g.lineCap = 'round';
     g.lineJoin = 'round';
+    // a two-stroke's expansion chamber is the whole show: draw it fatter
+    const fat = this.cfg.kind === 'twostroke' ? 2.2 : 1;
     this.net.segs.forEach((s, k) => {
       const geo = this.segGeom[k];
-      const w = Math.max(1.5 * dpr, Math.min(16 * dpr, s.dia * pipeScale));
+      const w = Math.max(1.5 * dpr, Math.min(16 * fat * dpr, s.dia * pipeScale * fat));
       const glow = s.label === 'primary' ? egtGlow : s.label === 'secondary' ? egtGlow * 0.7 : 0;
       g.strokeStyle = glow > 0.05 ? `rgb(${60 + 90 * glow | 0},${40 + 10 * glow | 0},${34})` : '#3b3631';
       g.lineWidth = w + 2 * dpr;

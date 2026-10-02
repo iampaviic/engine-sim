@@ -777,6 +777,59 @@ const VTWIN = {
   sound: { exhaust: 1.2, intake: 1.2, mech: 1.6, valvetrain: 'ohv', trim: 0.72, starter: 1.12 },
 };
 
+const MX250 = {
+  id: 'mx-250',
+  name: 'Two-Stroke Single',
+  tagline: '250 cc two-stroke · reed valve · expansion chamber',
+  origin: 'Japan',
+  family: '2-stroke',
+  kind: 'twostroke',
+  blurb:
+    'One cylinder firing on every turn of the crank, and no valves at all: the piston uncovers ports in the cylinder wall, the crankcase underneath pumps the charge up the transfer ports, and a tuned expansion chamber shoves back what tries to escape. Lazy below its powerband, then it comes on the pipe.',
+  listen: 'Let it idle for the ring-ding, then hold it open and listen for it coming on the pipe.',
+  cylinders: 1,
+  bore: 66.4,
+  stroke: 72,
+  rod: 128,
+  compression: 14.5,
+  crankcase: 1.38,
+  firingAngles: [0],
+  firingOrder: [1],
+  // port timings in degrees after top centre; widths are the windows' total
+  ports: {
+    ex: { open: 84, width: 66 },
+    transfer: { open: 118, width: 84 },
+    powerValve: { open: 96, rpm: [7000, 9000] },
+    reed: 1250,
+    scavenging: 2.4,
+  },
+  intake: { runnerLen: 0.13, runnerDia: 38, plenum: 0.4, throttleDia: 38, airbox: 'stock' },
+  exhaust: {
+    chamber: { tune: 7200, header: 42, belly: 118, stinger: 24 },
+    muffler: 'silencer',
+    tailLen: 0.06,
+  },
+  induction: { type: 'na' },
+  ecu: { idle: 1800, limit: 9600, limiter: 'spark', afr: 12.5, burble: 0, launchRpm: 7000, startFlare: 0, octane: 98 },
+  inertia: 0.016,
+  friction: 0.6,
+  starter: 'kick',
+  combustion: 0.85,
+  vehicle: {
+    mass: 185,
+    gears: [6.33, 4.86, 3.98, 3.31, 2.86],
+    final: 3.4,
+    tire: 0.33,
+    cd: 0.65,
+    area: 0.65,
+    rearBias: 0.6,
+    layout: 'front',
+    shiftTime: 0.15,
+    mu: 1.0,
+  },
+  sound: { exhaust: 1, intake: 1.2, mech: 0.6, valvetrain: 'none', trim: 2.69, starter: 5.65 },
+};
+
 const V8_HOTVEE = {
   id: 'v8-hotvee',
   name: 'Hot-Vee V8',
@@ -932,7 +985,7 @@ const W16 = {
   sound: { exhaust: 1, intake: 1, mech: 0.9, valvetrain: 'dohc', trim: 3.53, starter: 0.6 },
 };
 
-export const PRESETS = [V12_65, V12_60, W16, V8_LS, V8_BIGBLOCK, V8_BLOWER, V8_HOTVEE, V8_FLAT, V10_72, F1_V10, F6_GT, I6_TURBO, I5_TURBO, I4_RALLY, I4_VTEC, F4_TURBO, ROTARY, VTWIN];
+export const PRESETS = [V12_65, V12_60, W16, V8_LS, V8_BIGBLOCK, V8_BLOWER, V8_HOTVEE, V8_FLAT, V10_72, F1_V10, F6_GT, I6_TURBO, I5_TURBO, I4_RALLY, I4_VTEC, F4_TURBO, ROTARY, VTWIN, MX250];
 
 export function presetById(id) {
   return PRESETS.find((p) => p.id === id) ?? PRESETS[0];

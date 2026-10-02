@@ -29,6 +29,12 @@ export const CH = { EX_L: 0, EX_R: 1, INTAKE: 2 };
 const mm = (x) => x / 1000;
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 
+// Crank degrees per engine cycle: a rotor fires each face once per 1080° of
+// eccentric shaft, a two-stroke fires every turn.
+export function cycleOf(spec) {
+  return spec.kind === 'rotary' ? 1080 : spec.kind === 'twostroke' ? 360 : 720;
+}
+
 // ---------------------------------------------------------------------------
 // Pipe network builder
 // ---------------------------------------------------------------------------
@@ -118,6 +124,9 @@ function component(net, inNode, kind, dia, x0, x1, y, opts = {}) {
     case 'glasspack':
       // Perforated core wrapped in fibreglass: absorbs highs, passes the lows.
       return chain([{ len: 0.52, dia: dia * 1.15, frac: 1, hf: 0.55, g: 0.95 }]);
+    case 'silencer':
+      // Two-stroke silencer: a short perforated core in a can of packing.
+      return chain([{ len: 0.34, dia: dia * 1.3, frac: 1, hf: 0.6, g: 0.95 }]);
     case 'sport':
       // Straight-through perforated core with packing: loud, some damping.
       return chain([{ len: 0.5, dia: dia * 1.06, frac: 1, hf: 0.44, g: 0.965 }]);
@@ -326,6 +335,11 @@ function buildExhaust(spec) {
     return finishNet(net, lay);
   }
 
+  if (spec.kind === 'twostroke') {
+    buildChambers(net, spec, lay);
+    return finishNet(net, lay);
+  }
+
   if (!dual) {
     // Inline / single collector.
     let coll;
@@ -461,6 +475,74 @@ function buildExhaust(spec) {
   return finishNet(net, lay);
 }
 
+// Two-stroke expansion chamber dimensions (m, mm). The pulse that leaves the
+// port as it opens comes back off the baffle cone as a pressure wave just as
+// the port closes, and stuffs the fresh charge that followed it into the
+// cylinder; on its way out the diffuser cone sends a suction wave back that
+// pulls charge up the transfers. Both only line up over a band of rpm
+// around `tune`: the pipe sets the powerband. Lt runs from the port to the
+// middle of the baffle cone.
+export function chamberDims(spec) {
+  const ch = spec.exhaust.chamber ?? {};
+  const Eo = 360 - 2 * spec.ports.ex.open;
+  // the plug must be back before the port closes, and the gas cools along
+  // the pipe: an effective wave speed well under the header's
+  const Lt = ((ch.c ?? 420) * Eo) / (12 * (ch.tune ?? 8500));
+  const d1 = ch.header ?? 42;
+  return {
+    Lt,
+    header: [0.168 * Lt, d1],
+    diffuser: [0.44 * Lt, ch.belly ?? 2.8 * d1],
+    belly: 0.262 * Lt,
+    // a short, steep baffle sends back a sharp plugging pulse
+    baffle: [0.262 * Lt, ch.stinger ?? 0.55 * d1],
+    stinger: 0.3 * Lt,
+  };
+}
+
+// One expansion chamber per cylinder, each out to its own silencer.
+function buildChambers(net, spec, lay) {
+  const ex = spec.exhaust;
+  const n = spec.cylinders;
+  const dm = chamberDims(spec);
+  const [L1, D1] = dm.header, [L2, Db] = dm.diffuser, [L4, Ds] = dm.baffle;
+  const gap = Math.min(0.2, 0.62 / n);
+  for (let c = 0; c < n; c++) {
+    const p = lay.pos[c];
+    const y = n === 1 ? 0.5 : 0.5 + (c - (n - 1) / 2) * gap;
+    const ch = n === 1 ? 2 : c < n / 2 ? 0 : 1;
+    const port = net.node(NODE.PORT, { cyls: [c], x: p.x, y: p.portY });
+    // header: drops from the port, a slight taper
+    const xh = Math.max(p.x + 0.06, 0.2);
+    const jh = net.junction(p.x + 0.03, y);
+    net.pipe(port, jh, { len: L1 * 0.5, dia: mm(D1), temp: 1, nl: 1, hf: 0.04, g: 0.99, pts: elbow(net, port, jh, 'vh'), label: 'primary' });
+    let a = net.junction(xh, y);
+    net.pipe(jh, a, { len: L1 * 0.5, dia: mm(D1 * 1.06), temp: 1, hf: 0.04, g: 0.99, pts: elbow(net, jh, a, 'straight'), label: 'primary' });
+    // stepped cones: diameters follow a horn between the ends
+    const cone = (len, d0, d1, steps, x1, temp0, temp1, label) => {
+      const [x0] = net.pt(a);
+      for (let k = 0; k < steps; k++) {
+        const f = (k + 0.5) / steps;
+        const b = net.junction(x0 + ((x1 - x0) * (k + 1)) / steps, y);
+        net.pipe(a, b, { len: len / steps, dia: mm(d0 * Math.pow(d1 / d0, f)), temp: temp0 + (temp1 - temp0) * f, hf: 0.04, g: 0.992, pts: elbow(net, a, b, 'straight'), label });
+        a = b;
+      }
+    };
+    cone(L2, D1 * 1.1, Db, 8, 0.43, 0.97, 0.85, 'diffuser');
+    cone(dm.belly, Db, Db, 1, 0.56, 0.82, 0.82, 'belly');
+    cone(L4, Db, Ds, 5, 0.67, 0.8, 0.72, 'baffle');
+    cone(dm.stinger, Ds, Ds, 1, 0.755, 0.68, 0.68, 'stinger');
+    // The stinger is the chamber's bleed: its jet loses its head where it
+    // blows into the silencer, which holds pressure in the chamber.
+    const As = 0.85 * Math.PI * mm(Ds) * mm(Ds) / 4;
+    const r = net.node(NODE.RESISTOR, { x: 0.765, y, R: 0, K: (ex.chamber?.bleed ?? 0.4) / (2 * 0.5 * As * As), dyn: DYN.NONE });
+    net.pipe(a, r, { len: 0.03, dia: mm(Ds), temp: 0.66, pts: [net.pt(a), net.pt(r)], label: 'stinger' });
+    a = r;
+    if ((ex.muffler ?? 'silencer') !== 'none') a = component(net, a, 'silencer', mm(Ds), 0.77, 0.93, y, { temp: 0.6 });
+    tails(net, a, { tips: 1, len: ex.tailLen ?? 0.06, dia: mm(Ds), ch, temp: 0.5 });
+  }
+}
+
 // Split the cylinders into two collectors that each fire at even intervals:
 // alternate cylinders in firing order.
 function evenGroups(spec) {
@@ -577,7 +659,7 @@ function buildIntake(spec) {
 // Flatten a PipeNet into typed arrays for the worklet.
 // ---------------------------------------------------------------------------
 
-function flattenNet(net) {
+export function flattenNet(net) {
   const S = net.segs.length;
   const N = net.nodes.length;
   const segLen = new Float64Array(S);
@@ -676,7 +758,7 @@ function valveAreaFromLift(lift, d, n, cd) {
 
 // Build an effective-area table (Cd*A, m^2) over the cycle for one valve set.
 function valveTable(spec, which, cam) {
-  const cycle = spec.kind === 'rotary' ? 1080 : 720;
+  const cycle = cycleOf(spec);
   const stroke = cycle / 4;
   const tab = new Float32Array(TAB_N + 1);
   let open, close;
@@ -710,8 +792,33 @@ function valveTable(spec, which, cam) {
   return { tab, open: norm(open), close: norm(close), dur };
 }
 
+// Piston crown distance from top centre (m) at crank angle th (degrees).
+function pistonDrop(spec, th) {
+  const r = mm(spec.stroke) / 2;
+  const l = mm(spec.rod ?? spec.stroke * 1.65);
+  const a = (th * Math.PI) / 180;
+  const s = Math.sin(a);
+  return r * (1 - Math.cos(a)) + l - Math.sqrt(l * l - r * r * s * s);
+}
+
+// Two-stroke port in the cylinder wall, uncovered by the piston crown from
+// `open` degrees after top centre until as far before it. width: total
+// chordal width of the windows (mm). The roof is arched, so the middle of
+// the window opens first and the corners follow over the first few mm.
+function portTable(spec, open, width, cd) {
+  const tab = new Float32Array(TAB_N + 1);
+  const x0 = pistonDrop(spec, open);
+  const w = mm(width) * cd;
+  const hr = 0.003;
+  for (let i = 0; i <= TAB_N; i++) {
+    const h = pistonDrop(spec, (i / TAB_N) * 360) - x0;
+    tab[i] = h <= 0 ? 0 : h < hr ? w * (0.4 * h + (0.3 * h * h) / hr) : w * (h - 0.3 * hr);
+  }
+  return { tab, open, close: 360 - open, dur: 360 - 2 * open };
+}
+
 function geometryTables(spec) {
-  const cycle = spec.kind === 'rotary' ? 1080 : 720;
+  const cycle = cycleOf(spec);
   const vol = new Float64Array(TAB_N + 1);
   const dvd = new Float64Array(TAB_N + 1); // dV/dtheta per radian of crank
   let vd, vc, pistonArea = 0;
@@ -750,7 +857,7 @@ function geometryTables(spec) {
 // Crank angle (0..cycle) at which each cylinder fires.
 export function firingAngles(spec) {
   const n = spec.cylinders;
-  const cycle = spec.kind === 'rotary' ? 1080 : 720;
+  const cycle = cycleOf(spec);
   const angles = new Array(n);
   if (spec.firingAngles) {
     for (let i = 0; i < n; i++) angles[i] = spec.firingAngles[i];
@@ -810,6 +917,20 @@ function compressionTorque(g, cylOffset, ivc, evo) {
 
 function starterSpec(spec, litres, resist, drag) {
   const o = typeof spec.starter === 'string' ? { type: spec.starter } : (spec.starter ?? {});
+  if (o.type === 'kick') {
+    // A rider's leg on the kick lever, geared up to the crank: a strong push
+    // that fades as the leg straightens and speeds up; ~2.5 crank turns per
+    // stroke of the lever.
+    return {
+      type: 'kick',
+      torque: o.torque ?? Math.max(20, 1.25 * resist + drag),
+      rpm: o.rpm ?? 950,
+      revs: o.revs ?? 2.5,
+      kw: 1.5,
+      // unused motor fields, kept so the motor code reads sane numbers
+      volts: 12, ohms: 1, K: 0.1, sat: 0, ring: 60, pinion: 15, gearing: 1, sun: 0, bars: 8, poles: 2, inertia: 0.01,
+    };
+  }
   const type = STARTERS[o.type] ? o.type : 'reduction';
   const b = { ...STARTERS[type], ...o };
   let kw = o.kw ?? b.kw + b.kwPerL * litres;
@@ -843,26 +964,60 @@ function starterSpec(spec, litres, resist, drag) {
   };
 }
 
+// Two-stroke cylinder: crankcase pumping and ports. The crankcase is sealed
+// under each piston and squeezes the charge it drew in through the reed
+// valve up the transfer ports. A power valve lowers the exhaust port roof
+// below its rpm range, which delays the port opening.
+function twoStrokeSpec(spec, g, exLo, exHi) {
+  const p = spec.ports;
+  const ccMin = g.vd / ((spec.crankcase ?? 1.4) - 1); // crankcase volume at bottom centre
+  const pv = p.powerValve;
+  return {
+    ccTot: ccMin + g.vd + g.vc, // crankcase + cylinder volume, constant
+    reedArea: (p.reed ?? 1200) * 1e-6 * 0.7,
+    reedP0: 600, // petal preload (Pa)
+    reedPf: 9000, // pressure difference that lifts the petals to the stop
+    scav: p.scavenging ?? 1.9, // >1: the exhaust takes burned gas first (loop scavenging)
+    pv: pv ? [pv.rpm[0], pv.rpm[1]] : null,
+    exDur: exHi.dur,
+    exDurLo: exLo.dur,
+  };
+}
+
 export function compileEngine(spec) {
   const g = geometryTables(spec);
   const cycle = g.cycle;
   const n = spec.cylinders;
-  const tdcFire = cycle / 2;
+  const twoStroke = spec.kind === 'twostroke';
+  // each cylinder fires at cycle / 2 (its second top centre); a two-stroke
+  // at every top centre
+  const tdcFire = twoStroke ? 0 : cycle / 2;
 
   // Firing offsets
   const angles = firingAngles(spec);
   const cylOffset = new Float64Array(n);
   for (let i = 0; i < n; i++) cylOffset[i] = (((tdcFire - angles[i]) % cycle) + cycle) % cycle;
 
-  const inLo = valveTable(spec, 'in', spec.cam.in);
-  const exLo = valveTable(spec, 'ex', spec.cam.ex);
-  const inHi = spec.camHigh ? valveTable(spec, 'in', spec.camHigh.in) : inLo;
-  const exHi = spec.camHigh ? valveTable(spec, 'ex', spec.camHigh.ex) : exLo;
+  let inLo, exLo, inHi, exHi;
+  if (twoStroke) {
+    // the intake tables hold the transfer ports; the exhaust's high table is
+    // the port with its power valve raised
+    const p = spec.ports;
+    inLo = inHi = portTable(spec, p.transfer.open, p.transfer.width, 0.62);
+    exHi = portTable(spec, p.ex.open, p.ex.width, 0.74);
+    exLo = p.powerValve ? portTable(spec, p.powerValve.open, p.ex.width * 0.94, 0.74) : exHi;
+  } else {
+    inLo = valveTable(spec, 'in', spec.cam.in);
+    exLo = valveTable(spec, 'ex', spec.cam.ex);
+    inHi = spec.camHigh ? valveTable(spec, 'in', spec.camHigh.in) : inLo;
+    exHi = spec.camHigh ? valveTable(spec, 'ex', spec.camHigh.ex) : exLo;
+  }
 
   const exNet = buildExhaust(spec);
   const inNet = buildIntake(spec);
 
-  const displacement = g.vd * n * (spec.kind === 'rotary' ? 2 / 3 : 1); // swept volume per 720 deg equiv.
+  // swept volume per 720 deg equivalent
+  const displacement = g.vd * n * (spec.kind === 'rotary' ? 2 / 3 : twoStroke ? 2 : 1);
   const dispLitres = spec.kind === 'rotary' ? (spec.chamberDisplacement * (n / 3)) / 1000 : (g.vd * n) * 1000;
 
   const it = spec.intake ?? {};
@@ -893,12 +1048,14 @@ export function compileEngine(spec) {
     inTabHi: inHi.tab,
     exTabHi: exHi.tab,
     camSwitchRpm: spec.camSwitchRpm ?? 0,
-    ivc: inLo.close,
+    // a two-stroke traps its charge when the exhaust port closes
+    ivc: twoStroke ? exLo.close : inLo.close,
     evo: exLo.open,
     evc: exLo.close,
     ivo: inLo.open,
-    ivcHi: inHi.close,
+    ivcHi: twoStroke ? exHi.close : inHi.close,
     evoHi: exHi.open,
+    twoStroke: twoStroke ? twoStrokeSpec(spec, g, exLo, exHi) : null,
     ex: flattenNet(exNet),
     in: flattenNet(inNet),
     exNet, // kept on main thread for drawing (stripped before posting)
@@ -937,7 +1094,7 @@ export function compileEngine(spec) {
     inertia: spec.inertia ?? 0.2,
     friction: spec.friction ?? 1,
     // cold cranking friction: the worklet's FMEP at a crawl, cold oil
-    starter: starterSpec(spec, dispLitres, compressionTorque(g, cylOffset, inLo.close, exLo.open), (displacement / (4 * Math.PI)) * 1.52e5 * (spec.friction ?? 1)),
+    starter: starterSpec(spec, dispLitres, compressionTorque(g, cylOffset, twoStroke ? exLo.close : inLo.close, exLo.open), (displacement / (4 * Math.PI)) * 1.52e5 * (spec.friction ?? 1)),
     combustion: spec.combustion ?? 0.8,
     burnScale: spec.burnScale ?? 1,
     stroke: mm(spec.stroke ?? 70),

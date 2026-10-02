@@ -229,7 +229,9 @@ function compile(spec) {
 
 function describeMods(s = app.spec, f = app.factory) {
   const d = [];
-  if ((s.exhaust.muffler ?? '') !== (f.exhaust.muffler ?? '')) d.push(s.exhaust.muffler === 'none' ? 'straight pipes' : `${s.exhaust.muffler} silencer`);
+  if ((s.exhaust.muffler ?? '') !== (f.exhaust.muffler ?? '')) d.push(s.exhaust.muffler === 'none' ? (s.kind === 'twostroke' ? 'open stinger' : 'straight pipes') : s.kind === 'twostroke' ? 'packed silencer' : `${s.exhaust.muffler} silencer`);
+  if ((s.exhaust.chamber?.tune ?? 0) !== (f.exhaust.chamber?.tune ?? 0)) d.push(`pipe for ${s.exhaust.chamber.tune.toLocaleString('en-US')} rpm`);
+  if (String(s.ports?.powerValve?.rpm) !== String(f.ports?.powerValve?.rpm)) d.push(s.ports.powerValve.rpm[0] > 20000 ? 'power valve shut' : 'power valve open');
   if ((s.exhaust.merge ?? 'dual') !== (f.exhaust.merge ?? 'dual')) d.push(`${s.exhaust.merge}-merge`);
   if ((s.exhaust.headers?.style ?? 'n-1') !== (f.exhaust.headers?.style ?? 'n-1')) d.push(s.exhaust.headers.style === '180' ? '180° headers' : `${s.exhaust.headers.style} headers`);
   if (!!s.exhaust.cat !== !!f.exhaust.cat) d.push(s.exhaust.cat ? 'cats' : 'decat');
@@ -250,14 +252,15 @@ function updateEngineUI() {
   $('epName').textContent = f.name;
   $('epTag').textContent = f.tagline;
   $('engineNote').innerHTML = `<b>Listen</b> ${f.listen}`;
-  tach.labelB = f.family === 'Rotary' ? 'ROTARY' : `${f.family} · ${app.compiled.dispLitres.toFixed(1)} L`;
+  const L = app.compiled.dispLitres;
+  tach.labelB = f.family === 'Rotary' ? 'ROTARY' : `${f.family} · ${L < 1 ? `${Math.round(L * 1000)} cc` : `${L.toFixed(1)} L`}`;
   tach.configure({ limit: app.tune.limit, idle: f.ecu.idle, label: tach.labelB, camSwitch: f.camSwitchRpm });
   schem.setEngine(app.compiled, app.spec);
   scope.setEngine(app.compiled, app.spec);
   const hasBoost = (app.spec.induction?.type ?? 'na') !== 'na';
   $('roMapLbl').textContent = hasBoost ? 'Boost' : 'Manifold';
   document.title = `${f.name} · Firing Order`;
-  $('intro').querySelector('.fo').textContent = f.kind === 'rotary' ? 'rotor · rotor · every 180°' : f.firingOrder.join(' · ');
+  $('intro').querySelector('.fo').textContent = f.kind === 'rotary' ? 'rotor · rotor · every 180°' : f.kind === 'twostroke' && f.cylinders === 1 ? 'bang · every turn' : f.firingOrder.join(' · ');
 }
 
 function loadEngine(id, { autostart = false, keepOff = false } = {}) {
@@ -496,6 +499,10 @@ app.holdGas = (v) => {
 };
 app.toast = (m) => toast(m);
 app.openBuilder = (opts) => {
+  if ((opts?.from ?? 'current') === 'current' && !opts?.design && app.factory.kind === 'twostroke') {
+    toast('The builder makes four-strokes and rotaries. Tune this one in the workshop.');
+    return;
+  }
   if ((opts?.from ?? 'current') === 'current' && !opts?.design && app.isLockedEngine(app.presetId)) {
     app.requirePro(`Building on ${app.factory.name} is part of Pro`);
     return;
@@ -865,6 +872,7 @@ function onTelemetry(t) {
   if (workshop.open) $('wsRpm').textContent = rpmText;
   tach.lim = t.lim;
   tach.camHi = t.camHi;
+  tach.onPipe = !!t.onPipe;
   const inGear = t.mode === 'drive' || t.mode === 'flyby';
   if (app.scene?.id === 'drag' && app.scene.leaveT == null && t.scene?.phase === 'run' && t.scene.x > 0.3) app.scene.leaveT = performance.now();
   if (app.scene?.staging && t.scene?.phase === 'run') {
