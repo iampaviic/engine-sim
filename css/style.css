@@ -392,6 +392,34 @@ button {
   top: 38px;
   height: calc(100% - 38px);
 }
+.instr-panel canvas[hidden] {
+  display: none;
+}
+#view3d {
+  cursor: grab;
+}
+.v3d-bar {
+  position: absolute;
+  left: 12px;
+  right: 10px;
+  bottom: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 10.5px;
+  color: var(--dim);
+  pointer-events: none;
+}
+.v3d-bar[hidden] {
+  display: none;
+}
+.v3d-bar button {
+  pointer-events: auto;
+}
+#view3d:active {
+  cursor: grabbing;
+}
 /* The instrument tabs sit over the top of the instrument panel. On phones
    they also switch the schematic in, so one panel shows at a time. */
 .lab > .schem-panel {

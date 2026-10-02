@@ -4,6 +4,7 @@ import { AudioEngine, ENVIRONMENTS } from './audio/audio.js';
 import { Tach } from './ui/tach.js';
 import { Schematic } from './ui/schematic.js';
 import { Scope } from './ui/scope.js';
+import { createView3D } from './ui/view3d.js';
 import { Controls } from './ui/controls.js';
 import { Garage } from './ui/garage.js';
 import { Workshop, CAMERAS, clone, applyHeaderEqualize } from './ui/workshop.js';
@@ -75,6 +76,21 @@ units.speed = store.get('units', defaultSpeedUnit());
 const tach = new Tach($('tach'));
 const schem = new Schematic($('schem'));
 const scope = new Scope($('scope'));
+// the 3D engine, built the first time its tab opens
+let view3d = null;
+let view3dLoading = null;
+function ensureView3D() {
+  view3dLoading ??= createView3D($('view3d'))
+    .then((v) => {
+      view3d = v;
+      v.setEngine(app.compiled, app.spec);
+    })
+    .catch((e) => {
+      console.warn('3D view', e);
+      toast('This device cannot show the 3D engine');
+      view3dLoading = null;
+    });
+}
 const toastEl = $('toast');
 let toastT = 0;
 function toast(msg) {
@@ -258,6 +274,7 @@ function updateEngineUI() {
   tach.configure({ limit: app.tune.limit, idle: f.ecu.idle, label: tach.labelB, camSwitch: f.camSwitchRpm });
   schem.setEngine(app.compiled, app.spec);
   scope.setEngine(app.compiled, app.spec);
+  view3d?.setEngine(app.compiled, app.spec);
   const hasBoost = (app.spec.induction?.type ?? 'na') !== 'na';
   $('roMapLbl').textContent = hasBoost ? 'Boost' : 'Manifold';
   document.title = `${f.name} · Firing Order`;
@@ -848,6 +865,7 @@ function onMessage(m) {
       break;
     case 'snap':
       schem.onSnap(m.data, performance.now() / 1000);
+      view3d?.onSnap(m.data);
       break;
     case 'scope':
       scope.onScope(m);
@@ -1035,7 +1053,9 @@ function frame(now) {
   tach.update(dt);
   tach.draw();
   schem.draw(now / 1000, app.tel);
-  scope.draw(app.audio.analyser, app.tel);
+  if (scope.mode === '3d') {
+    if (view3d && !$('view3d').hidden) view3d.draw(schem.crankAt(now / 1000));
+  } else scope.draw(app.audio.analyser, app.tel);
   updateReadouts(dt);
   updatePreviewBar(now);
   if (app.scene) drawSceneHud($('flybyStrip'), app.scene, app.tel, app.scene.cache);
@@ -1053,7 +1073,7 @@ function frame(now) {
 // tabs only pick the instrument. Matches the phone layout in style.css.
 const phoneMQ = matchMedia('(max-width: 760px) and (min-height: 521px), (max-width: 760px) and (orientation: portrait)');
 app.view = store.get('view', 'engine');
-const TAB_NAMES = { spec: 'The spectrum', pv: 'The p–V diagram', dyno: 'The dyno' };
+const TAB_NAMES = { spec: 'The spectrum', pv: 'The p–V diagram', dyno: 'The dyno', '3d': 'The 3D engine' };
 function selectTab(mode) {
   if (!FREE.tabs.has(mode) && !app.requirePro(`${TAB_NAMES[mode] ?? 'This instrument'} is part of Pro`)) return;
   if (mode === 'engine') app.view = 'engine';
@@ -1071,6 +1091,11 @@ function syncTabs() {
   document.querySelectorAll('.tabs [role=tab]').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.mode === active)));
   $('lab').dataset.view = app.view;
   $('dynoRun').hidden = engine || scope.mode !== 'dyno';
+  const three = scope.mode === '3d';
+  $('scope').hidden = three;
+  $('view3d').hidden = !three;
+  $('v3dBar').hidden = !three;
+  if (three && !engine) ensureView3D();
 }
 phoneMQ.addEventListener?.('change', syncTabs);
 
@@ -1185,12 +1210,16 @@ function wire() {
   });
   document.querySelectorAll('.tabs [role=tab]').forEach((b) => b.addEventListener('click', () => selectTab(b.dataset.mode)));
   $('dynoRun').addEventListener('click', () => action('dyno'));
+  $('strobe3d').addEventListener('click', () => $('strobeBtn').click());
+  $('view3d').addEventListener('pointerdown', () => ($('v3dHint').hidden = true), { once: true });
   $('strobeBtn').addEventListener('click', () => {
     const on = $('strobeBtn').getAttribute('aria-pressed') !== 'true';
     $('strobeBtn').setAttribute('aria-pressed', String(on));
     $('strobeBtn').textContent = on ? 'Slow-mo' : 'Real time';
     $('schemLbl').innerHTML = on ? 'Exhaust pressure · <b>strobe</b>' : 'Exhaust pressure · <b>live</b>';
     app.audio.post({ type: 'strobe', on, step: 3 });
+    $('strobe3d').setAttribute('aria-pressed', String(on));
+    $('strobe3d').textContent = on ? 'Slow-mo' : 'Real time';
   });
   document.querySelector('.stage').addEventListener(
     'wheel',

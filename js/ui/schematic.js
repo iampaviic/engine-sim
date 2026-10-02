@@ -440,6 +440,11 @@ export class Schematic {
     this.purging = on;
   }
 
+  // the crank angle the strobe is showing at time t (s)
+  crankAt(t) {
+    return this.virtCrank + (this.snap ? this.virtRate * Math.min(0.25, t - this.lastSnapT) : 0);
+  }
+
   // Nitrous purge: a white plume blown up out of the engine bay
   drawPurge() {
     if (this.purging) {

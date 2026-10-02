@@ -62,6 +62,12 @@ Firing orders are derived, not looked up: every cylinder's top dead centre comes
 
 Every change is heard immediately (the build hot-swaps into the running engine), and a virtual dyno in a Web Worker runs the same physics faster than real time to draw the torque and power curves, report knock and valve float, and calibrate loudness. Builds are saved to **My garage** in the browser.
 
+## 3D engine
+
+The **3D** tab shows the engine itself: crankshaft, rods, pistons and valves (ports on the two-stroke, rotors orbiting their housings on the Wankel), moving with the simulation and lit by the burn in each cylinder. Every piston follows its own crank angle in the simulation, so the crank throws, split pins and bank angles come from the same firing data as the sound; Slow-mo works here too. Drag to turn it, pinch or scroll to zoom, double-click to reset.
+
+three.js (MIT, `js/vendor/three-LICENSE.txt`) is vendored as a tree-shaken bundle, `js/vendor/three.min.js`, loaded only when the tab first opens. `tools/three-entry.js` lists what it exports; to rebuild it, install `three` and `esbuild` and run `npx esbuild tools/three-entry.js --bundle --format=esm --minify --target=es2019 --legal-comments=eof --outfile=js/vendor/three.min.js`.
+
 ## Scenes
 
 - **Fly-by**: roadside mic, full throttle past it, with Doppler.
@@ -104,7 +110,7 @@ Every push to `main` or `claude/app-shell` runs `.github/workflows/app.yml`: it 
 
 ## Free and Pro
 
-The apps are free with a one-time **Firing Order Pro** unlock. Free: five engines (Berlinetta V12, Small-Block V8, Tuner Six, Screamer Four, Big Twin), Rev, Drive and Fly-by, the engine view and pressure trace, the basic workshop (listening, silencer, exhaust valve, rev limit, traction control) and the builder with one saved build. Pro adds every engine, the other scenes, the rest of the workshop, spectrum, p–V, dyno, A/B compare, the mixer, launch control, nitrous and unlimited builds. Locked engines play for 30 seconds from the garage. The split lives in `js/config.js` (`FREE`).
+The apps are free with a one-time **Firing Order Pro** unlock. Free: five engines (Berlinetta V12, Small-Block V8, Tuner Six, Screamer Four, Big Twin), Rev, Drive and Fly-by, the engine view and pressure trace, the basic workshop (listening, silencer, exhaust valve, rev limit, traction control) and the builder with one saved build. Pro adds every engine, the other scenes, the rest of the workshop, spectrum, p–V, dyno, the 3D engine, A/B compare, the mixer, launch control, nitrous and unlimited builds. Locked engines play for 30 seconds from the garage. The split lives in `js/config.js` (`FREE`).
 
 Purchases go through [RevenueCat](https://www.revenuecat.com) (`@revenuecat/purchases-capacitor`); `js/platform/purchases.js` is the only code that talks to it, and the rest of the app asks `app.isPro()`. The web version has no store and stays unlocked (`WEB_UNLOCKED` in `js/config.js`); Settings → Pro can show the free version. For testing the purchase screens in a browser, open the page with `?store=mock`. App builds without RevenueCat keys offer "Unlock for testing" instead of a purchase.
 

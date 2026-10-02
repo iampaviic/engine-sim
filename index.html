@@ -59,6 +59,8 @@
           </div>
           <div class="panel instr-panel">
             <canvas id="scope"></canvas>
+            <canvas id="view3d" hidden aria-label="The engine in 3D: drag to turn it, pinch or scroll to zoom"></canvas>
+            <div class="v3d-bar" id="v3dBar" hidden><span id="v3dHint">drag to turn · pinch or scroll to zoom</span><button class="link-btn" id="strobe3d" aria-pressed="true" title="Slow-motion strobe or real time">Slow-mo</button></div>
           </div>
           <div class="tabs" role="tablist" aria-label="Instruments">
             <button role="tab" class="tab-engine" data-mode="engine" aria-selected="false">Engine</button>
@@ -66,6 +68,7 @@
             <button role="tab" data-mode="spec" aria-selected="false">Spectrum</button>
             <button role="tab" data-mode="pv" aria-selected="false">p–V</button>
             <button role="tab" data-mode="dyno" aria-selected="false">Dyno</button>
+            <button role="tab" data-mode="3d" aria-selected="false">3D</button>
             <button class="btn" id="dynoRun" hidden>Run dyno</button>
           </div>
           <canvas class="flyby-strip" id="flybyStrip" hidden></canvas>
