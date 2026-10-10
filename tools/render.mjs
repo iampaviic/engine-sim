@@ -78,6 +78,9 @@ export async function render(presetId, scenarioName, opts = {}) {
   const proc = new Proc();
   const cfg = workletConfig(compileEngine(spec));
   const send = (m) => proc.port.onmessage({ data: m });
+  // full-rate physics always: the worklet's auto quality watches the wall
+  // clock and would drop to half rate whenever rendering runs slower than real time
+  send({ type: 'quality', quality: opts.quality ?? 'full' });
   send({ type: 'config', cfg, tune: opts.tune });
   if (opts.camera) send({ type: 'camera', camera: opts.camera });
   const scen = SCENARIOS[scenarioName] ?? scenarioName;

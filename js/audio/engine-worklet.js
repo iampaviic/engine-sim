@@ -74,18 +74,23 @@ function clamp(x, a, b) {
 // Compressor speed line at flow fraction x of choke: a peak with surge on its
 // left. In reverse flow the spinning wheel resists like a restriction, so the
 // pressure needed to push air backwards rises: that closes the deep-surge
-// cycle (the "flutter").
-function speedLine(x) {
+// cycle (the "flutter"). h (0..1) is the size of the hump left of the peak:
+// it grows with tip speed, so a slow wheel only stalls mildly and the flutter
+// dies away as the turbo winds down.
+function speedLine(x, h) {
   if (x >= 1) return Math.max(-0.6, -2 * (x - 1));
   if (x >= 0.32) {
+    // flat across the middle of the map, diving only as it nears choke
     const y = (x - 0.32) / 0.68;
-    return 1 - y * y;
+    const y2 = y * y;
+    const y4 = y2 * y2;
+    return 1 - 0.18 * y2 - 0.82 * y4 * y4 * y2;
   }
   if (x >= 0) {
     const y = (0.32 - x) / 0.32;
-    return 1 - 0.28 * y * y;
+    return 1 - 0.28 * h * y * y;
   }
-  return 0.72 + 3.5 * x * x;
+  return 1 - 0.28 * h + 3.5 * x * x;
 }
 // Valve lift (fraction of max) after a floating valve hits its seat: a big
 // first rebound, a smaller second one. ph = crank degrees since closing.
@@ -702,23 +707,40 @@ class EngineSim {
     this.mcPrev = 0;
     this.mcLp = 0;
     this.mcHp = 0;
-    // surge voice: envelope of the reversed flow, inlet duct modes, a
-    // band-pass that follows the wheel's stall cells
-    this.sgEnv = 0;
-    this.sgAtk = 1 - Math.exp(-1 / (0.0015 * fs));
-    this.sgRel = 1 - Math.exp(-1 / (0.012 * fs));
-    this.sgLevel = 760;
-    // (peak levels: the 1.5-3 kHz modes lead, as measured in tip-out surge)
-    const sgF = [620, 1550, 2950, 4800];
-    this.sgDuct = new ResBank(sgF, [2.2, 3, 5, 3], [0.5, 0.8, 1, 0.4].map((g, i) => g * 2 * Math.sin((TAU * Math.min(sgF[i], 0.4 * fs)) / fs)), fs);
+    // turbo voice: surge activity and pulse bursts, band-limited noises for
+    // the whoosh and the stalled wheel, the blade tone's wobble and halo
+    this.sgAct = 0;
+    this.sgActDec = Math.exp(-1 / (0.15 * fs));
+    this.mcSgn = 0;
+    this.burst = 0;
+    this.burstDec = Math.exp(-1 / (0.009 * fs));
+    this.sgD = 0;
+    this.sgDA = lpCoef(2500, fs);
+    this.bA = this.bB = 0;
+    this.bHiA = lpCoef(4000, fs);
+    this.bLoA = lpCoef(1000, fs);
+    this.whA = this.whB = 0;
+    this.whHiA = lpCoef(3500, fs);
+    this.whLoA = lpCoef(800, fs);
+    this.wJit = 0;
+    this.wJitA = lpCoef(25, fs);
+    this.tpLp = 0;
+    this.tpLpA = lpCoef(300, fs);
+    this.tPulse = 1;
     this.sgB = new Float64Array(3);
     this.sgX1 = this.sgX2 = this.sgY1 = this.sgY2 = 0;
+    this.bovA1 = this.bovA2 = 0;
+    this.bovHiA = lpCoef(6000, fs);
+    this.bovLoA = lpCoef(600, fs);
     this.sgK = 32;
     this.sgLpA = lpCoef(392, fs);
     this.sgHpA = lpCoef(28, fs);
     this.pBrate = 0;
     this.pBprev = P_AMB;
     this.wg = 0; // wastegate opening 0..1
+    this.wtRate = 0;
+    this.wtPrev = 0;
+    this.wt2Prev = 0;
     this.bov = 0;
     this.bovS = 0; // per-sample ramps of the control-rate valve positions
     this.bovStep = 0;
@@ -734,8 +756,25 @@ class EngineSim {
     const dPer = airL / Math.max(this.nT, 1);
     this.tJ = 4e-5 * Math.pow(dPer, 1.1) * size * size;
     this.tRtip = 0.024 * Math.sqrt(dPer / 2) * Math.sqrt(size);
-    this.tChokeK = 0.00045 * Math.pow(dPer, 0.85) * size; // kg/s per (m/s) tip speed
-    this.tA = 9e-4 * Math.pow(dPer / 2, 0.8) * size; // turbine effective area
+    this.tChokeK = 0.00072 * Math.pow(dPer, 0.85) * size; // kg/s per (m/s) tip speed
+    // turbine effective area: the housing (A/R) sets where the turbo wakes up;
+    // the wastegate and the sequential valves are sized by the frame
+    const tFrame = 9e-4 * Math.pow(dPer / 2, 0.8) * size;
+    this.tA = tFrame * (ind.ar ?? 1);
+    this.tAwg = tFrame * 2.4;
+    this.tAstage = tFrame * 2.5;
+    // dump valve(s) sized to the engine's air: ~40 mm for a 2 L four
+    this.bovA = 5.5e-4 * Math.pow(airL, 0.8);
+    // inlet duct from the compressor face to the filter (~0.25-0.4 m): a
+    // tube closed at the wheel, open at the filter, as a delay loop
+    const ductL = clamp(0.06 + 9 * this.tRtip, 0.2, 0.42);
+    this.dD = Math.max(4, Math.round(((2 * ductL) / 343) * fs));
+    this.dBuf = new Float64Array(1024);
+    this.dI = 0;
+    this.dLp = 0;
+    this.dLpA = lpCoef(2800, fs);
+    // more compressor, more whoosh: noise power grows with the air moved
+    this.whK = Math.sqrt(airL / 2);
     // inlet/compressor restriction: a bigger engine per compressor gets a
     // proportionally bigger wheel
     // Sequential turbos: half of them (one per side) take all the exhaust
@@ -748,6 +787,7 @@ class EngineSim {
     this.stageT = 0;
     this.wt2 = 0;
     this.mc2 = 0;
+    this.flap2 = 0;
     this.turbPs2 = 0;
     this.tPhaseB = 0;
     this.tPhaseB2 = 0;
@@ -946,7 +986,6 @@ class EngineSim {
     this.ibRes2 = 0;
     this.itbLp = 0;
     this.hissLp = 0;
-    this.nzState = new Float64Array(8);
     this.roadLp = 0;
     this.windLp1 = 0;
     this.windLp2 = 0;
@@ -1645,20 +1684,33 @@ class EngineSim {
 
     // Boost control
     if (this.isTurbo || this.isCentri) {
-      // Electronic boost control: PI on wastegate duty.
-      const over = this.pB - P_AMB - this.boostTarget;
+      // Electronic boost control on the wastegate: a gentle proportional
+      // band, an integral trim, and a lead on the shaft's acceleration (the
+      // wheel races ahead of the boost it is about to make).
+      const tgt = this.boostTarget;
+      const b = this.pB - P_AMB;
+      const e = (b - tgt) / (tgt + 2e4);
       this.pBrate += ((this.pB - this.pBprev) / dtc - this.pBrate) * Math.min(1, dtc * 40);
       this.pBprev = this.pB;
-      this.wgI = clamp(this.wgI + over * 1.2e-4 * dtc, 0, 1);
-      // derivative action catches the spool-up surge before it overshoots
-      const near = this.pB - P_AMB > 0.55 * this.boostTarget ? 1 : 0;
-      let wgT = clamp(this.wgI + over / 30000 + near * Math.max(0, this.pBrate) * 2.5e-6, 0, 1);
+      // (a sequential pair's second shaft counts once its compressor delivers)
+      const r1 = (this.wt - this.wtPrev) / dtc, r2 = (this.wt2 - this.wt2Prev) / dtc;
+      this.wtRate += (Math.max(0, r1) + (this.mc2 > 0 ? Math.max(0, r2) : 0) - this.wtRate) * Math.min(1, dtc * 30);
+      this.wtPrev = this.wt;
+      this.wt2Prev = this.wt2;
+      // (held while anti-lag runs, so the gate is where it belongs on the way back in)
+      if (!this.alsActive) this.wgI = clamp(this.wgI + e * 3 * dtc, 0, 1);
+      const lead = b > 0.6 * tgt && this.pBrate > 0 ? (this.wtRate * this.tRtip) / 560 : 0;
+      // the actuator spring starts cracking the gate open just short of target
+      const crack = clamp((b - 0.85 * tgt) / (0.25 * tgt + 1e4), 0, 1) * 0.25;
+      let wgT = clamp(this.wgI + crack + e * 1.2 + lead * 0.6, 0, 1);
       if (this.alsActive) wgT = Math.max(0, wgT - 0.1);
       this.wg += (wgT - this.wg) * Math.min(1, dtc * 25);
       // Blow-off valve opens on closed throttle with pressure in the pipes; with
       // anti-lag it doubles as a pressure relief above the boost target.
       const relief = this.alsActive && this.pB - P_AMB > this.boostTarget * 0.9;
-      const bovT = (this.bovType !== 'none' && this.thr < 0.18 && this.pB - this.pPl > 30000 && !this.alsActive) || relief ? 1 : 0;
+      // (vacuum referenced: it opens on the pressure drop across a closing
+      // throttle, before the plate is even shut)
+      const bovT = (this.bovType !== 'none' && this.thr < 0.5 && this.pB - this.pPl > 35000 && !this.alsActive) || relief ? 1 : 0;
       if (bovT) this.bov = Math.min(1, this.bov + dtc * 120);
       else if (this.pB - P_AMB < 12000 || this.thr > 0.3) this.bov = Math.max(0, this.bov - dtc * 25);
       this.bovStep = (this.bov - this.bovS) / 32;
@@ -1807,11 +1859,11 @@ class EngineSim {
         K = 1 / (2 * rho * this.tA * this.tA);
       } else if (d === DYN_WASTEGATE) {
         const rho = (P_AMB * 1.6) / (R * Math.max(600, this.egt));
-        const A = this.tA * 1.6 * this.wg + 1e-7;
+        const A = this.tAwg * this.wg * Math.sqrt(this.wg) + 1e-7;
         K = Math.min(ex.rClosedK[i], 1 / (2 * rho * A * A));
       } else if (d === DYN_STAGE) {
         const rho = (P_AMB * 1.6) / (R * Math.max(600, this.egt));
-        const A = this.tA * 2.5 * this.stage + 1e-7;
+        const A = this.tAstage * this.stage + 1e-7;
         K = Math.min(ex.rClosedK[i], 1 / (2 * rho * A * A));
       } else continue;
       const k0 = ex.rK[i];
@@ -2504,7 +2556,7 @@ class EngineSim {
     const Ut = this.wt * this.tRtip;
     const mChoke = this.tChokeK * Math.max(Ut, 80) * nA;
     const PRm = Math.pow(1 + 2.17e-6 * Ut * Ut, 3.5);
-    let pc = P_AMB * (1 + (PRm - 1) * speedLine(this.mc / mChoke)) - this.tRestr * this.mc * Math.abs(this.mc);
+    let pc = P_AMB * (1 + (PRm - 1) * speedLine(this.mc / mChoke, clamp((Ut / 400 - 0.4) / 0.45, 0, 1))) - this.tRestr * this.mc * Math.abs(this.mc);
     if (pc < 0.4 * P_AMB) pc = 0.4 * P_AMB;
     const Lc = 0.35;
     this.mc += ((0.0016 * nA) / Lc) * (pc - this.pB) * dt;
@@ -2516,16 +2568,21 @@ class EngineSim {
       const Ut2 = this.wt2 * this.tRtip;
       const mCh2 = this.tChokeK * Math.max(Ut2, 80) * this.nB;
       const PRm2 = Math.pow(1 + 2.17e-6 * Ut2 * Ut2, 3.5);
-      const pc2 = P_AMB * (1 + (PRm2 - 1) * speedLine(this.mc2 / mCh2)) - this.tRestrB * this.mc2 * Math.abs(this.mc2);
+      const pc2 = P_AMB * (1 + (PRm2 - 1) * speedLine(this.mc2 / mCh2, clamp((Ut2 / 400 - 0.4) / 0.45, 0, 1))) - this.tRestrB * this.mc2 * Math.abs(this.mc2);
       this.mc2 += ((0.0016 * this.nB) / Lc) * (pc2 - this.pB) * dt;
       if (this.mc2 < 0 || this.stage < 0.2) this.mc2 = 0;
+      // its check valve swings open over a fifth of a second, so the second
+      // stage eases in instead of slamming its boost into the pipes
+      if (this.stage < 0.2) this.flap2 = 0;
+      else if (pc2 > this.pB || this.mc2 > 0) this.flap2 = Math.min(1, this.flap2 + dt * 5);
+      if (this.mc2 > this.flap2 * mCh2) this.mc2 = this.flap2 * mCh2;
       mc2 = this.mc2;
     }
     // BOV vent
     let mb = 0;
     this.bovS += this.bovStep;
     if (this.bovS > 0.01 && this.pB > P_AMB) {
-      const Ab = 4.5e-4 * this.bovS * Math.max(1, this.nT / 2); // more turbos, more dump valves
+      const Ab = this.bovA * this.bovS;
       mb = orifice(Ab, this.pB - P_AMB, this.pB / (R * this.TB), 0, this.pB, Math.sqrt(this.TB), CHOKE_AIR);
     }
     this.mdBov = mb;
@@ -2555,6 +2612,9 @@ class EngineSim {
       const rhoT = (P_AMB * 1.6) / (R * Math.max(600, this.egt));
       this.turbPs += (tp / rhoT - this.turbPs) * 0.002;
       this.turbPsm = Math.max(0, this.turbPs) * 1.5;
+      // each exhaust pulse that kicks the wheel swells its whistle
+      this.tpLp += this.tpLpA * (tp / rhoT - this.tpLp);
+      this.tPulse = 0.7 + 0.3 * clamp(this.tpLp / Math.max(this.turbPs, 1e-3), 0, 3);
       const w = Math.max(this.wt, 300);
       // with the throttle shut the wheel churns the trapped air against the
       // boost instead of moving it: an aerodynamic loss that grows with speed
@@ -2578,69 +2638,106 @@ class EngineSim {
     const Tc = T_AMB * (1 + (Math.pow(Math.max(PR, 1), 0.2857) - 1) / 0.7);
     this.TB = Tc - 0.72 * (Tc - T_AMB);
     this.Tpl = this.TB - this.nosCool;
-    // sound: blade-pass whistle, shaft whine, inlet whoosh, BOV hiss
+    // Blade-pass whistle and shaft whine. The wheel never sings a clean
+    // sine: flow unsteadiness wobbles its tone by a few tenths of a percent,
+    // each exhaust pulse that kicks the turbine swells it, and turbulence
+    // round the blades smears it into a narrow band of noise.
     const fShaft = this.wt / TAU;
-    this.tPhase += (fShaft * this.blades) / fs;
+    this.wJit += this.wJitA * (rnd() - 0.5 - this.wJit);
+    const jit = 1 + this.wJit * 0.3;
+    const fB = fShaft * this.blades * jit;
+    this.tPhase += fB / fs;
     this.tPhase -= Math.floor(this.tPhase);
-    this.tPhase2 += fShaft / fs;
+    this.tPhase2 += (fShaft * jit) / fs;
     this.tPhase2 -= Math.floor(this.tPhase2);
+    if (++this.sgK >= 32) {
+      this.sgK = 0;
+      this.setBand(clamp(fB, 200, 0.4 * fs), 22);
+    }
+    const nh = rnd() - 0.5;
+    const sb = this.sgB;
+    const halo = sb[0] * (nh - this.sgX2) - sb[1] * this.sgY1 - sb[2] * this.sgY2;
+    this.sgX2 = this.sgX1;
+    this.sgX1 = nh;
+    this.sgY2 = this.sgY1;
+    this.sgY1 = halo;
     // A small wheel's blade pass goes ultrasonic at full spool: fade it out
     // before Nyquist instead of letting it fold back down as a false whistle.
-    const whistle = Math.sin(TAU * this.tPhase) * this.bladeFade(fShaft * this.blades);
+    const whistle = (Math.sin(TAU * this.tPhase) * 0.7 + halo * 9) * this.bladeFade(fB);
     const whine = Math.sin(TAU * this.tPhase2) + 0.3 * Math.sin(2 * TAU * this.tPhase2);
-    const nz = rnd() - 0.5;
-    this.nzState[0] += (nz - this.nzState[0]) * 0.35;
-    const whoosh = nz - this.nzState[0];
     const Utn = Ut / 400;
     let snd =
-      (whistle * 0.6 + whine * 0.25) * Utn * Utn * (0.15 + 3 * Math.abs(this.mc)) * 0.8 +
-      whoosh * (Math.max(this.mc, 0) + mc2) * Math.max(Utn, (this.wt2 * this.tRtip) / 400) * 5 +
-      (rnd() - 0.5) * mb * Math.sqrt(Math.max(0, this.pB - P_AMB)) * 0.3;
+      (whistle * 10 + whine * 0.5) * Utn * Utn * (0.15 + 3 * Math.abs(this.mc)) * 0.8 * this.tPulse;
+    if (mb > 0) {
+      // the dump valve's jet: broadband, but centred a few kHz up like any jet
+      const nj = rnd() - 0.5;
+      this.bovA1 += this.bovHiA * (nj - this.bovA1);
+      this.bovA2 += this.bovLoA * (this.bovA1 - this.bovA2);
+      snd += (this.bovA1 - this.bovA2) * mb * Math.sqrt(Math.max(0, this.pB - P_AMB)) * 0.5;
+    }
+    const Utn2 = (this.wt2 * this.tRtip) / 400;
     if (this.nB) {
       // the second stage whistles and whines on its own pitch as it spools up
-      const f2 = this.wt2 / TAU;
+      const f2 = (this.wt2 / TAU) * jit;
       this.tPhaseB += (f2 * this.blades) / fs;
       this.tPhaseB -= Math.floor(this.tPhaseB);
       this.tPhaseB2 += f2 / fs;
       this.tPhaseB2 -= Math.floor(this.tPhaseB2);
-      const Utn2 = (this.wt2 * this.tRtip) / 400;
       const whine2 = Math.sin(TAU * this.tPhaseB2) + 0.3 * Math.sin(2 * TAU * this.tPhaseB2);
-      snd += (Math.sin(TAU * this.tPhaseB) * this.bladeFade(f2 * this.blades) * 0.5 + whine2 * 0.25) * Utn2 * Utn2 * (0.15 + 3 * mc2) * 0.8;
+      snd += (Math.sin(TAU * this.tPhaseB) * this.bladeFade(f2 * this.blades) * 0.5 + whine2 * 0.12) * Utn2 * Utn2 * (0.15 + 3 * mc2) * 0.8;
     }
-    // Surge (the flutter). Each time the flow reverses, the boost rushes
-    // back out through the spinning wheel: a breath of turbulence voiced by
-    // the inlet duct's modes, by its first cross mode (1.84 c / pi D, the
-    // ~3 kHz edge of a turbo's chatter) and by stall cells turning in the
-    // wheel at a fraction of its speed, a pitch that sinks as it slows. The
-    // inlet radiates the pulse itself as a soft thump.
-    const rev = this.mc < 0 ? -this.mc : 0;
-    this.sgEnv += (rev > this.sgEnv ? this.sgAtk : this.sgRel) * (rev - this.sgEnv);
-    if (this.sgEnv > 1e-4) {
-      if (++this.sgK >= 32) {
-        this.sgK = 0;
-        this.setStall(clamp(1.2 * fShaft, 350, 0.4 * fs));
-      }
-      const ex = (rnd() - 0.5) * this.sgEnv * (0.25 + Utn) * this.sgLevel;
-      const sb = this.sgB;
-      const ys = sb[0] * (ex - this.sgX2) - sb[1] * this.sgY1 - sb[2] * this.sgY2;
-      this.sgX2 = this.sgX1;
-      this.sgX1 = ex;
-      this.sgY2 = this.sgY1;
-      this.sgY1 = ys;
-      snd += this.sgDuct.tick(ex) * 2.2 + ys * 2.0 + whoosh * this.sgEnv * (0.2 + Utn) * this.sgLevel * 0.12;
-    }
+    // Whoosh: broadband 1-3 kHz noise the compressor makes working up its
+    // speed line, loudest nearest surge (high boost on little flow, as when
+    // it spools at low revs). It reaches us through the inlet duct.
+    const xf = this.mc / mChoke;
+    const nw = rnd() - 0.5;
+    this.whA += this.whHiA * (nw - this.whA);
+    this.whB += this.whLoA * (this.whA - this.whB);
+    const wl = Utn * Utn * clamp(xf / 0.06, 0, 1) * (0.35 + 1.3 * clamp((0.6 - xf) / 0.35, 0, 1)) + (mc2 > 0 ? 0.35 * Utn2 * Utn2 : 0);
+    let exc = (this.whA - this.whB) * wl * 11 * this.whK;
+    // Surge (the flutter). Each reversal of the flow is a sharp pressure
+    // pulse at the compressor face, and the moment the flow snaps forward
+    // again is another. Every pulse rings the inlet duct, a tube closed at
+    // the wheel and open at the filter, whose quarter-wave modes (about 300,
+    // 900 and 1500 Hz for 0.3 m) give it the hollow "tu" of a turbo's
+    // flutter; the stalling wheel adds a short breath of noise at the onset.
     const dmc = (this.mc + mc2 - this.mcPrev) * fs;
     this.mcPrev = this.mc + mc2;
+    if (this.mc < 0) this.sgAct = 1;
+    else this.sgAct *= this.sgActDec;
+    if ((this.mcSgn >= 0) !== (this.mc >= 0)) {
+      // (as hard as the flow turns: a deep surge cycle slams, a mild one sighs)
+      const pg = clamp((this.pB - P_AMB) / 1e5, 0, 2.5);
+      const hard = clamp(Math.abs(this.sgD) / 150, 0, 1);
+      this.burst = Math.max(this.burst, (this.mc < 0 ? 1 : 0.45) * hard * (0.15 + pg) * (0.3 + Utn));
+    }
+    this.mcSgn = this.mc;
+    this.burst *= this.burstDec;
+    this.sgD += this.sgDA * (dmc - this.sgD);
+    if (this.sgAct > 1e-3 || this.burst > 1e-4) {
+      const nb = rnd() - 0.5;
+      this.bA += this.bHiA * (nb - this.bA);
+      this.bB += this.bLoA * (this.bA - this.bB);
+      const rev = this.mc < 0 ? -this.mc : 0;
+      exc += this.sgD * this.sgAct * 0.2 + (this.bA - this.bB) * (this.burst * 30 + rev * 20);
+    }
+    const dl = this.dBuf[(this.dI - this.dD) & 1023];
+    this.dLp += this.dLpA * (dl - this.dLp);
+    const yd = exc - 0.86 * this.dLp;
+    this.dBuf[this.dI] = yd;
+    this.dI = (this.dI + 1) & 1023;
+    snd += yd;
+    // the inlet radiates the flow's own pulsation as a soft thump
     this.mcLp += this.sgLpA * (dmc - this.mcLp);
     this.mcHp += this.sgHpA * (this.mcLp - this.mcHp);
     this.turboSnd = snd + (this.mcLp - this.mcHp) * INV4PI * 0.6;
     return scTorque;
   }
 
-  // Band-pass (constant peak gain) for the stall cells' voice at f.
-  setStall(f) {
+  // Band-pass (constant peak gain) at f with quality q.
+  setBand(f, q) {
     const w = (TAU * f) / this.fs;
-    const al = Math.sin(w) / (2 * 6);
+    const al = Math.sin(w) / (2 * q);
     const a0 = 1 + al;
     this.sgB[0] = al / a0;
     this.sgB[1] = (-2 * Math.cos(w)) / a0;
