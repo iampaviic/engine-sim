@@ -448,7 +448,7 @@ export function designToSpec(d) {
 
   // induction
   const ind = d.induction;
-  if (ind.type === 'turbo') spec.induction = { type: 'turbo', count: twinBank ? Math.min(2, ind.count) : 1, size: ind.size, boost: ind.boost, blades: ind.count > 1 ? 9 : 7, bov: ind.bov, screamer: ind.screamer };
+  if (ind.type === 'turbo') spec.induction = { type: 'turbo', count: twinBank ? Math.min(2, ind.count) : 1, size: ind.size, boost: ind.boost, blades: twinBank && ind.count > 1 ? 5 : 7, bov: ind.bov, screamer: ind.screamer };
   else if (ind.type === 'twinscrew') spec.induction = { type: 'twinscrew', displacement: +(L * 0.4).toFixed(2), ratio: ind.ratio, lobes: 5 };
   else if (ind.type === 'roots') spec.induction = { type: 'roots', displacement: +(L * 0.45).toFixed(2), ratio: ind.ratio, lobes: 3 };
   else if (ind.type === 'centrifugal') spec.induction = { type: 'centrifugal', boost: ind.boost, size: 1, blades: 10, bov: ind.bov };

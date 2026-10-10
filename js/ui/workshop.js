@@ -468,7 +468,7 @@ export class Workshop {
             else {
               const twin = v === 'twin';
               const k = keep.type === 'turbo' ? keep : {};
-              s.induction = { type: 'turbo', count: twin ? 2 : 1, size: k.size ?? (twin ? 0.7 : 1), boost: k.boost ?? 1.0, blades: k.blades ?? 7, bov: tune.bov ?? 'atm' };
+              s.induction = { type: 'turbo', count: twin ? 2 : 1, size: k.size ?? (twin ? 0.7 : 1), boost: k.boost ?? 1.0, blades: twin ? 5 : k.blades ?? 7, bov: tune.bov ?? 'atm' };
             }
             if (v !== 'na' && app.tune.boost == null) app.tune.boost = s.induction.boost ?? 1;
           }),

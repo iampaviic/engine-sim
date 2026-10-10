@@ -810,8 +810,12 @@ class EngineSim {
     this.mc2 = 0;
     this.flap2 = 0;
     this.turbPs2 = 0;
-    this.tPhaseB = 0;
-    this.tPhaseB2 = 0;
+    // tonal voices: a parallel pair (or a sequential stage of two) gets a
+    // second voice, the other turbo spinning a hair slower
+    const voice = () => ({ ph: 0, ph2: 0, jit: 0 });
+    this.vA2 = voice();
+    this.vB = voice();
+    this.vB2 = voice();
     const restr = (k) => (4e5 * Math.min(1, Math.pow(2.5 / dPer, 2))) / Math.pow(Math.max(k, 1) * size, 2);
     this.tRestr = restr(this.nA);
     this.tRestrB = restr(this.nB);
@@ -2595,10 +2599,11 @@ class EngineSim {
       const PRm2 = Math.pow(1 + 2.17e-6 * Ut2 * Ut2, 3.5);
       const pc2 = P_AMB * (1 + (PRm2 - 1) * speedLine(this.mc2 / mCh2, clamp((Ut2 / 400 - 0.4) / 0.45, 0, 1))) - this.tRestrB * this.mc2 * Math.abs(this.mc2);
       this.mc2 += ((0.0016 * this.nB) / Lc) * (pc2 - this.pB) * dt;
-      if (this.mc2 < 0 || this.stage < 0.2) this.mc2 = 0;
+      if (this.mc2 < 0) this.mc2 = 0;
       // its check valve swings open over a fifth of a second, so the second
-      // stage eases in instead of slamming its boost into the pipes
-      if (this.stage < 0.2) this.flap2 = 0;
+      // stage eases in instead of slamming its boost into the pipes, and
+      // swings shut in a tenth as the stage drops out (no click as it cuts off)
+      if (this.stage < 0.2) this.flap2 = Math.max(0, this.flap2 - dt * 10);
       else if (pc2 > this.pB || this.mc2 > 0) this.flap2 = Math.min(1, this.flap2 + dt * 5);
       if (this.mc2 > this.flap2 * mCh2) this.mc2 = this.flap2 * mCh2;
       mc2 = this.mc2;
@@ -2691,8 +2696,12 @@ class EngineSim {
     const whistle = (Math.sin(TAU * this.tPhase) * 0.85 + halo * 2.5) * this.bladeFade(fB);
     const whine = Math.sin(TAU * this.tPhase2) + 0.3 * Math.sin(2 * TAU * this.tPhase2);
     const Utn = Ut / 400;
-    let snd =
-      (whistle * 10 + whine * 0.5) * Utn * Utn * (0.15 + 3 * Math.abs(this.mc)) * 0.8 * this.tPulse;
+    // Each turbo sings with its share of the flow. Twins never run at quite
+    // the same speed (one bank breathes a little differently), so the pair
+    // beats against itself: the chorus of a twin-turbo engine.
+    const ampA = Utn * Utn * (0.15 + (3 * Math.abs(this.mc)) / nA) * 0.8 * this.tPulse;
+    let snd = (whistle * 10 + whine * 0.5) * ampA;
+    if (nA > 1) snd += this.tone(this.vA2, fShaft * 0.991) * ampA;
     if (mb > 0) {
       // the dump valve's jet: broadband, but centred a few kHz up like any jet
       // (Lighthill: its loudness falls away fast as the pressure behind it bleeds off)
@@ -2700,15 +2709,13 @@ class EngineSim {
       snd += this.bovBand.tick(rnd() - 0.5) * mb * Math.sqrt(dpb) * (dpb / 1e5) * 0.5;
     }
     const Utn2 = (this.wt2 * this.tRtip) / 400;
-    if (this.nB) {
-      // the second stage whistles and whines on its own pitch as it spools up
-      const f2 = (this.wt2 / TAU) * jit;
-      this.tPhaseB += (f2 * this.blades) / fs;
-      this.tPhaseB -= Math.floor(this.tPhaseB);
-      this.tPhaseB2 += f2 / fs;
-      this.tPhaseB2 -= Math.floor(this.tPhaseB2);
-      const whine2 = Math.sin(TAU * this.tPhaseB2) + 0.3 * Math.sin(2 * TAU * this.tPhaseB2);
-      snd += (Math.sin(TAU * this.tPhaseB) * this.bladeFade(f2 * this.blades) * 0.5 + whine2 * 0.12) * Utn2 * Utn2 * (0.15 + 3 * mc2) * 0.8;
+    if (this.nB && Utn2 > 0.02) {
+      // the second stage whistles and whines on its own pitch, first as its
+      // valve lets it pre-spool, then fully once it delivers
+      const ampB = Utn2 * Utn2 * (0.15 + (3 * mc2) / this.nB) * 0.8 * this.tPulse;
+      const f2 = this.wt2 / TAU;
+      snd += this.tone(this.vB, f2) * ampB;
+      if (this.nB > 1) snd += this.tone(this.vB2, f2 * 0.991) * ampB;
     }
     // Whoosh: broadband 1-3 kHz noise the compressor makes working up its
     // speed line, loudest nearest surge (high boost on little flow, as when
@@ -2759,6 +2766,21 @@ class EngineSim {
     this.sgB[0] = al / a0;
     this.sgB[1] = (-2 * Math.cos(w)) / a0;
     this.sgB[2] = (1 - al) / a0;
+  }
+
+  // One turbo's tones at shaft frequency f: the blade-pass whistle and the
+  // shaft whine, wobbling with the turbo's own flow unsteadiness.
+  tone(v, f) {
+    const fs = this.fs;
+    v.jit += this.wJitA * (rnd() - 0.5 - v.jit);
+    const fj = f * (1 + v.jit * 0.3);
+    const fb = fj * this.blades;
+    v.ph += fb / fs;
+    v.ph -= Math.floor(v.ph);
+    v.ph2 += fj / fs;
+    v.ph2 -= Math.floor(v.ph2);
+    const ph2 = TAU * v.ph2;
+    return Math.sin(TAU * v.ph) * 8.5 * this.bladeFade(fb) + (Math.sin(ph2) + 0.3 * Math.sin(2 * ph2)) * 0.5;
   }
 
   // Level for a blade tone at f. The filter element and the duct's bends
