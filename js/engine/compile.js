@@ -331,7 +331,9 @@ function buildExhaust(spec) {
       const p = net.node(NODE.PORT, { cyls, x: 0.12 + r * pitch, y: 0.3 });
       net.pipe(p, coll, { len: ex.headers?.len ?? 0.55, dia: mm(ex.headers?.dia ?? 50), temp: 1, nl: 1, pts: elbow(net, p, coll, 'drop'), label: 'primary' });
     }
-    buildSingleTail(net, spec, coll, 0.5);
+    let n = coll;
+    if (turbo) n = nTurbo >= 2 && spec.induction.sequential > 0 ? turbinePair(net, coll, 0.5, spec.induction, 0, 1) : turbine(net, coll, 0.48, 0.5, spec.induction, 0);
+    buildSingleTail(net, spec, n, 0.5);
     return finishNet(net, lay);
   }
 
@@ -355,13 +357,28 @@ function buildExhaust(spec) {
         });
       });
       coll = c;
+    } else if (turbo && nTurbo >= 2 && !(spec.induction.sequential > 0)) {
+      // parallel twins on one bank: the front and rear halves of the
+      // manifold each drive their own turbo, merging after the turbines
+      const bank = lay.banks[0].slice().sort((a, b) => a - b);
+      const half = Math.ceil(bank.length / 2);
+      const m = net.junction(0.56, 0.52);
+      [bank.slice(0, half), bank.slice(half)].forEach((g, gi) => {
+        const y = gi ? 0.64 : 0.4;
+        const c = bankHeaders(net, spec, lay, g, 0, ex, [0.33, y]);
+        const t = turbine(net, c, 0.41, y, spec.induction, gi);
+        net.pipe(t, m, { len: 0.25, dia: mm(spec.induction.downpipeDia ?? 70), temp: 0.85, pts: elbow(net, t, m, 'hv'), label: 'downpipe' });
+      });
+      buildSingleTail(net, spec, m, 0.52);
+      return finishNet(net, lay);
     } else if (ex.headers?.style === '4-2-1' && spec.cylinders === 4) {
       coll = headers421(net, spec, lay, ex);
     } else {
-      coll = bankHeaders(net, spec, lay, lay.banks[0], 0, ex, [0.36, 0.52]);
+      coll = bankHeaders(net, spec, lay, lay.banks[0], 0, ex, [turbo && nTurbo >= 2 && spec.induction.sequential > 0 ? 0.32 : 0.36, 0.52]);
     }
     let n = coll;
-    if (turbo) n = turbine(net, n, 0.46, 0.52, spec.induction, 0);
+    // sequential twins: the second turbo joins through its valve higher up
+    if (turbo) n = nTurbo >= 2 && spec.induction.sequential > 0 ? turbinePair(net, n, 0.52, spec.induction, 0, 1) : turbine(net, n, 0.46, 0.52, spec.induction, 0);
     buildSingleTail(net, spec, n, 0.52);
     return finishNet(net, lay);
   }
@@ -1085,7 +1102,7 @@ export function compileEngine(spec) {
       blades: ind.blades ?? 6,
       bov: ind.bov ?? 'atm',
       K: ind.K ?? 1,
-      sequential: ind.count >= 4 ? ind.sequential ?? 0 : 0, // rpm where the second stage joins (0 = all at once)
+      sequential: ind.count >= 2 ? ind.sequential ?? 0 : 0, // rpm where the second stage joins (0 = all at once)
     },
     ecu: {
       idle: ecu.idle ?? 800,

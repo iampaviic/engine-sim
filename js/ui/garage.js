@@ -19,7 +19,7 @@ function matches(p, f) {
   if (f === 'all') return true;
   if (f === 'mine') return !!p.custom;
   if (p.custom) return false;
-  if (f === 'six') return p.family === 'I6' || p.family === 'F6';
+  if (f === 'six') return p.family === 'I6' || p.family === 'F6' || p.family === 'V6';
   if (f === 'four') return p.family === 'I4' || p.family === 'F4' || p.family === 'I5';
   if (f === 'two') return p.kind === 'twostroke';
   if (f === 'odd') return p.family === 'Rotary' || p.family === 'V2';
@@ -102,7 +102,7 @@ export class Garage {
             : p.firingOrder.join('-');
       const ind =
         p.induction?.type === 'turbo'
-          ? `${p.induction.count >= 4 ? (p.induction.sequential ? 'sequential quad-turbo' : 'quad-turbo') : p.induction.count > 1 ? 'twin-turbo' : 'turbo'} ${p.induction.boost} bar`
+          ? `${p.induction.count >= 4 ? (p.induction.sequential ? 'sequential quad-turbo' : 'quad-turbo') : p.induction.count > 1 ? (p.induction.sequential ? 'sequential twin-turbo' : 'twin-turbo') : 'turbo'} ${p.induction.boost} bar`
           : p.induction?.type === 'twinscrew' || p.induction?.type === 'roots'
             ? 'supercharged'
             : p.induction?.type === 'centrifugal'
