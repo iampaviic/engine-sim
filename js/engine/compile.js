@@ -138,11 +138,15 @@ function component(net, inNode, kind, dia, x0, x1, y, opts = {}) {
         { len: 0.19, dia: dia * 2.0, frac: 0.42, hf: 0.28, g: 0.975 },
       ]);
     case 'stock': {
-      // Road muffler: reactive chambers + packing + flow restriction.
+      // Road muffler: packed chambers on a full-bore perforated pipe + flow
+      // restriction, about 8-9 dB under a sport can at every rpm. (A narrow
+      // neck between two big cans makes a reactive low-pass that cuts off
+      // below the firing frequency: 20-25 dB off the top end, far more than
+      // the 10-15 dB a whole factory system is quieter than an aftermarket one.)
       n = chain([
-        { len: 0.22, dia: dia * 2.6, frac: 0.4, hf: 0.5, g: 0.96 },
-        { len: 0.14, dia: dia * 0.75, frac: 0.2, hf: 0.2 },
-        { len: 0.26, dia: dia * 2.6, frac: 0.4, hf: 0.58, g: 0.96 },
+        { len: 0.22, dia: dia * 1.8, frac: 0.4, hf: 0.5, g: 0.9 },
+        { len: 0.14, dia, frac: 0.2, hf: 0.2, g: 0.9 },
+        { len: 0.26, dia: dia * 1.8, frac: 0.4, hf: 0.58, g: 0.9 },
       ]);
       const r = net.node(NODE.RESISTOR, { x: mid(0.96), y, R: 0, K: opts.K ?? 900 / (dia * dia * 1e3), dyn: DYN.NONE });
       net.pipe(n, r, { len: 0.04, dia: dia * 0.9, temp, pts: [net.pt(n), net.pt(r)] });

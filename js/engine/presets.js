@@ -854,7 +854,7 @@ const I6_SEQ = {
     cat: true,
     midLen: 1.6,
     pipeDia: 70,
-    muffler: 'stock',
+    muffler: 'sport',
     tips: 1,
     tailLen: 0.3,
     tailDia: 95,
@@ -874,7 +874,7 @@ const I6_SEQ = {
     layout: 'front',
     shiftTime: 0.22,
   },
-  sound: { exhaust: 1, intake: 1, mech: 0.9, valvetrain: 'dohc', trim: 2.067, starter: 0.28 },
+  sound: { exhaust: 1.1, intake: 1, mech: 0.9, valvetrain: 'dohc', trim: 1.66, starter: 0.35 },
 };
 
 const I6_GTA = {
