@@ -153,6 +153,33 @@ class ResBank {
   }
 }
 
+// Fourth-order band-pass: two identical constant-peak biquads. For noises
+// that must stay in their band; a pair of one-pole filters leaks a flat
+// hiss right up to Nyquist.
+class Band4 {
+  constructor(f, q, fs) {
+    const w = (TAU * f) / fs;
+    const al = Math.sin(w) / (2 * q);
+    const a0 = 1 + al;
+    this.b0 = al / a0;
+    this.a1 = (-2 * Math.cos(w)) / a0;
+    this.a2 = (1 - al) / a0;
+    this.x1 = this.x2 = this.y1 = this.y2 = this.z1 = this.z2 = 0;
+  }
+  tick(x) {
+    const { b0, a1, a2 } = this;
+    const y = b0 * (x - this.x2) - a1 * this.y1 - a2 * this.y2;
+    const z = b0 * (y - this.y2) - a1 * this.z1 - a2 * this.z2;
+    this.x2 = this.x1;
+    this.x1 = x;
+    this.y2 = this.y1;
+    this.y1 = y;
+    this.z2 = this.z1;
+    this.z1 = z;
+    return z;
+  }
+}
+
 // Struck structural modes: a unit impulse sets mode i ringing at amplitude
 // g[i], dying away with time constant tau[i] (s).
 class Modes {
@@ -713,15 +740,11 @@ class EngineSim {
     this.sgActDec = Math.exp(-1 / (0.15 * fs));
     this.mcSgn = 0;
     this.burst = 0;
-    this.burstDec = Math.exp(-1 / (0.009 * fs));
+    this.burstDec = Math.exp(-1 / (0.005 * fs));
     this.sgD = 0;
     this.sgDA = lpCoef(2500, fs);
-    this.bA = this.bB = 0;
-    this.bHiA = lpCoef(4000, fs);
-    this.bLoA = lpCoef(1000, fs);
-    this.whA = this.whB = 0;
-    this.whHiA = lpCoef(3500, fs);
-    this.whLoA = lpCoef(800, fs);
+    this.burstBand = new Band4(1400, 0.8, fs);
+    this.whBand = new Band4(1700, 0.7, fs);
     this.wJit = 0;
     this.wJitA = lpCoef(25, fs);
     this.tpLp = 0;
@@ -729,9 +752,7 @@ class EngineSim {
     this.tPulse = 1;
     this.sgB = new Float64Array(3);
     this.sgX1 = this.sgX2 = this.sgY1 = this.sgY2 = 0;
-    this.bovA1 = this.bovA2 = 0;
-    this.bovHiA = lpCoef(6000, fs);
-    this.bovLoA = lpCoef(600, fs);
+    this.bovBand = new Band4(3000, 0.5, fs);
     this.sgK = 32;
     this.sgLpA = lpCoef(392, fs);
     this.sgHpA = lpCoef(28, fs);
@@ -1687,7 +1708,9 @@ class EngineSim {
       // Electronic boost control on the wastegate: a gentle proportional
       // band, an integral trim, and a lead on the shaft's acceleration (the
       // wheel races ahead of the boost it is about to make).
-      const tgt = this.boostTarget;
+      // (anti-lag aims a little lower: enough to come back on boost at once
+      // without the relief valve venting all the while)
+      const tgt = this.alsActive ? this.boostTarget * 0.7 : this.boostTarget;
       const b = this.pB - P_AMB;
       const e = (b - tgt) / (tgt + 2e4);
       this.pBrate += ((this.pB - this.pBprev) / dtc - this.pBrate) * Math.min(1, dtc * 40);
@@ -1702,17 +1725,18 @@ class EngineSim {
       const lead = b > 0.6 * tgt && this.pBrate > 0 ? (this.wtRate * this.tRtip) / 560 : 0;
       // the actuator spring starts cracking the gate open just short of target
       const crack = clamp((b - 0.85 * tgt) / (0.25 * tgt + 1e4), 0, 1) * 0.25;
-      let wgT = clamp(this.wgI + crack + e * 1.2 + lead * 0.6, 0, 1);
-      if (this.alsActive) wgT = Math.max(0, wgT - 0.1);
+      const wgT = clamp(this.wgI + crack + e * 1.2 + lead * 0.6, 0, 1);
       this.wg += (wgT - this.wg) * Math.min(1, dtc * 25);
       // Blow-off valve opens on closed throttle with pressure in the pipes; with
       // anti-lag it doubles as a pressure relief above the boost target.
-      const relief = this.alsActive && this.pB - P_AMB > this.boostTarget * 0.9;
+      const relief = this.alsActive && this.pB - P_AMB > this.boostTarget;
       // (vacuum referenced: it opens on the pressure drop across a closing
-      // throttle, before the plate is even shut)
-      const bovT = (this.bovType !== 'none' && this.thr < 0.5 && this.pB - this.pPl > 35000 && !this.alsActive) || relief ? 1 : 0;
+      // throttle, before the plate is even shut, but not across one still
+      // opening as the driver gets back on it)
+      const bovT = (this.bovType !== 'none' && this.thr < 0.5 && this.thrCmd < 0.3 && this.pB - this.pPl > 35000 && !this.alsActive) || relief ? 1 : 0;
       if (bovT) this.bov = Math.min(1, this.bov + dtc * 120);
-      else if (this.pB - P_AMB < 12000 || this.thr > 0.3) this.bov = Math.max(0, this.bov - dtc * 25);
+      // (anti-lag shuts it again once armed: the boost is there to be kept)
+      else if (this.pB - P_AMB < 12000 || this.thr > 0.3 || this.alsActive) this.bov = Math.max(0, this.bov - dtc * 25);
       this.bovStep = (this.bov - this.bovS) / 32;
     }
     if (this.seqRpm) {
@@ -2465,7 +2489,8 @@ class EngineSim {
           this.afDecay[nd] = Math.exp(-1 / (this.fs * (0.0006 + 0.0022 * rnd())));
           this.afEvents++;
           this.afIntensity = Math.max(this.afIntensity, amp / 30000);
-          if (this.isTurbo && this.alsActive) this.wt += (0.07 * E) / (this.tJ * this.nT * Math.max(this.wt, 2000));
+          // (an open wastegate lets much of the bang bypass the wheel)
+          if (this.isTurbo && this.alsActive) this.wt += (0.07 * E * (1 - 0.85 * this.wg)) / (this.tJ * this.nT * Math.max(this.wt, 2000));
         }
         this.afFuel[nd] = f * (1 - dt * 7);
         this.afHeat[nd] = heat * (1 - dt * 3);
@@ -2652,7 +2677,7 @@ class EngineSim {
     this.tPhase2 -= Math.floor(this.tPhase2);
     if (++this.sgK >= 32) {
       this.sgK = 0;
-      this.setBand(clamp(fB, 200, 0.4 * fs), 22);
+      this.setBand(clamp(fB, 200, 0.4 * fs), 40);
     }
     const nh = rnd() - 0.5;
     const sb = this.sgB;
@@ -2663,17 +2688,16 @@ class EngineSim {
     this.sgY1 = halo;
     // A small wheel's blade pass goes ultrasonic at full spool: fade it out
     // before Nyquist instead of letting it fold back down as a false whistle.
-    const whistle = (Math.sin(TAU * this.tPhase) * 0.7 + halo * 9) * this.bladeFade(fB);
+    const whistle = (Math.sin(TAU * this.tPhase) * 0.85 + halo * 2.5) * this.bladeFade(fB);
     const whine = Math.sin(TAU * this.tPhase2) + 0.3 * Math.sin(2 * TAU * this.tPhase2);
     const Utn = Ut / 400;
     let snd =
       (whistle * 10 + whine * 0.5) * Utn * Utn * (0.15 + 3 * Math.abs(this.mc)) * 0.8 * this.tPulse;
     if (mb > 0) {
       // the dump valve's jet: broadband, but centred a few kHz up like any jet
-      const nj = rnd() - 0.5;
-      this.bovA1 += this.bovHiA * (nj - this.bovA1);
-      this.bovA2 += this.bovLoA * (this.bovA1 - this.bovA2);
-      snd += (this.bovA1 - this.bovA2) * mb * Math.sqrt(Math.max(0, this.pB - P_AMB)) * 0.5;
+      // (Lighthill: its loudness falls away fast as the pressure behind it bleeds off)
+      const dpb = Math.max(0, this.pB - P_AMB);
+      snd += this.bovBand.tick(rnd() - 0.5) * mb * Math.sqrt(dpb) * (dpb / 1e5) * 0.5;
     }
     const Utn2 = (this.wt2 * this.tRtip) / 400;
     if (this.nB) {
@@ -2690,11 +2714,8 @@ class EngineSim {
     // speed line, loudest nearest surge (high boost on little flow, as when
     // it spools at low revs). It reaches us through the inlet duct.
     const xf = this.mc / mChoke;
-    const nw = rnd() - 0.5;
-    this.whA += this.whHiA * (nw - this.whA);
-    this.whB += this.whLoA * (this.whA - this.whB);
     const wl = Utn * Utn * clamp(xf / 0.06, 0, 1) * (0.35 + 1.3 * clamp((0.6 - xf) / 0.35, 0, 1)) + (mc2 > 0 ? 0.35 * Utn2 * Utn2 : 0);
-    let exc = (this.whA - this.whB) * wl * 11 * this.whK;
+    let exc = this.whBand.tick(rnd() - 0.5) * wl * 4.9 * this.whK;
     // Surge (the flutter). Each reversal of the flow is a sharp pressure
     // pulse at the compressor face, and the moment the flow snaps forward
     // again is another. Every pulse rings the inlet duct, a tube closed at
@@ -2715,11 +2736,7 @@ class EngineSim {
     this.burst *= this.burstDec;
     this.sgD += this.sgDA * (dmc - this.sgD);
     if (this.sgAct > 1e-3 || this.burst > 1e-4) {
-      const nb = rnd() - 0.5;
-      this.bA += this.bHiA * (nb - this.bA);
-      this.bB += this.bLoA * (this.bA - this.bB);
-      const rev = this.mc < 0 ? -this.mc : 0;
-      exc += this.sgD * this.sgAct * 0.2 + (this.bA - this.bB) * (this.burst * 30 + rev * 20);
+      exc += this.sgD * this.sgAct * 0.2 + this.burstBand.tick(rnd() - 0.5) * this.burst * 18;
     }
     const dl = this.dBuf[(this.dI - this.dD) & 1023];
     this.dLp += this.dLpA * (dl - this.dLp);
@@ -2744,10 +2761,14 @@ class EngineSim {
     this.sgB[2] = (1 - al) / a0;
   }
 
-  // Level for a tone at f: full up to 0.3 fs, gone by 0.42 fs.
+  // Level for a blade tone at f. The filter element and the duct's bends
+  // soak up what's above about 8 kHz (a full-spool whistle at 15 kHz is a
+  // faint sizzle, not a scream), and it's gone before 0.42 fs.
   bladeFade(f) {
     const fs = this.fs;
-    return f < 0.3 * fs ? 1 : f < 0.42 * fs ? (0.42 * fs - f) / (0.12 * fs) : 0;
+    const r = (f / 8000) * (f / 8000);
+    const g = 1 / Math.sqrt(1 + r * r);
+    return f < 0.3 * fs ? g : f < 0.42 * fs ? (g * (0.42 * fs - f)) / (0.12 * fs) : 0;
   }
 
   stepBlower(omega) {
