@@ -1230,7 +1230,7 @@ const W16 = {
     drive: 'awd',
     shiftTime: 0.08,
   },
-  sound: { exhaust: 1, intake: 1, mech: 0.9, valvetrain: 'dohc', trim: 4.238, starter: 0.6 },
+  sound: { exhaust: 1, intake: 1, mech: 0.9, valvetrain: 'dohc', trim: 4.481, starter: 0.6 },
 };
 
 export const PRESETS = [V12_65, V12_60, W16, V8_LS, V8_BIGBLOCK, V8_BLOWER, V8_HOTVEE, V8_FLAT, V10_72, F1_V10, F6_GT, V6_TT, I6_TURBO, I6_SEQ, I6_GTA, I5_TURBO, I4_RALLY, I4_VTEC, I4_TOUGE, F4_TURBO, ROTARY, ROTARY_TT, VTWIN, MX250];
