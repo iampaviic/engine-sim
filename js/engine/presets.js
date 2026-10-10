@@ -348,8 +348,8 @@ const I6_TURBO = {
     tailLen: 0.35,
     tailDia: 100,
   },
-  induction: { type: 'turbo', count: 1, size: 1.2, boost: 1.4, blades: 7, bov: 'atm' },
-  ecu: { idle: 850, limit: 7400, limiter: 'spark', afr: 11.8, burble: 0.3, launchRpm: 4500, knockCal: 0.316},
+  induction: { type: 'turbo', count: 1, size: 1.2, boost: 1.4, ar: 0.85, blades: 7, bov: 'atm' },
+  ecu: { idle: 850, limit: 7400, limiter: 'spark', afr: 11.8, burble: 0.3, launchRpm: 4500, knockCal: 0.29},
   inertia: 0.2,
   combustion: 0.72,
   vehicle: {
@@ -363,7 +363,7 @@ const I6_TURBO = {
     layout: 'front',
     shiftTime: 0.2,
   },
-  sound: { exhaust: 1.1, intake: 1, mech: 0.9, valvetrain: 'dohc', trim: 0.56, starter: 1.49 },
+  sound: { exhaust: 1.1, intake: 1, mech: 0.9, valvetrain: 'dohc', trim: 0.553, starter: 1.49 },
 };
 
 const F6_GT = {
@@ -555,8 +555,8 @@ const I4_RALLY = {
     tailLen: 0.25,
     tailDia: 90,
   },
-  induction: { type: 'turbo', count: 1, size: 0.85, boost: 1.6, blades: 6, bov: 'atm' },
-  ecu: { idle: 1100, limit: 7800, limiter: 'spark', afr: 11.8, burble: 0.4, antilag: true, launchRpm: 5000, knockCal: 0.264},
+  induction: { type: 'turbo', count: 1, size: 0.85, boost: 1.6, ar: 0.55, blades: 6, bov: 'atm' },
+  ecu: { idle: 1100, limit: 7800, limiter: 'spark', afr: 11.8, burble: 0.4, antilag: true, launchRpm: 5000, knockCal: 0.24},
   inertia: 0.11,
   combustion: 0.73,
   vehicle: {
@@ -573,7 +573,7 @@ const I4_RALLY = {
     shiftTime: 0.05,
     mu: 1.05,
   },
-  sound: { exhaust: 1.1, intake: 1, mech: 1, valvetrain: 'dohc', gear: 0.7, trim: 0.84, starter: 1.64 },
+  sound: { exhaust: 1.1, intake: 1, mech: 1, valvetrain: 'dohc', gear: 0.7, trim: 0.79, starter: 1.64 },
 };
 
 const I4_VTEC = {
@@ -656,8 +656,8 @@ const F4_TURBO = {
     tips: 4,
     tailLen: 0.3,
   },
-  induction: { type: 'turbo', count: 1, size: 0.95, boost: 1.1, blades: 6, bov: 'atm' },
-  ecu: { idle: 800, limit: 6800, limiter: 'fuel', afr: 11.8, burble: 0.15, launchRpm: 4000, knockCal: 0.353},
+  induction: { type: 'turbo', count: 1, size: 0.95, boost: 1.1, ar: 0.75, blades: 6, bov: 'atm' },
+  ecu: { idle: 800, limit: 6800, limiter: 'fuel', afr: 11.8, burble: 0.15, launchRpm: 4000, knockCal: 0.333},
   inertia: 0.16,
   combustion: 0.72,
   vehicle: {
@@ -672,7 +672,7 @@ const F4_TURBO = {
     layout: 'front',
     shiftTime: 0.2,
   },
-  sound: { exhaust: 1.1, intake: 1, mech: 1, valvetrain: 'dohc', trim: 0.48, starter: 0.88 },
+  sound: { exhaust: 1.1, intake: 1, mech: 1, valvetrain: 'dohc', trim: 0.538, starter: 0.88 },
 };
 
 const ROTARY = {
@@ -859,8 +859,8 @@ const I6_SEQ = {
     tailLen: 0.3,
     tailDia: 95,
   },
-  induction: { type: 'turbo', count: 2, sequential: 4000, size: 0.75, boost: 0.85, blades: 9, bov: 'atm' },
-  ecu: { idle: 700, limit: 6800, limiter: 'fuel', afr: 11.8, burble: 0.05, launchRpm: 4000, knockCal: 0.419 },
+  induction: { type: 'turbo', count: 2, sequential: 4000, size: 0.75, boost: 0.85, ar: 1, blades: 9, bov: 'atm' },
+  ecu: { idle: 700, limit: 6800, limiter: 'fuel', afr: 11.8, burble: 0.05, launchRpm: 4000, knockCal: 0.4 },
   inertia: 0.22,
   combustion: 0.66,
   vehicle: {
@@ -874,7 +874,7 @@ const I6_SEQ = {
     layout: 'front',
     shiftTime: 0.22,
   },
-  sound: { exhaust: 1, intake: 1, mech: 0.9, valvetrain: 'dohc', trim: 2.077, starter: 0.28 },
+  sound: { exhaust: 1, intake: 1, mech: 0.9, valvetrain: 'dohc', trim: 2.067, starter: 0.28 },
 };
 
 const I6_GTA = {
@@ -906,8 +906,8 @@ const I6_GTA = {
     tailLen: 0.35,
     tailDia: 100,
   },
-  induction: { type: 'turbo', count: 2, size: 0.7, boost: 0.8, blades: 9, bov: 'atm' },
-  ecu: { idle: 900, limit: 8000, limiter: 'fuel', afr: 11.8, burble: 0.25, launchRpm: 4500, knockCal: 0.573 },
+  induction: { type: 'turbo', count: 2, size: 0.7, boost: 0.8, ar: 0.75, blades: 9, bov: 'atm' },
+  ecu: { idle: 900, limit: 8000, limiter: 'fuel', afr: 11.8, burble: 0.25, launchRpm: 4500, knockCal: 0.55 },
   inertia: 0.17,
   combustion: 0.62,
   vehicle: {
@@ -922,7 +922,7 @@ const I6_GTA = {
     layout: 'front',
     shiftTime: 0.25,
   },
-  sound: { exhaust: 1.05, intake: 1.2, mech: 0.9, valvetrain: 'dohc', trim: 0.577, starter: 1.33 },
+  sound: { exhaust: 1.05, intake: 1.2, mech: 0.9, valvetrain: 'dohc', trim: 0.589, starter: 1.33 },
 };
 
 const V6_TT = {
@@ -959,8 +959,8 @@ const V6_TT = {
     tailLen: 0.25,
     tailDia: 90,
   },
-  induction: { type: 'turbo', count: 2, size: 0.72, boost: 1.05, blades: 11, bov: 'atm' },
-  ecu: { idle: 750, limit: 7100, limiter: 'fuel', afr: 11.5, burble: 0.1, launchRpm: 4500, knockCal: 0.293 },
+  induction: { type: 'turbo', count: 2, size: 0.72, boost: 1.05, ar: 1, blades: 11, bov: 'atm' },
+  ecu: { idle: 750, limit: 7100, limiter: 'fuel', afr: 11.5, burble: 0.1, launchRpm: 4500, knockCal: 0.289 },
   inertia: 0.22,
   combustion: 0.72,
   vehicle: {
@@ -976,7 +976,7 @@ const V6_TT = {
     shiftTime: 0.06,
     mu: 1.25,
   },
-  sound: { exhaust: 1, intake: 1, mech: 1, valvetrain: 'dohc', gear: 0.9, trim: 0.926, starter: 0.82 },
+  sound: { exhaust: 1, intake: 1, mech: 1, valvetrain: 'dohc', gear: 0.9, trim: 0.914, starter: 0.82 },
 };
 
 const I4_TOUGE = {
@@ -1058,8 +1058,8 @@ const ROTARY_TT = {
     tips: 2,
     tailLen: 0.3,
   },
-  induction: { type: 'turbo', count: 2, sequential: 4500, size: 0.7, boost: 0.7, blades: 9, bov: 'atm' },
-  ecu: { idle: 1150, limit: 8000, limiter: 'fuel', afr: 11.5, burble: 0.5, launchRpm: 4500, knockCal: 0.423 },
+  induction: { type: 'turbo', count: 2, sequential: 4500, size: 0.7, boost: 0.7, ar: 0.75, blades: 9, bov: 'atm' },
+  ecu: { idle: 1150, limit: 8000, limiter: 'fuel', afr: 11.5, burble: 0.5, launchRpm: 4500, knockCal: 0.342 },
   inertia: 0.12,
   friction: 1.1,
   combustion: 0.52,
@@ -1075,7 +1075,7 @@ const ROTARY_TT = {
     layout: 'front',
     shiftTime: 0.2,
   },
-  sound: { exhaust: 1.1, intake: 1.1, mech: 0.5, valvetrain: 'none', trim: 1.601, starter: 2.98 },
+  sound: { exhaust: 1.1, intake: 1.1, mech: 0.5, valvetrain: 'none', trim: 1.7, starter: 2.98 },
 };
 
 const V8_HOTVEE = {
@@ -1113,8 +1113,8 @@ const V8_HOTVEE = {
     tailLen: 0.3,
     tailDia: 80,
   },
-  induction: { type: 'turbo', count: 2, size: 0.6, boost: 1.1, blades: 11, bov: 'atm' },
-  ecu: { idle: 750, limit: 7200, limiter: 'fuel', afr: 12.2, burble: 0.75, launchRpm: 3200, octane: 98, knockCal: 0.22 },
+  induction: { type: 'turbo', count: 2, size: 0.6, boost: 1.1, ar: 0.5, blades: 11, bov: 'atm' },
+  ecu: { idle: 750, limit: 7200, limiter: 'fuel', afr: 12.2, burble: 0.75, launchRpm: 3200, octane: 98, knockCal: 0.19 },
   inertia: 0.22,
   combustion: 0.72,
   vehicle: {
@@ -1128,7 +1128,7 @@ const V8_HOTVEE = {
     layout: 'front',
     shiftTime: 0.1,
   },
-  sound: { exhaust: 1, intake: 1, mech: 0.9, valvetrain: 'dohc', trim: 1.74, starter: 0.92 },
+  sound: { exhaust: 1, intake: 1, mech: 0.9, valvetrain: 'dohc', trim: 1.679, starter: 0.92 },
 };
 
 const I5_TURBO = {
@@ -1161,8 +1161,8 @@ const I5_TURBO = {
     tailLen: 0.3,
     tailDia: 80,
   },
-  induction: { type: 'turbo', count: 1, size: 1.0, boost: 1.3, blades: 7, bov: 'atm' },
-  ecu: { idle: 800, limit: 7000, limiter: 'fuel', afr: 12, burble: 0.45, launchRpm: 4000, octane: 98, knockCal: 0.226 },
+  induction: { type: 'turbo', count: 1, size: 1.0, boost: 1.3, ar: 0.4, blades: 7, bov: 'atm' },
+  ecu: { idle: 800, limit: 7000, limiter: 'fuel', afr: 12, burble: 0.45, launchRpm: 4000, octane: 98, knockCal: 0.215 },
   inertia: 0.14,
   combustion: 0.72,
   vehicle: {
@@ -1177,7 +1177,7 @@ const I5_TURBO = {
     layout: 'front',
     shiftTime: 0.08,
   },
-  sound: { exhaust: 1.1, intake: 1.1, mech: 1, valvetrain: 'dohc', trim: 1.13, starter: 0.94 },
+  sound: { exhaust: 1.1, intake: 1.1, mech: 1, valvetrain: 'dohc', trim: 1.272, starter: 0.94 },
 };
 
 const W16 = {
@@ -1214,8 +1214,8 @@ const W16 = {
     tailLen: 0.25,
     tailDia: 90,
   },
-  induction: { type: 'turbo', count: 4, sequential: 3800, size: 0.8, boost: 1.5, blades: 11, bov: 'atm' },
-  ecu: { idle: 800, limit: 6700, limiter: 'fuel', afr: 11.9, burble: 0.1, launchRpm: 3000, octane: 98, startFlare: 700, knockCal: 0.106 },
+  induction: { type: 'turbo', count: 4, sequential: 3800, size: 0.8, boost: 1.5, ar: 0.6, blades: 11, bov: 'atm' },
+  ecu: { idle: 800, limit: 6700, limiter: 'fuel', afr: 11.9, burble: 0.1, launchRpm: 3000, octane: 98, startFlare: 700, knockCal: 0.192 },
   inertia: 0.45,
   combustion: 0.72,
   vehicle: {
@@ -1230,7 +1230,7 @@ const W16 = {
     drive: 'awd',
     shiftTime: 0.08,
   },
-  sound: { exhaust: 1, intake: 1, mech: 0.9, valvetrain: 'dohc', trim: 3.53, starter: 0.6 },
+  sound: { exhaust: 1, intake: 1, mech: 0.9, valvetrain: 'dohc', trim: 4.238, starter: 0.6 },
 };
 
 export const PRESETS = [V12_65, V12_60, W16, V8_LS, V8_BIGBLOCK, V8_BLOWER, V8_HOTVEE, V8_FLAT, V10_72, F1_V10, F6_GT, V6_TT, I6_TURBO, I6_SEQ, I6_GTA, I5_TURBO, I4_RALLY, I4_VTEC, I4_TOUGE, F4_TURBO, ROTARY, ROTARY_TT, VTWIN, MX250];

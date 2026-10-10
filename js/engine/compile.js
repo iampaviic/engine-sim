@@ -1096,6 +1096,7 @@ export function compileEngine(spec) {
       count: ind.count ?? 1,
       boost: ind.boost ?? 0, // bar gauge target
       size: ind.size ?? 1, // relative turbo size (lag / flow)
+      ar: ind.ar ?? 0.7, // turbine housing size: smaller spools sooner, chokes the top end
       ratio: ind.ratio ?? 2.5, // supercharger drive ratio
       blowerDisp: ind.displacement ?? 2.0, // litres per blower rev
       lobes: ind.lobes ?? 4,
