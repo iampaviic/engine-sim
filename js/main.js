@@ -10,6 +10,8 @@ import { Garage } from './ui/garage.js';
 import { Workshop, CAMERAS, clone, applyHeaderEqualize } from './ui/workshop.js';
 import { Builder } from './ui/builder.js';
 import { MapEditor } from './ui/maps.js';
+import { CarPanel, drawFollowHud } from './ui/carlink.js';
+import { CarFollow } from './car/follow.js';
 import { mapsEdited, mapsFit, fitMaps } from './engine/maps.js';
 import { SCENES, drawSceneHud, timeSlip, vmaxSlip } from './ui/scenes.js';
 import { Settings } from './ui/settings.js';
@@ -222,6 +224,7 @@ const workshop = new Workshop({ root: $('workshop'), body: $('wsBody'), close: $
 const settings = new Settings({ root: $('settings'), body: $('setBody'), close: $('setClose'), app });
 const builder = new Builder({ root: $('builder'), app, presets: PRESETS });
 const mapEd = new MapEditor({ root: $('maps'), app });
+const carPanel = new CarPanel({ root: $('car'), body: $('carBody'), close: $('carClose'), app });
 
 // ------------------------------------------------------------ engine / tune
 function defaultTune(f) {
@@ -398,6 +401,78 @@ app.dynoHold = (rpm) => {
   app.audio.post({ type: 'dyno', action: 'hold', rpm });
 };
 
+// ------------------------------------------------------------- follow car
+// The engine follows a real car: its revs (OBD adapter), or its speed (GPS).
+app.carSettings = { source: 'demo', carIdle: 800, carRed: 4800, stretch: true, ...store.get('car', {}) };
+app.setCarSettings = (p) => {
+  Object.assign(app.carSettings, p);
+  store.set('car', app.carSettings);
+};
+app.follow = new CarFollow(
+  {
+    post: (m) => app.started && app.audio.post(m),
+    engine: () => ({ idle: app.factory.ecu.idle, limit: app.tune.limit }),
+    running: () => !!(app.tel?.running || app.tel?.starter),
+    crank: () => {
+      // once, and not again while the starter is still at it (nor before
+      // the first report: starting the sound cranks it anyway)
+      if (!app.tel || performance.now() - (app.crankT ?? 0) < 4000) return;
+      app.crankT = performance.now();
+      app.audio.post({ type: 'ignition', on: true, crank: true });
+    },
+    off: () => app.audio.post({ type: 'ignition', on: false }),
+    onStatus: (t, bad) => {
+      carPanel.setStatus(t, bad);
+      if (bad) toast(t);
+    },
+    onStop: () => followStopped(),
+  },
+  app.carSettings
+);
+Object.defineProperty(app, 'following', { get: () => app.follow.on });
+app.openCar = () => {
+  if (!app.requirePro('Following your car is part of Pro')) return;
+  workshop.hide();
+  $('scenePick').hidden = true;
+  carPanel.show();
+};
+app.startFollow = (kind) => {
+  if (!app.requirePro('Following your car is part of Pro')) return;
+  // Bluetooth and motion permissions have to be asked for inside the tap,
+  // so the source starts first; the sound starts alongside
+  const p = app.follow.start(kind);
+  if (!app.started) start();
+  if (app.dynoActive) stopDyno();
+  if (app.dynoHolding) app.dynoHold(null);
+  endScene();
+  carPanel.setStatus(kind === 'obd' ? 'Choose your adapter' : kind === 'gps' ? 'Waiting for the GPS' : 'Starting the demo drive');
+  carPanel.render();
+  p.then((info) => {
+    if (!info) return;
+    app.mode = 'follow';
+    document.querySelectorAll('.modes button').forEach((b) => b.setAttribute('aria-checked', 'false'));
+    $('flybyStrip').className = 'flyby-strip scene-hud follow-hud';
+    $('flybyStrip').hidden = false;
+    if (kind === 'gps' && app.tel && !app.tel.running && !app.tel.starter) app.audio.post({ type: 'ignition', on: true, crank: true });
+    carPanel.setStatus(`${info.label}${info.detail ? '. ' + info.detail : ''}`);
+    carPanel.render();
+    toast(kind === 'demo' ? 'Following the demo drive' : 'Following your car');
+  }).catch((e) => {
+    const cancelled = e?.name === 'NotFoundError' && kind === 'obd';
+    carPanel.setStatus(cancelled ? 'No adapter chosen' : e?.message ?? String(e), !cancelled);
+    carPanel.render();
+  });
+};
+app.stopFollow = () => app.follow.stop();
+function followStopped() {
+  app.mode = 'rev';
+  app.audio.post({ type: 'mode', mode: 'rev' });
+  document.querySelectorAll('.modes button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.mode === 'rev')));
+  $('flybyStrip').hidden = true;
+  $('flybyStrip').className = 'flyby-strip';
+  if (carPanel.open) carPanel.render();
+}
+
 app.setCamera = (c) => {
   app.camera = c;
   store.set('camera', c);
@@ -509,6 +584,7 @@ function handleBack() {
   else if (settings.open) settings.hide();
   else if (builder.open) builder.hide();
   else if (mapEd.open) mapEd.hide();
+  else if (carPanel.open) carPanel.hide();
   else if (workshop.open) workshop.hide();
   else if (garage.open) garage.hide();
   else if (!$('scenePick').hidden) $('scenePick').hidden = true;
@@ -650,6 +726,10 @@ function setMode(m) {
   if (app.dynoActive) stopDyno();
   if (app.dynoHolding && mapEd.open) mapEd.hide();
   app.dynoHolding = false;
+  if (app.following) {
+    app.follow.stop(true);
+    if (carPanel.open) carPanel.render();
+  }
   endScene();
   $('scenePick').hidden = true;
   app.mode = m;
@@ -736,6 +816,13 @@ function toggleScenePick(force) {
       });
       p.appendChild(b);
     }
+    const b = document.createElement('button');
+    b.setAttribute('role', 'menuitem');
+    b.className = 'pick-car';
+    const lock = !pro.active ? ' <i class="pro-tag">PRO</i>' : '';
+    b.innerHTML = `<b>Follow my car${lock}</b><span>Your own car drives this engine: its revs, pedal and speed from an OBD adapter, or its speed from GPS. Or try the demo drive.</span><kbd>8</kbd>`;
+    b.addEventListener('click', () => app.openCar());
+    p.appendChild(b);
   }
   p.hidden = !show;
 }
@@ -854,6 +941,9 @@ function action(a, v) {
     case 'maps':
       mapEd.open ? mapEd.hide() : app.openMaps();
       break;
+    case 'car':
+      carPanel.open ? carPanel.hide() : app.openCar();
+      break;
     case 'camera': {
       const i = (CAM_IDS.indexOf(app.camera) + 1) % CAM_IDS.length;
       app.setCamera(CAM_IDS[i]);
@@ -888,6 +978,7 @@ function action(a, v) {
       workshop.hide();
       if (builder.open) builder.hide();
       if (mapEd.open) mapEd.hide();
+      carPanel.hide();
       $('scenePick').hidden = true;
       break;
   }
@@ -1012,6 +1103,12 @@ function onTelemetry(t) {
   }
   tach.gear = inGear ? (t.gear ? String(t.gear) : 'N') : t.mode === 'dyno' ? 'D' : 'N';
   tach.speedText = inGear ? speedText(t.speed) : t.mode === 'dyno' ? 'DYNO' : t.running ? 'NEUTRAL' : t.starter ? (t.kick ? 'KICKING' : 'CRANKING') : 'OFF';
+  if (t.follow === 'rpm') {
+    // the car's gearbox is the car's: show its speed
+    tach.gear = '';
+    tach.speedText = t.running ? speedText(t.speed) : t.starter ? 'CRANKING' : 'OFF';
+  }
+  if (app.following && carPanel.open) carPanel.updateLive();
   if (inGear && t.gear !== app.lastGear && app.lastGear) navigator.vibrate?.(12);
   app.lastGear = t.gear;
   if (t.af > 0 && t.afI > 0.12) {
@@ -1019,7 +1116,7 @@ function onTelemetry(t) {
     if (t.afI > 0.35) navigator.vibrate?.(8);
   }
   $('startBtn').classList.toggle('on', !!t.running);
-  const wantAwake = app.keepAwake && !!t.running && !document.hidden;
+  const wantAwake = (app.keepAwake || app.following) && !!t.running && !document.hidden;
   if (wantAwake !== app.awake) screenAwake(wantAwake);
   if (t.knockN > 0) {
     tach.knock = Math.max(tach.knock, Math.min(1, 0.3 + t.knock / 3e5));
@@ -1139,6 +1236,7 @@ function frame(now) {
   updateReadouts(dt);
   updatePreviewBar(now);
   if (app.scene) drawSceneHud($('flybyStrip'), app.scene, app.tel, app.scene.cache);
+  else if (app.following && !$('flybyStrip').hidden) drawFollowHud($('flybyStrip'), app.follow, app.tel, app.factory.name);
   else drawFlyby();
   if (toastT > 0) {
     toastT -= dt;
@@ -1322,6 +1420,9 @@ function wire() {
   syncUnitsUI();
   holdToRev($('wsRev'));
   holdToRev($('mRev'));
+  $('flybyStrip').addEventListener('click', () => {
+    if (app.following) carPanel.show();
+  });
   onProChange(syncPro);
   syncPro();
   $('previewUnlock').addEventListener('click', () => paywall.show({ reason: `${app.factory.name} is one of the Pro engines` }));

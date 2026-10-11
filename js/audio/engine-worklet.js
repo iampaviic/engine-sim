@@ -911,6 +911,11 @@ class EngineSim {
     this.mRpm = this.mKpa = this.mSpark = this.mAfr = this.mBoost = this.mGear = null;
     this.lastAdv = 0;
     this.lastAfr = 0;
+    // Following a real car (null: off). kind 'rpm': its engine speed comes
+    // from the car; kind 'speed': only its road speed does.
+    this.follow = null;
+    this.followV = -1; // road speed the wheels are held to (speed kind), m/s
+    this.followA = 0;
     this.knockSndS = 0;
     this.knockN = 0;
     this.knockMax = 0;
@@ -2046,6 +2051,7 @@ class EngineSim {
 
   vehicleControl(dtc, rpm) {
     const v = this.veh;
+    if (this.follow) this.followStep(dtc);
     if (this.mode === 'dyno') {
       this.gear = 0;
       this.clutchCap = 0;
@@ -2071,8 +2077,21 @@ class EngineSim {
         }
         // PI absorber
         const errW = rpm - d.target;
-        this.dynoI = clamp(this.dynoI + errW * 25 * dtc, 0, 6000);
-        this.dynoLoad = Math.max(0, errW * 4 + this.dynoI);
+        if (d.phase === 'follow') {
+          // a motoring dyno: it brakes the engine or drives it, so the engine
+          // runs where the car's does, on overrun too; the lead covers the
+          // torque to speed the crank up along with the car's
+          if (d.target < 250 || this.stEng) {
+            this.dynoI = 0;
+            this.dynoLoad = 0;
+          } else {
+            this.dynoI = clamp(this.dynoI + errW * 25 * dtc, -1500, 6000);
+            this.dynoLoad = errW * 4 + this.dynoI - this.J * (d.rate / 9.5493) * 0.8;
+          }
+        } else {
+          this.dynoI = clamp(this.dynoI + errW * 25 * dtc, 0, 6000);
+          this.dynoLoad = Math.max(0, errW * 4 + this.dynoI);
+        }
         if (d.phase === 'sweep' && d.t > 0.05 && this.telN > 0) {
           // record brake torque vs rpm
         }
@@ -2157,6 +2176,80 @@ class EngineSim {
   peakTorqueGuess() {
     const boost = this.isTurbo || this.isSC || this.isCentri ? 1 + this.boostTarget / P_AMB : 1;
     return 110 * this.cfg.dispLitres * boost + 50;
+  }
+
+  // Following a real car, control rate: carry each reading forward along its
+  // trend until the next one arrives (they come 5 to 25 times a second) and
+  // smooth the steps out.
+  followStep(dtc) {
+    const f = this.follow;
+    f.age += dtc;
+    const ahead = Math.min(f.age, 0.3);
+    const k = Math.min(1, dtc * 22);
+    f.pedS += (f.pedal - f.pedS) * k;
+    this.pedal = f.pedS;
+    this.brake = f.brake;
+    const vT = Math.max(0, f.v + f.a * Math.min(f.age, 0.5));
+    f.vS += (vT - f.vS) * Math.min(1, dtc * 12);
+    if (f.kind === 'rpm') {
+      const rT = Math.max(0, f.rpm + f.rate * ahead);
+      f.rpmS += (rT - f.rpmS) * k;
+      if (this.dyno?.phase === 'follow') {
+        this.dyno.target = f.rpmS;
+        this.dyno.rate = f.age < 0.3 ? f.rate : 0;
+      }
+      // the wind and the road still go by at the car's speed
+      this.v = f.vS;
+      this.ww = this.v / this.veh.tire;
+      this.followV = -1;
+    } else {
+      this.followV = f.vS;
+      this.followA = f.age < 0.5 ? f.a : 0;
+    }
+  }
+
+  // A reading from the car: rpm (with its rate, rpm/s) when it reports one,
+  // else just road speed; pedal 0..1; speed m/s; accel m/s^2.
+  setFollow(m) {
+    if (m.stop) {
+      this.follow = null;
+      this.followV = -1;
+      if (this.dyno?.phase === 'follow') this.dyno.active = false;
+      this.dynoLoad = 0;
+      this.pedal = 0;
+      this.brake = 0;
+      return;
+    }
+    const kind = m.rpm != null ? 'rpm' : 'speed';
+    let f = this.follow;
+    if (!f || f.kind !== kind) {
+      f = this.follow = { kind, age: 0, rpm: m.rpm ?? 0, rate: 0, pedal: 0, pedS: 0, brake: 0, v: m.speed ?? 0, vS: m.speed ?? 0, a: 0, rpmS: m.rpm ?? this.rpm };
+      if (kind === 'rpm') {
+        this.mode = 'dyno';
+        this.gear = 0;
+        this.dyno = { active: true, phase: 'follow', t: 0, start: 0, end: 0, rate: 0, target: f.rpmS };
+        this.dynoI = 0;
+      } else {
+        this.mode = 'drive';
+        this.dyno = null;
+        this.autoShift = true;
+        this.shift = null;
+        if (this.gear === 0) this.gear = 1;
+        this.clutch = 1;
+        const vh = this.veh;
+        this.ww = f.v / vh.tire;
+        this.v = f.v;
+      }
+    }
+    f.age = 0;
+    if (m.rpm != null) {
+      f.rpm = m.rpm;
+      f.rate = m.rate ?? 0;
+    }
+    f.pedal = clamp(m.pedal ?? 0, 0, 1);
+    f.brake = clamp(m.brake ?? 0, 0, 1);
+    f.v = Math.max(0, m.speed ?? 0);
+    f.a = m.accel ?? 0;
   }
 
   requestShift(dir) {
@@ -3018,6 +3111,13 @@ class EngineSim {
       this.clutchT = 0;
       this.gearTorque = 0;
     }
+    if (this.followV >= 0 && this.mode === 'drive') {
+      // following a real car's speed: the road holds the wheels to it
+      this.v = this.followV;
+      this.ww = this.v / this.veh.tire;
+      this.slip = 0;
+      this.accel = this.followA;
+    }
     this.pos += this.v * dt;
     const net = torque - this.fric - scTorque;
     this.telTq += net;
@@ -3506,8 +3606,8 @@ class EngineProcessor extends AudioWorkletProcessor {
         break;
       case 'input':
         if (!this.sim) return;
-        if (m.pedal != null) this.sim.pedal = clamp(m.pedal, 0, 1);
-        if (m.brake != null) this.sim.brake = clamp(m.brake, 0, 1);
+        if (m.pedal != null && !this.sim.follow) this.sim.pedal = clamp(m.pedal, 0, 1);
+        if (m.brake != null && !this.sim.follow) this.sim.brake = clamp(m.brake, 0, 1);
         if (m.clutch != null) this.sim.clutchPedal = m.clutch;
         if (m.launch != null) this.sim.launch = !!m.launch;
         if (m.nos != null) this.sim.nosBtn = !!m.nos;
@@ -3523,6 +3623,8 @@ class EngineProcessor extends AudioWorkletProcessor {
         break;
       case 'mode':
         if (!this.sim) return;
+        if (this.sim.follow) this.sim.setFollow({ stop: true });
+        this.followOn = false;
         this.sim.mode = m.mode;
         if (m.mode !== 'drive' && m.mode !== 'flyby') {
           this.sim.gear = 0;
@@ -3583,6 +3685,17 @@ class EngineProcessor extends AudioWorkletProcessor {
         break;
       case 'scene-stop':
         if (this.scene) this.endScene(true);
+        break;
+      case 'follow':
+        if (!this.sim) return;
+        this.sim.setFollow(m);
+        if (m.stop || !this.followOn) {
+          this.followOn = !m.stop;
+          this.scene = null;
+          this.flyby = null;
+          this.clearRoad();
+          this.updateScene(0);
+        }
         break;
       case 'strobe':
         if (!this.sim) return;
@@ -4002,7 +4115,7 @@ class EngineProcessor extends AudioWorkletProcessor {
       sim.ex.opens.some((_, i) => sim.ex.oCh[i] === 2),
       true,
       true,
-      sim.mode === 'drive' || sim.mode === 'flyby' || sim.mode === 'scene',
+      sim.mode === 'drive' || sim.mode === 'flyby' || sim.mode === 'scene' || !!sim.follow,
       sim.ex.opens.some((_, i) => sim.ex.oCh[i] === 6),
     ];
     const n = blockLen || 1;
@@ -4106,7 +4219,7 @@ class EngineProcessor extends AudioWorkletProcessor {
     if (tune) this.applyTune(sim, tune);
     if (hot && old) {
       // Same car, new hardware: carry the running state across.
-      for (const k of ['omega', 'ignition', 'running', 'gear', 'v', 'ww', 'pos', 'clutch', 'pedal', 'thr', 'thrCmd', 'brake', 'idleI', 'egt', 'egtInst', 'pipeWall', 'launch', 'dyno', 'dynoI', 'dynoLoad', 'mode', 'flare', 'coldT', 'accel'])
+      for (const k of ['omega', 'ignition', 'running', 'gear', 'v', 'ww', 'pos', 'clutch', 'pedal', 'thr', 'thrCmd', 'brake', 'idleI', 'egt', 'egtInst', 'pipeWall', 'launch', 'dyno', 'dynoI', 'dynoLoad', 'mode', 'flare', 'coldT', 'accel', 'follow', 'followV', 'followA'])
         sim[k] = old[k];
       // a start in progress carries on with the new hardware
       for (const k of ['starter', 'starterT', 'stHold', 'crankRevs', 'syncRevs', 'filmLeft', 'stW', 'stLock', 'stEng', 'stV', 'stR', 'stActive', 'stEnv'])
@@ -4325,6 +4438,7 @@ class EngineProcessor extends AudioWorkletProcessor {
       adv: s.lastAdv,
       afr: s.lastAfr,
       boostTgt: s.boostNow,
+      follow: s.follow ? s.follow.kind : null,
     };
     s.afEvents = 0;
     s.afIntensity = 0;

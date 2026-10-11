@@ -82,7 +82,7 @@
             <div class="modes" role="radiogroup" aria-label="Mode">
               <button role="radio" data-mode="rev" aria-checked="true" title="Free-rev in neutral (1)">Rev</button>
               <button role="radio" data-mode="drive" aria-checked="false" title="Drive (2)">Drive</button>
-              <button role="radio" data-mode="scene" aria-checked="false" aria-haspopup="menu" title="Fly-by, tunnel run, quarter mile, mountain road, autobahn (3-7)">Scenes</button>
+              <button role="radio" data-mode="scene" aria-checked="false" aria-haspopup="menu" title="Fly-by, tunnel run, quarter mile, mountain road, autobahn (3-7), follow my car (8)">Scenes</button>
             </div>
             <div class="chips">
               <button class="chip" id="launchBtn" title="Hold with full throttle, release to launch (L)">Launch</button>
@@ -145,6 +145,14 @@
         <button class="btn" id="setClose">Done</button>
       </div>
       <div class="drawer-body" id="setBody"></div>
+    </aside>
+
+    <aside class="drawer car-drawer" id="car" aria-labelledby="carTitle" hidden>
+      <div class="drawer-head">
+        <h2 id="carTitle">Follow my car</h2>
+        <button class="btn" id="carClose">Done</button>
+      </div>
+      <div class="drawer-body" id="carBody"></div>
     </aside>
 
     <div class="builder" id="builder" role="dialog" aria-modal="true" aria-labelledby="bTitle" hidden>

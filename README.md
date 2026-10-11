@@ -91,6 +91,16 @@ three.js (MIT, `js/vendor/three-LICENSE.txt`) is vendored as a tree-shaken bundl
 - **Mountain road**: two kilometres of canyon road with seven corners and a tunnel; the car brakes, blips down the gears and powers out.
 - **Autobahn**: down the slip road at a cruise, past the end of the speed limit, then flat out until the car will go no faster; then it lifts and coasts. Overpasses slap the sound back down, noise walls throw it back from one side, there is a tunnel, concrete stretches and viaducts thump under the tyres, and lorries in the right-hand lane go by in a gust of their own wake. A slip gives the top speed, the gear and rpm it came in, whether the air or the rev limiter held it, the 100–200, 200–250 km/h (and so on) times and the distance it took, with the best for each engine.
 
+## Follow my car
+
+**Follow my car** (Scenes, or 8) lets your own car drive the engine you picked, with the sound coming through the car like music (wired CarPlay has the least delay; Bluetooth audio adds about a quarter of a second). Choose where the car's data comes from:
+
+- **OBD adapter**: a Bluetooth LE OBD-II adapter in the diagnostic port (an OBDLink CX, or a BLE ELM327 clone). The page speaks ELM327 over Web Bluetooth: it finds the car's protocol, learns which readings it reports, and asks for revs plus the pedal (or engine load) about a dozen times a second, two readings per request where the adapter allows, with road speed and boost in between. The simulated engine is held at the car's revs by a motoring dyno, so it follows on overrun too, and the car's rev range is stretched onto the engine's (a diesel's 800–4,800 rpm becomes a V12's idle to red line; or one to one). It starts and stops with the car. Web Bluetooth is in Chrome on Android and computers; on iPhone, open the page in the Bluefy browser, since Safari has no Bluetooth.
+- **GPS**: no adapter, plain Safari. GPS gives road speed about once a second; the motion sensors fill in between. The phone can sit in its holder at any angle: it learns which way is forward by matching what it senses to the GPS speed changes over a few pulls away and stops, and corrects its offset as it goes. The pedal is read from the acceleration the car needs beyond its drag, and the simulated car's own gearbox picks the revs.
+- **Demo drive**: a 2.0 TDI hatchback's drive, played as an adapter would report it.
+
+The page keeps the screen on while following. Everything runs on the phone; nothing is sent anywhere. The site needs HTTPS (GitHub Pages is fine): browsers only give location, motion and Bluetooth to secure pages. `node tools/test-car.mjs` checks the ELM327 parser, a whole session against a pretend adapter (`tools/fake-obd.js`, which also stands in for `navigator.bluetooth` in browser tests) and the GPS fusion.
+
 ## Controls
 
 | | Keyboard | Touch / gamepad |
@@ -104,6 +114,7 @@ three.js (MIT, `js/vendor/three-LICENSE.txt`) is vendored as a tree-shaken bundl
 | Nitrous (purges with the throttle shut) | hold N | NOS / R3 |
 | Rev, Drive | 1, 2 | mode switch |
 | Fly-by, tunnel, quarter mile, mountain, autobahn | 3, 4, 5, 6, 7 | Scenes |
+| Follow my car | 8 | Scenes |
 | A/B compare | hold B | A/B chip, Workshop |
 | Dyno run | D | DYNO tab |
 | Mic / place | C / V | Y (mic) |
@@ -126,7 +137,7 @@ Every push to `main` or `claude/app-shell` runs `.github/workflows/app.yml`: it 
 
 ## Free and Pro
 
-The apps are free with a one-time **Firing Order Pro** unlock. Free: five engines (Berlinetta V12, Small-Block V8, Tuner Six, Screamer Four, Big Twin), Rev, Drive and Fly-by, the engine view and pressure trace, the basic workshop (listening, silencer, exhaust valve, rev limit, traction control) and the builder with one saved build. Pro adds every engine, the other scenes, the rest of the workshop, tuning maps, spectrum, p–V, dyno, the 3D engine, A/B compare, the mixer, launch control, nitrous and unlimited builds. Locked engines play for 30 seconds from the garage. The split lives in `js/config.js` (`FREE`).
+The apps are free with a one-time **Firing Order Pro** unlock. Free: five engines (Berlinetta V12, Small-Block V8, Tuner Six, Screamer Four, Big Twin), Rev, Drive and Fly-by, the engine view and pressure trace, the basic workshop (listening, silencer, exhaust valve, rev limit, traction control) and the builder with one saved build. Pro adds every engine, the other scenes, following your car, the rest of the workshop, tuning maps, spectrum, p–V, dyno, the 3D engine, A/B compare, the mixer, launch control, nitrous and unlimited builds. Locked engines play for 30 seconds from the garage. The split lives in `js/config.js` (`FREE`).
 
 Purchases go through [RevenueCat](https://www.revenuecat.com) (`@revenuecat/purchases-capacitor`); `js/platform/purchases.js` is the only code that talks to it, and the rest of the app asks `app.isPro()`. The web version has no store and stays unlocked (`WEB_UNLOCKED` in `js/config.js`); Settings → Pro can show the free version. For testing the purchase screens in a browser, open the page with `?store=mock`. App builds without RevenueCat keys offer "Unlock for testing" instead of a purchase.
 
@@ -160,4 +171,4 @@ node tools/knockcal.mjs                        # per-engine knock calibration
 node tools/hold.mjs v12-65 6000 1 '' out.wav   # fixed rpm/throttle on an infinite-inertia dyno
 ```
 
-Layout: `js/audio/engine-worklet.js` holds the physics and the scene scripts, `js/engine/compile.js` turns an engine spec into a pipe network and valve tables, `js/engine/presets.js` holds the engine library, `js/engine/builder.js` turns builder designs into specs, `js/engine/maps.js` lays out the tuning maps, `js/engine/analyze-worker.js` is the virtual dyno, and `js/ui/*` holds the tach, pressure-wave schematic, scope, garage, workshop, map editor, builder and scenes.
+Layout: `js/audio/engine-worklet.js` holds the physics and the scene scripts, `js/engine/compile.js` turns an engine spec into a pipe network and valve tables, `js/engine/presets.js` holds the engine library, `js/engine/builder.js` turns builder designs into specs, `js/engine/maps.js` lays out the tuning maps, `js/car/*` reads a real car (ELM327 over Web Bluetooth, GPS and motion, the demo drive), `js/engine/analyze-worker.js` is the virtual dyno, and `js/ui/*` holds the tach, pressure-wave schematic, scope, garage, workshop, map editor, builder and scenes.

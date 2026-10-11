@@ -1869,6 +1869,28 @@ button {
   min-width: 4ch;
 }
 
+/* ---------------------------------------------------------- follow my car */
+.car-status {
+  margin: 0;
+  font-family: var(--font-data);
+  font-size: 12px;
+  color: var(--amber);
+  min-height: 1.2em;
+}
+.car-status.bad {
+  color: #ff6a5a;
+}
+.car-live:empty {
+  display: none;
+}
+.lab > .flyby-strip.follow-hud {
+  height: 58px;
+  cursor: pointer;
+}
+.scene-pick .pick-car {
+  border-top: 1px solid var(--line-2);
+}
+
 /* -------------------------------------------------------------- responsive */
 @media (max-width: 980px) {
   .sel span {

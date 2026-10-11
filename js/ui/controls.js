@@ -88,6 +88,9 @@ export class Controls {
         case 'Digit7':
           this.onAction('mode', 'autobahn');
           break;
+        case 'Digit8':
+          this.onAction('car');
+          break;
         case 'KeyD':
           this.onAction('dyno');
           break;
