@@ -481,6 +481,10 @@ button {
   height: 120px;
   margin-bottom: 30px;
 }
+.lab > .flyby-strip.scene-trace {
+  height: 92px;
+  margin-bottom: 30px;
+}
 
 /* ------------------------------------------------------------------- deck */
 .deck {
@@ -1718,6 +1722,153 @@ button {
   border-color: var(--arancio);
 }
 
+/* ------------------------------------------------------------ tuning maps */
+.maps {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: var(--ink);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.m-tabs {
+  display: flex;
+  gap: 4px;
+}
+.m-tabs button {
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 8px 10px 9px;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--smoke);
+}
+.m-tabs button[aria-selected='true'] {
+  color: var(--bone);
+  border-bottom-color: var(--arancio);
+}
+.m-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  min-height: 0;
+}
+.m-main {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 12px;
+  padding: 16px 20px;
+  min-height: 0;
+  border-right: 1px solid var(--line);
+}
+.m-wrap {
+  position: relative;
+  min-height: 220px;
+}
+.m-wrap canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  cursor: crosshair;
+}
+.m-wrap canvas:focus {
+  outline: none;
+}
+.m-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.m-side {
+  overflow: auto;
+  padding: 16px 18px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.m-live {
+  margin: 0;
+  display: grid;
+  gap: 6px;
+}
+.m-live div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 5px;
+}
+.m-live dt {
+  color: var(--smoke);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.m-live dd {
+  margin: 0;
+  font-family: var(--font-data);
+  font-size: 13px;
+  color: var(--amber);
+  text-align: right;
+}
+.m-side .ws-note {
+  margin: 0;
+  font-size: 12.5px;
+}
+.m-gears h4 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--smoke);
+}
+.m-gear {
+  display: grid;
+  grid-template-columns: 4ch 44px 6ch 44px;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.m-gear span {
+  font-family: var(--font-data);
+  color: var(--smoke);
+}
+.m-gear .btn {
+  padding: 3px 12px;
+}
+.m-gear output {
+  font-family: var(--font-data);
+  text-align: center;
+}
+.m-dyno,
+.m-thr {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--smoke);
+}
+.m-dyno input {
+  accent-color: var(--arancio);
+  width: 18px;
+  height: 18px;
+}
+.m-thr input {
+  width: 140px;
+  accent-color: var(--arancio);
+}
+.m-thr output {
+  font-family: var(--font-data);
+  color: var(--amber);
+  min-width: 4ch;
+}
+
 /* -------------------------------------------------------------- responsive */
 @media (max-width: 980px) {
   .sel span {
@@ -1905,6 +2056,10 @@ button {
   }
   .lab > .flyby-strip.scene-map {
     height: 112px;
+    margin: 8px 0 0;
+  }
+  .lab > .flyby-strip.scene-trace {
+    height: 84px;
     margin: 8px 0 0;
   }
 
@@ -2696,5 +2851,41 @@ button {
   .card,
   .start {
     transition: none;
+  }
+}
+
+/* tuning maps on phones: the map on top, the live figures under it */
+@media (max-width: 760px) {
+  .m-body {
+    display: block;
+    overflow: auto;
+  }
+  .m-main {
+    display: flex;
+    flex-direction: column;
+    padding: 12px 12px 10px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .m-wrap {
+    flex: none;
+    height: min(320px, 46vh);
+    min-height: 0;
+  }
+  .m-side {
+    overflow: visible;
+    padding: 12px 14px 20px;
+  }
+  .m-head .m-tabs {
+    flex: 1 1 100%;
+    order: 2;
+  }
+  .m-foot {
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 8px 12px;
+  }
+  .m-thr input {
+    width: 110px;
   }
 }

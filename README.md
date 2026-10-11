@@ -19,7 +19,7 @@ Sound is pressure changing over time, so the simulator computes pressures:
 1. **Cylinders** (0-D thermodynamics). Each cylinder integrates mass and internal energy through compression, a Wiebe-function burn, expansion and gas exchange, with cycle-to-cycle combustion variation, misfire from residual gas, and blow-by.
 2. **Valves**. Compressible (choked or subsonic) orifice flow through the cam-driven lift curves, including ramps, overlap and reverse flow. The flow is solved implicitly against the pipe impedance so the valve and the pipe push on each other.
 3. **Pipes**. Headers, collectors, X/H-pipes, cats, mufflers and tails are digital waveguides: pressure waves travel both ways at the local speed of sound (it follows exhaust gas temperature), scatter at junctions, lose high frequencies to friction and reflect at open ends. Strong blowdown pulses steepen toward shocks (finite-amplitude propagation), which gives high-load rasp.
-4. **Radiation**. Each tail pipe (and the intake) radiates the time derivative of its mass outflow, like a monopole. A listener model adds distance delay (so fly-bys Doppler-shift on their own), a ground reflection, air absorption, head shadow and the cabin.
+4. **Radiation**. Each tail pipe (and the intake) radiates the time derivative of its mass outflow, like a monopole. A listener model adds distance delay (so fly-bys Doppler-shift on their own), a ground reflection, air absorption, head shadow and the cabin. A mic that rides on the car also hears the wind: air tearing off the pillars and mirrors sheds vortices at a frequency that climbs with speed and radiates as a dipole (pressure ~U³ in theory; the levels follow the 15 dB or so per doubling of speed measured in real cabins), over a lower buffeting from the separated flow. Gusts and crosswind move it and shift it between the ears, a door seal now and then locks into a whistle, and inside the car the glass takes the edge off. The road adds its own: concrete slab joints and viaduct expansion joints thump through tyres and suspension, front axle then rear.
 5. **Knock and valve float**. The unburned end gas in every cylinder integrates its autoignition delay (Livengood-Wu with the Douaud-Eyzat correlation, so octane, compression, boost, intake temperature and spark timing all matter). When it autoignites, the rest of the charge burns at once and the chamber rings at its first acoustic modes (1.84·c/πB, about 5–7 kHz), which the block radiates as the ping. Past the spring limit the valves loft off the cams and bounce on their seats, letting gas back the wrong way: power collapses and the sound turns ragged.
 6. **Starting**. The starter is a DC motor on the battery (permanent-magnet with planetary gears, series-wound direct drive, a motorcycle starter, or a race car's external starter), sized to the engine's compression and cold friction. It turns the flywheel through its pinion and a one-way clutch, and its armature inertia, current and speed come from the same crank dynamics: every compression stroke loads it and slows it, and past top centre the engine runs ahead until the next compression catches it up. What you hear follows from that: pinion teeth meeting the ring gear, the brushes and the planetary whine rising and falling with each stroke, the solenoid's clunk, the engine rocking on its mounts, then the catch and the armature running down after the pinion lets go. The ECU fires only once it has synced to the cam and crank, and on a cold start the first squirts of fuel wet the port walls.
 7. **Two-strokes**. A two-stroke cylinder fires every turn and has no valves: the piston uncovers ports in the cylinder wall. The sealed crankcase under it draws the charge in through a reed valve (petals that lift with the pressure across them and only let charge in) and squeezes it up the transfer ports; fuel evaporating off the carburettor cools it. Scavenging uses two zones: the fresh charge pushes the burned gas out ahead of it, so what leaves is hotter and more burned than the cylinder average, and some fresh charge always short-circuits into the pipe. The expansion chamber is a stepped waveguide (header, diffuser cone, belly, baffle cone, stinger, packed silencer): the diffuser sends a suction wave back that pulls charge through, and the baffle sends the blowdown pulse back as a plugging pulse that stuffs the escaped charge back in before the port closes. That only lines up over a band of revs, and the band moves with the exhaust gas temperature: the engine comes "on the pipe". A servo-driven power valve lowers the exhaust port roof below its rpm range, and you start it with a kick lever.
@@ -59,6 +59,16 @@ Each engine's character comes out of its geometry: firing order, crank and bank 
 
 The **Workshop** changes hardware and rebuilds the model live: silencer, headers (n-into-1, tri-Y, 4-2-1, cast log, or 180° "bundle of snakes" for cross-plane V8s), X/H-pipe or true duals, cats, resonators, rear or side exits, header lengths, air intake (airbox, ram air, open filter), individual throttle bodies, cams, valve springs, flywheel, turbo or supercharger swaps (twin-screw, Roots, centrifugal), boost, blower pulley, blow-off valve, screamer pipe, anti-lag, nitrous shot and refills, rev limit, limiter type, overrun pops, (on the two-stroke) the rpm its expansion chamber is tuned for and the power valve, ignition timing, fuel octane, knock sensor, launch control, traction control and gearbox. It also holds the **mixer** (exhaust pipes, intake, mechanical, road; each can be soloed) and the **A/B compare** slot (factory spec, a stored setup or another engine; hold A/B or B to hear it).
 
+## Tuning maps
+
+**Tuning maps** (in the workshop, or M) opens the ECU's tables, each change heard at once:
+
+- **Ignition**: degrees of advance added to the factory spark map, as a grid of rpm against manifold pressure (kPa, up to the boost the engine can make). Drag across cells to select a block and nudge it. More advance makes more torque until the end gas knocks; cells where the engine knocked get an orange mark.
+- **Fuel**: the full-load air-fuel ratio over rpm (light load still leans out to 14.7), drawn with a finger or the mouse. The mixture is judged against the factory's: richer burns a little faster up to about lambda 0.9 and makes a little more torque there, and keeps the end gas and the exhaust cooler so it knocks later; toward 14.7 the flame runs hotter and pings sooner, and leaner the power falls away.
+- **Boost** (turbo engines): the boost target over rpm for the wastegate controller, and the share of it each gear may use. The workshop's boost slider moves the whole curve.
+
+A live cursor shows which cells the engine is reading, next to its spark advance, mixture, knock retard, exhaust temperature and torque. **Dyno hold** puts the engine on the dyno at the selected column's rpm at a throttle you set, so you can sit in any cell and tune it, as on a real load-bearing dyno. Maps are kept per engine until the workshop's Factory button; a map left as it was opened changes nothing at all.
+
 ## Engine builder
 
 **Build** opens a workbench for designing a four-stroke or rotary engine from scratch: inline, vee, flat or rotary (1 to 16 cylinders, 2 to 4 rotors), bank angle, bore, stroke, rod length, compression, crankshaft, valvetrain, cams, a second cam profile, induction, intake runners, headers, exhaust, ECU and the car it sits in.
@@ -79,6 +89,7 @@ three.js (MIT, `js/vendor/three-LICENSE.txt`) is vendored as a tree-shaken bundl
 - **Tunnel run**: cruise to a 320 m tunnel, drop a gear and floor it through; the reverb crossfades at the portals.
 - **Quarter mile**: staged on the launch limiter, a sportsman Christmas tree, GO on green (reaction time counts), and a time slip with 60', 330', 1/8, 1000' and 1/4 mile times and trap speeds.
 - **Mountain road**: two kilometres of canyon road with seven corners and a tunnel; the car brakes, blips down the gears and powers out.
+- **Autobahn**: down the slip road at a cruise, past the end of the speed limit, then flat out until the car will go no faster; then it lifts and coasts. Overpasses slap the sound back down, noise walls throw it back from one side, there is a tunnel, concrete stretches and viaducts thump under the tyres, and lorries in the right-hand lane go by in a gust of their own wake. A slip gives the top speed, the gear and rpm it came in, whether the air or the rev limiter held it, the 100–200, 200–250 km/h (and so on) times and the distance it took, with the best for each engine.
 
 ## Controls
 
@@ -92,11 +103,11 @@ three.js (MIT, `js/vendor/three-LICENSE.txt`) is vendored as a tree-shaken bundl
 | Launch control | hold L | LAUNCH / B |
 | Nitrous (purges with the throttle shut) | hold N | NOS / R3 |
 | Rev, Drive | 1, 2 | mode switch |
-| Fly-by, tunnel, quarter mile, mountain | 3, 4, 5, 6 | Scenes |
+| Fly-by, tunnel, quarter mile, mountain, autobahn | 3, 4, 5, 6, 7 | Scenes |
 | A/B compare | hold B | A/B chip, Workshop |
 | Dyno run | D | DYNO tab |
 | Mic / place | C / V | Y (mic) |
-| Garage / workshop | G / T | top bar |
+| Garage / workshop / tuning maps | G / T / M | top bar, Workshop |
 
 ## iOS and Android apps
 
@@ -115,7 +126,7 @@ Every push to `main` or `claude/app-shell` runs `.github/workflows/app.yml`: it 
 
 ## Free and Pro
 
-The apps are free with a one-time **Firing Order Pro** unlock. Free: five engines (Berlinetta V12, Small-Block V8, Tuner Six, Screamer Four, Big Twin), Rev, Drive and Fly-by, the engine view and pressure trace, the basic workshop (listening, silencer, exhaust valve, rev limit, traction control) and the builder with one saved build. Pro adds every engine, the other scenes, the rest of the workshop, spectrum, p–V, dyno, the 3D engine, A/B compare, the mixer, launch control, nitrous and unlimited builds. Locked engines play for 30 seconds from the garage. The split lives in `js/config.js` (`FREE`).
+The apps are free with a one-time **Firing Order Pro** unlock. Free: five engines (Berlinetta V12, Small-Block V8, Tuner Six, Screamer Four, Big Twin), Rev, Drive and Fly-by, the engine view and pressure trace, the basic workshop (listening, silencer, exhaust valve, rev limit, traction control) and the builder with one saved build. Pro adds every engine, the other scenes, the rest of the workshop, tuning maps, spectrum, p–V, dyno, the 3D engine, A/B compare, the mixer, launch control, nitrous and unlimited builds. Locked engines play for 30 seconds from the garage. The split lives in `js/config.js` (`FREE`).
 
 Purchases go through [RevenueCat](https://www.revenuecat.com) (`@revenuecat/purchases-capacitor`); `js/platform/purchases.js` is the only code that talks to it, and the rest of the app asks `app.isPro()`. The web version has no store and stays unlocked (`WEB_UNLOCKED` in `js/config.js`); Settings → Pro can show the free version. For testing the purchase screens in a browser, open the page with `?store=mock`. App builds without RevenueCat keys offer "Unlock for testing" instead of a purchase.
 
@@ -140,7 +151,7 @@ A V12 needs about 12–15% of one desktop core, the W16 about 20%. On slower pho
 Node 18+ runs the real worklet code offline:
 
 ```sh
-node tools/render.mjs v8-ls rev out.wav        # scenarios: rev idle dyno drive boost flyby
+node tools/render.mjs v8-ls rev out.wav        # scenarios: rev idle dyno drive boost flyby autobahn
 python3 tools/analyze.py out.wav out.png       # spectrogram, waveform
 python3 tools/psd.py psd.png out.wav:6:7:6500:label   # spectrum with engine-order markers
 node tools/batch.mjs                           # every preset: idle, torque, power, stability
@@ -149,4 +160,4 @@ node tools/knockcal.mjs                        # per-engine knock calibration
 node tools/hold.mjs v12-65 6000 1 '' out.wav   # fixed rpm/throttle on an infinite-inertia dyno
 ```
 
-Layout: `js/audio/engine-worklet.js` holds the physics and the scene scripts, `js/engine/compile.js` turns an engine spec into a pipe network and valve tables, `js/engine/presets.js` holds the engine library, `js/engine/builder.js` turns builder designs into specs, `js/engine/analyze-worker.js` is the virtual dyno, and `js/ui/*` holds the tach, pressure-wave schematic, scope, garage, workshop, builder and scenes.
+Layout: `js/audio/engine-worklet.js` holds the physics and the scene scripts, `js/engine/compile.js` turns an engine spec into a pipe network and valve tables, `js/engine/presets.js` holds the engine library, `js/engine/builder.js` turns builder designs into specs, `js/engine/maps.js` lays out the tuning maps, `js/engine/analyze-worker.js` is the virtual dyno, and `js/ui/*` holds the tach, pressure-wave schematic, scope, garage, workshop, map editor, builder and scenes.

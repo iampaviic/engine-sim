@@ -188,7 +188,9 @@ export class Workshop {
     seg(
       g,
       'Place',
-      Object.entries(app.environments).map(([k, e]) => [k, e.label]),
+      Object.entries(app.environments)
+        .filter(([, e]) => !e.scene)
+        .map(([k, e]) => [k, e.label]),
       app.env,
       (v) => app.setEnv(v)
     );
@@ -681,6 +683,18 @@ export class Workshop {
     const two = spec.kind === 'twostroke';
     // --- ECU
     const g = group(two ? 'Ignition & limiter' : 'Engine control');
+    const mr = document.createElement('div');
+    mr.className = 'btn-row';
+    const mb = document.createElement('button');
+    mb.className = 'btn btn-accent';
+    mb.textContent = 'Tuning maps';
+    mb.title = 'Ignition, fuel and boost by rpm and load (M)';
+    mb.addEventListener('click', () => app.openMaps());
+    const mn = document.createElement('span');
+    mn.className = 'ws-note';
+    mn.textContent = app.isPro() ? 'Ignition by rpm and load, the mixture and the boost curve, cell by cell.' : 'Ignition, fuel and boost maps are part of Pro.';
+    mr.append(mb, mn);
+    g.appendChild(mr);
     range(
       g,
       'Rev limit',
@@ -712,7 +726,7 @@ export class Workshop {
       tune.spark,
       (v) => (v === 0 ? 'factory' : `${v > 0 ? '+' : ''}${v}°`),
       (v) => app.setTune({ spark: v }),
-      'More advance builds pressure earlier, until the unburned end gas autoignites: knock. It rings the combustion chamber at its acoustic resonance, a metallic ping.'
+      'More advance builds pressure earlier, until the unburned end gas autoignites: knock. It rings the combustion chamber at its acoustic resonance, a metallic ping. This moves the whole map; Tuning maps sets it cell by cell.'
     );
     seg(g, 'Fuel', FUELS, tune.octane, (v) => app.setTune({ octane: v }), 'Lower octane fuel autoignites sooner.');
     if (!two)

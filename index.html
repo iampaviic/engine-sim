@@ -82,7 +82,7 @@
             <div class="modes" role="radiogroup" aria-label="Mode">
               <button role="radio" data-mode="rev" aria-checked="true" title="Free-rev in neutral (1)">Rev</button>
               <button role="radio" data-mode="drive" aria-checked="false" title="Drive (2)">Drive</button>
-              <button role="radio" data-mode="scene" aria-checked="false" aria-haspopup="menu" title="Fly-by, tunnel run, quarter mile, mountain road (3-6)">Scenes</button>
+              <button role="radio" data-mode="scene" aria-checked="false" aria-haspopup="menu" title="Fly-by, tunnel run, quarter mile, mountain road, autobahn (3-7)">Scenes</button>
             </div>
             <div class="chips">
               <button class="chip" id="launchBtn" title="Hold with full throttle, release to launch (L)">Launch</button>
@@ -176,6 +176,38 @@
         <button class="b-rev" id="bRev">Hold to rev</button>
         <span class="b-rpm" id="bRpm">engine off</span>
         <small class="b-keys"><kbd>W</kbd> revs too</small>
+      </footer>
+    </div>
+
+    <div class="maps" id="maps" role="dialog" aria-modal="true" aria-labelledby="mTitle" hidden>
+      <header class="b-head m-head">
+        <h2 id="mTitle">Tuning maps</h2>
+        <nav class="m-tabs" role="tablist" aria-label="Maps">
+          <button role="tab" data-map="spark" aria-selected="true">Ignition</button>
+          <button role="tab" data-map="afr" aria-selected="false">Fuel</button>
+          <button role="tab" data-map="boost" aria-selected="false">Boost</button>
+        </nav>
+        <div class="b-actions">
+          <button class="btn" id="mReset" title="Put this map back to the factory calibration">Factory</button>
+          <button class="btn" id="mClose">Done</button>
+        </div>
+      </header>
+      <div class="m-body">
+        <section class="m-main">
+          <div class="m-wrap" id="mWrap"><canvas id="mCanvas" tabindex="0" aria-label="Map editor: drag to select cells or draw the curve"></canvas></div>
+          <div class="m-tools" id="mTools"></div>
+        </section>
+        <aside class="m-side">
+          <dl class="m-live" id="mLive"></dl>
+          <div class="m-gears" id="mGears" hidden></div>
+          <p class="ws-note" id="mHelp"></p>
+        </aside>
+      </div>
+      <footer class="b-foot m-foot">
+        <button class="b-rev" id="mRev">Hold to rev</button>
+        <span class="b-rpm" id="mRpm">engine off</span>
+        <label class="m-dyno" title="Hold the engine at the selected column's rpm on the dyno, at the throttle you set"><input type="checkbox" id="mDyno" /> Dyno hold</label>
+        <label class="m-thr" id="mThrWrap" hidden>Throttle <input type="range" id="mThr" min="0" max="1" step="0.05" value="1" aria-label="Throttle" /><output id="mThrOut">100%</output></label>
       </footer>
     </div>
 

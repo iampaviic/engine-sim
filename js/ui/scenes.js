@@ -1,6 +1,6 @@
 // Scripted scenes: courses, the heads-up strip and the drag-strip time slip.
 
-import { speedText } from './units.js';
+import { speedText, speedValue, units } from './units.js';
 
 const segs = (list) => {
   let s = 0;
@@ -62,9 +62,59 @@ export const SCENES = {
     ]),
   },
 };
+// A long derestricted stretch: overpasses, noise walls, a tunnel, concrete
+// slabs and two viaducts, with lorries in the right-hand lane. The car runs
+// until it will go no faster, so the road is longer than any run needs.
+function autobahnCourse() {
+  const length = 16000;
+  const env = [
+    ...[520, 1340, 2060, 3880, 4700, 5240, 6150, 7650, 8980, 10420, 11800, 12560, 14080, 15200].map((s) => ({ s, len: 14, env: 'bridge', blend: 3 })),
+    ...[[700, 460], [4300, 620], [8100, 560], [11000, 640]].map(([s, len]) => ({ s, len, env: 'barrier', blend: 10 })),
+    { s: 2480, len: 720, env: 'tunnel' },
+  ];
+  const surface = [
+    ...[[1450, 950], [6400, 1000], [9500, 800], [14400, 1600]].map(([s, len]) => ({ s, len, surface: 'concrete' })),
+    ...[[5600, 380], [13000, 420]].map(([s, len]) => ({ s, len, surface: 'deck' })),
+  ];
+  const cuts = new Set([0, length]);
+  for (const f of [...env, ...surface]) cuts.add(f.s).add(f.s + f.len);
+  const at = (list, x) => list.find((f) => x >= f.s && x < f.s + f.len);
+  const pts = [...cuts].sort((a, b) => a - b);
+  const track = [];
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const mid = (pts[i] + pts[i + 1]) / 2;
+    const e = at(env, mid);
+    track.push({ s: pts[i], len: pts[i + 1] - pts[i], env: e?.env ?? 'open', blend: e?.blend, surface: at(surface, mid)?.surface ?? 'asphalt' });
+  }
+  return {
+    track,
+    length,
+    // expansion joints at each end of the viaducts
+    joints: surface.filter((f) => f.surface === 'deck').flatMap((f) => [f.s, f.s + f.len]),
+    trucks: [420, 980, 1700, 2350, 2900, 3650, 4550, 5450, 6600, 7400, 8500, 9800, 11100, 12300, 13600, 14800],
+    derest: 130,
+  };
+}
+SCENES.autobahn = {
+  title: 'Autobahn',
+  sub: 'Down the slip road, past the end of the speed limit, then flat out until the car will go no faster. Wind, lorries, bridges and a tunnel rush past.',
+  key: '7',
+  ...autobahnCourse(),
+};
 for (const k of ['tunnel', 'mountain']) {
   const t = SCENES[k].track;
   SCENES[k].length = t[t.length - 1].s + t[t.length - 1].len;
+}
+
+// What the autobahn HUD calls each stretch of road.
+function roadLabel(seg) {
+  if (!seg) return 'open road';
+  if (seg.env === 'tunnel') return 'tunnel';
+  if (seg.env === 'bridge') return 'overpass';
+  if (seg.env === 'barrier') return 'noise wall';
+  if (seg.surface === 'deck') return 'viaduct';
+  if (seg.surface === 'concrete') return 'concrete slabs';
+  return 'open road';
 }
 
 // 2-D outline of the mountain road for the map (corners as arcs).
@@ -137,6 +187,10 @@ export function drawSceneHud(canvas, scene, tel, cache) {
     g.fillText(tel?.scene?.env === 'canyon' ? 'rock walls' : tel?.scene?.env === 'tunnel' ? 'tunnel' : 'open road', 10 * dpr, 44 * dpr);
     return;
   }
+  if (scene.id === 'autobahn') {
+    drawAutobahnHud(g, W, H, dpr, def, x, tel, cache);
+    return;
+  }
   const L = def.length;
   const x0 = 16 * dpr, x1 = W - 16 * dpr;
   const X = (d) => x0 + (Math.min(d, L) / L) * (x1 - x0);
@@ -199,5 +253,112 @@ export function timeSlip(r, engine, best) {
   ];
   if (t.quarter_v) lines.push(`        ${(t.quarter_v * 3.6).toFixed(1).padStart(14)} km/h`);
   if (best) lines.push('', `Best   ${f(best)}`);
+  return { head: engine, lines };
+}
+
+// Autobahn heads-up: the speed, and the run so far as speed against distance
+// over a strip of the road (tunnel, noise walls, viaducts, bridges).
+function drawAutobahnHud(g, W, H, dpr, def, x, tel, cache) {
+  const v = tel?.speed ?? 0;
+  const vmax = tel?.scene?.vmax ?? 0;
+  const tr = (cache.trace ??= []);
+  const last = tr[tr.length - 1];
+  if (!last || x > last[0] + 4) tr.push([x, v]);
+  const unit = units.speed === 'mph' ? 'mph' : 'km/h';
+  const short = H / dpr < 70;
+  // readout
+  const lw = Math.min(W * 0.4, 168 * dpr);
+  g.textAlign = 'left';
+  g.fillStyle = '#f3efe4';
+  g.font = `600 ${Math.round((short ? 19 : 24) * dpr)}px "B612 Mono", monospace`;
+  const big = String(Math.round(speedValue(v)));
+  const y1 = (short ? 22 : 30) * dpr;
+  g.fillText(big, 10 * dpr, y1);
+  const bw = g.measureText(big).width;
+  g.font = `500 ${Math.round(10 * dpr)}px "B612 Mono", monospace`;
+  g.fillStyle = 'rgba(235,227,208,0.6)';
+  g.fillText(unit, 10 * dpr + bw + 4 * dpr, y1);
+  const seg = def.track.find((q) => x >= q.s && x < q.s + q.len);
+  const lines = [`gear ${tel?.gear ?? '-'}${vmax > 0 ? ` · max ${Math.round(speedValue(vmax))}` : ''}`, x < def.derest ? 'slip road · limit 80' : `${roadLabel(seg)} · ${(x / 1000).toFixed(1)} km`];
+  g.fillStyle = 'rgba(235,227,208,0.75)';
+  lines.forEach((t, i) => g.fillText(t, 10 * dpr, y1 + (short ? 14 : 17) * dpr * (i + 1)));
+  // plot
+  const px0 = lw, px1 = W - 10 * dpr;
+  const py0 = 8 * dpr, stripH = 7 * dpr, py1 = H - 8 * dpr - stripH - 3 * dpr;
+  if (px1 - px0 < 60 * dpr) return;
+  const span = Math.max(1500, x * 1.15 + 200);
+  const vs = Math.max(160 / 3.6, vmax * 1.12, v * 1.12);
+  const X = (d) => px0 + (Math.min(d, span) / span) * (px1 - px0);
+  const Y = (s) => py1 - (s / vs) * (py1 - py0);
+  // the road strip
+  const ys = H - 8 * dpr - stripH;
+  g.fillStyle = 'rgba(235,227,208,0.08)';
+  g.fillRect(px0, ys, px1 - px0, stripH);
+  for (const q of def.track) {
+    if (q.s > span) break;
+    const a = X(q.s), b = Math.max(X(q.s + q.len), a + 1.5 * dpr);
+    if (q.env === 'tunnel') g.fillStyle = '#58aee0';
+    else if (q.env === 'barrier') g.fillStyle = '#c98a4b';
+    else if (q.env === 'bridge') g.fillStyle = 'rgba(235,227,208,0.8)';
+    else if (q.surface === 'deck') g.fillStyle = '#9fb6c9';
+    else if (q.surface === 'concrete') g.fillStyle = 'rgba(235,227,208,0.28)';
+    else continue;
+    const tall = q.env === 'bridge' ? stripH + 4 * dpr : stripH;
+    g.fillRect(a, ys + stripH - tall, b - a, tall);
+  }
+  // end of the speed limit: the white disc with its black bar
+  const dx = X(def.derest), dr = 4.5 * dpr;
+  g.fillStyle = '#f3efe4';
+  g.beginPath();
+  g.arc(dx, ys - dr - 2 * dpr, dr, 0, Math.PI * 2);
+  g.fill();
+  g.strokeStyle = '#1b1916';
+  g.lineWidth = 1.2 * dpr;
+  g.beginPath();
+  g.moveTo(dx - dr * 0.7, ys - 2 * dpr - dr * 0.3);
+  g.lineTo(dx + dr * 0.7, ys - 2 * dpr - dr * 1.7);
+  g.stroke();
+  // top speed so far
+  if (vmax > 0) {
+    g.strokeStyle = 'rgba(235,227,208,0.35)';
+    g.setLineDash([4 * dpr, 4 * dpr]);
+    g.lineWidth = 1 * dpr;
+    g.beginPath();
+    g.moveTo(px0, Y(vmax));
+    g.lineTo(px1, Y(vmax));
+    g.stroke();
+    g.setLineDash([]);
+  }
+  // the run
+  g.strokeStyle = '#ff5f1f';
+  g.lineWidth = 2 * dpr;
+  g.lineJoin = 'round';
+  g.beginPath();
+  tr.forEach(([d, s], i) => (i ? g.lineTo(X(d), Y(s)) : g.moveTo(X(d), Y(s))));
+  g.stroke();
+  g.fillStyle = '#ff5f1f';
+  g.beginPath();
+  g.arc(X(x), Y(v), 3.5 * dpr, 0, Math.PI * 2);
+  g.fill();
+}
+
+// Top-speed slip from the autobahn run.
+export function vmaxSlip(r, engine, best) {
+  const t = r.times ?? {};
+  const kmh = (v) => `${(v * 3.6).toFixed(1).padStart(7)} km/h`;
+  const mph = (v) => `${(v * 2.23694).toFixed(1).padStart(7)} mph`;
+  const ord = (n) => `${n}${n === 1 ? 'st' : n === 2 ? 'nd' : n === 3 ? 'rd' : 'th'}`;
+  const lines = [`Vmax    ${kmh(t.vmax ?? 0)}`, `        ${mph(t.vmax ?? 0)}`];
+  if (t.gear) lines.push(`        ${ord(t.gear)} · ${Math.round(t.rpm).toLocaleString('en-US')} rpm`, `        ${t.limiter ? 'on the rev limiter' : 'held by the air'}`);
+  lines.push('');
+  const c = t.cross ?? {};
+  for (const [a, b] of [[100, 200], [200, 250], [250, 300], [300, 350], [350, 400]]) {
+    if (c[a] == null) continue;
+    const d = c[b] != null ? `${(c[b] - c[a]).toFixed(2).padStart(7)} s` : '      —';
+    lines.push(`${`${a}–${b}`.padEnd(8)}${d}`);
+    if (c[b] == null) break;
+  }
+  if (t.dist != null) lines.push(`To Vmax ${(t.dist / 1000).toFixed(2).padStart(7)} km · ${t.time.toFixed(1)} s`);
+  if (best) lines.push('', `Best    ${kmh(best)}`);
   return { head: engine, lines };
 }

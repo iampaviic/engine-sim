@@ -58,6 +58,9 @@ export class Controls {
         case 'KeyT':
           this.onAction('workshop');
           break;
+        case 'KeyM':
+          this.onAction('maps');
+          break;
         case 'KeyC':
           this.onAction('camera', 1);
           break;
@@ -81,6 +84,9 @@ export class Controls {
           break;
         case 'Digit6':
           this.onAction('mode', 'mountain');
+          break;
+        case 'Digit7':
+          this.onAction('mode', 'autobahn');
           break;
         case 'KeyD':
           this.onAction('dyno');

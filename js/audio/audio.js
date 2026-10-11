@@ -10,6 +10,9 @@ export const ENVIRONMENTS = {
   tunnel: { label: 'Tunnel', wet: 0.5, boost: 1.25 },
   canyon: { label: 'Canyon', wet: 0.3 },
   dry: { label: 'Anechoic', wet: 0 },
+  // passing places in the scenes, not somewhere to park
+  barrier: { label: 'Noise wall', wet: 0.32, scene: true },
+  bridge: { label: 'Under a bridge', wet: 0.45, boost: 1.1, scene: true },
 };
 
 export class AudioEngine {
@@ -146,6 +149,10 @@ function makeIR(ctx, kind) {
     garage: { len: 1.8, rt: 1.0, lp0: 12000, lp1: 3500, early: [[0.006, 0.5], [0.011, 0.42], [0.017, 0.35], [0.023, 0.3], [0.031, 0.22]], pre: 0.004, level: 0.7 },
     tunnel: { len: 4.0, rt: 3.1, lp0: 6000, lp1: 1200, early: [[0.012, 0.6], [0.024, 0.5]], pre: 0.008, level: 0.9, flutter: 0.034 },
     canyon: { len: 3.5, rt: 1.6, lp0: 7000, lp1: 1500, early: [[0.22, 0.45], [0.41, 0.32], [0.63, 0.22], [0.97, 0.14]], pre: 0.03, level: 0.45 },
+    // a concrete wall one lane to the right: one hard reflection, mostly at the right ear
+    barrier: { len: 0.7, rt: 0.28, lp0: 9000, lp1: 2500, early: [[0.021, 0.85], [0.046, 0.3]], pre: 0.012, level: 0.4, side: [0.35, 1] },
+    // the deck a few metres overhead slaps the sound straight back down
+    bridge: { len: 0.6, rt: 0.2, lp0: 7000, lp1: 2000, early: [[0.026, 0.9], [0.052, 0.4], [0.078, 0.18]], pre: 0.02, level: 0.45 },
   }[kind] ?? { len: 0.8, rt: 0.3, lp0: 9000, lp1: 3000, early: [], pre: 0.01, level: 0.5 };
   const N = Math.floor(spec.len * fs);
   const buf = ctx.createBuffer(2, N, fs);
@@ -167,11 +174,12 @@ function makeIR(ctx, kind) {
       const env = Math.exp(-decay * (i - pre)) * (1 - Math.exp(-t / 0.004));
       d[i] = lp * env * spec.level * 1.6;
     }
-    // early reflections (slightly different per ear)
+    // early reflections (slightly different per ear; louder on a wall's side)
+    const sg = spec.side ? spec.side[ch] : 1;
     for (const [tt, g] of spec.early) {
       const k = Math.floor((tt * (ch ? 1.07 : 0.95)) * fs);
       if (k < N) {
-        for (let j = 0; j < 24 && k + j < N; j++) d[k + j] += g * Math.exp(-j / 4) * (j === 0 ? 1 : rand() * 0.6);
+        for (let j = 0; j < 24 && k + j < N; j++) d[k + j] += g * sg * Math.exp(-j / 4) * (j === 0 ? 1 : rand() * 0.6);
       }
     }
     // flutter echo between parallel tunnel walls

@@ -108,6 +108,43 @@ function lpCoef(f, fs) {
   return 1 - Math.exp((-TAU * Math.min(f, fs * 0.45)) / fs);
 }
 
+// Where x falls on a map axis: index plus fraction, held at the ends.
+function axisAt(a, x) {
+  const n = a.length;
+  if (x <= a[0]) return 0;
+  if (x >= a[n - 1]) return n - 1;
+  let i = 0;
+  while (x > a[i + 1]) i++;
+  return i + (x - a[i]) / (a[i + 1] - a[i]);
+}
+function lerpAt(t, p) {
+  const i = Math.min(t.length - 2, Math.floor(p));
+  const f = p - i;
+  return t[i] + (t[i + 1] - t[i]) * f;
+}
+// Laminar flame speed against lambda (shape only): fastest a little rich.
+function flameSpeed(lam) {
+  const phi = 1 / lam;
+  return Math.pow(phi, 0.25) * Math.exp(-4.5 * (phi - 1.1) * (phi - 1.1));
+}
+// Torque from a given charge of air against lambda: best around 0.88, from
+// the extra moles and less dissociation; too rich it burns incompletely.
+// (Leaner than 1 the fuel itself runs short, which the burn already counts.)
+const RICH_LAM = [0.6, 0.7, 0.75, 0.8, 0.88, 0.95, 1];
+const RICH_GAIN = [0.86, 0.94, 0.972, 0.99, 1, 0.986, 0.965];
+function richGain(lam) {
+  if (lam >= 1) return 0.965;
+  if (lam <= 0.6) return 0.86;
+  return lerpAt(RICH_GAIN, axisAt(RICH_LAM, lam));
+}
+// Exhaust temperature against lambda (shape only): the flame is hottest a
+// little lean of stoichiometric; extra fuel soaks up heat as it dissociates.
+const EGT_LAM = [0.6, 0.75, 0.85, 0.95, 1.05, 1.15, 1.3];
+const EGT_GAIN = [0.83, 0.91, 0.96, 0.995, 1, 0.985, 0.95];
+function egtGain(lam) {
+  return lerpAt(EGT_GAIN, axisAt(EGT_LAM, lam));
+}
+
 // Mass flow through an orifice of effective area A (Cd included), driven by
 // pressure difference D > 0, solved implicitly against the combined reacting
 // impedance Z of both sides (pipe wave impedance + chamber compliance), and
@@ -728,6 +765,7 @@ class EngineSim {
     this.Vb = this.isTurbo || this.isCentri ? 0.004 + airL * 0.0012 : 0.003 + airL * 0.0006;
     this.TB = T_AMB;
     this.boostTarget = ind.boost * 1e5;
+    this.boostNow = this.boostTarget; // what the boost control aims at right now
     this.nT = this.isTurbo ? Math.max(1, ind.count) : this.isCentri ? 1 : 0;
     this.wt = 0; // turbo shaft speed (rad/s), aggregated over turbos
     this.mc = 0; // compressor mass flow (Greitzer state)
@@ -855,6 +893,8 @@ class EngineSim {
     this.kF1 = 1.841 / (PI * cfg.bore);
     this.kDecay = Math.exp(-1 / (fs * 0.0015));
     this.cKi = new Float64Array(n);
+    this.cKl = new Float64Array(n).fill(1); // knock tendency from the mixture (tuning maps)
+    this.cEgt = new Float64Array(n).fill(1); // exhaust temperature from the mixture (tuning maps)
     this.cPs = new Float64Array(n);
     this.cTs = new Float64Array(n);
     this.cKq = new Float64Array(n);
@@ -866,6 +906,11 @@ class EngineSim {
     this.thrPrevC = 0;
     this.knockCtl = true;
     this.sparkAdj = 0;
+    // Tuning maps (null: the factory calibration)
+    this.maps = null;
+    this.mRpm = this.mKpa = this.mSpark = this.mAfr = this.mBoost = this.mGear = null;
+    this.lastAdv = 0;
+    this.lastAfr = 0;
     this.knockSndS = 0;
     this.knockN = 0;
     this.knockMax = 0;
@@ -1017,6 +1062,41 @@ class EngineSim {
     this.sqPhase = 0;
     this.sqLp = 0;
     this.clunk = 0;
+    // Wind at a mic that rides on the car, and the road under it. The wind
+    // draws from its own random stream, so the engine's cycle-to-cycle
+    // variation is the same whether or not it is heard.
+    this.aRs = 0x2545f491;
+    this.aeroMic = 0; // 0 roadside, 1 outside on the car, 2 in the cabin
+    this.aGust = 0; // slow gusts, fraction of the airspeed
+    this.aTurb = 0; // fast turbulence
+    this.aCross = 0; // crosswind: which side of the car the wind favours
+    this.aLock = 0; // whistle lock-in
+    this.aU = 0;
+    this.aH1 = this.aH2 = this.aH3 = 0; // hiss band-pass (TPT state-variable filter)
+    this.aBa = 0; // buffet low-pass
+    this.aAh = this.aAb = this.aAw = this.aAt = this.aAr = this.aTb = 0; // levels: hiss, buffet, whistle, lorry wake, lorry rumble, lorry buffet
+    this.aWf = 0; // whistle frequency
+    this.aWph = 0;
+    this.aGl = this.aGr = 1;
+    this.aS = new Float64Array(16);
+    this.aCabA = lpCoef(1700, fs);
+    this.aRumA = lpCoef(260, fs);
+    this.aHpA = lpCoef(11, fs);
+    this.aOut = [0, 0];
+    // a lorry in the next lane: how far ahead of the car (m), closing speed (m/s)
+    this.truckDx = 1e9;
+    this.truckVr = 0;
+    // road joints: a thump through tyres and suspension, and the tread's slap
+    this.surface = 'asphalt';
+    this.bumpX = 0;
+    this.bumpY1 = 0;
+    this.bumpY2 = 0;
+    this.bumpCl = 0;
+    const bw = (TAU * 72) / fs, br = Math.exp(-1 / (0.018 * fs));
+    this.bumpB1 = 2 * br * Math.cos(bw);
+    this.bumpB2 = -br * br;
+    this.bumpG = Math.sin(bw); // impulse in, the same peak out at any rate
+    this.bumpClD = Math.exp(-1 / (0.004 * fs));
 
     // EGT & temps
     this.egt = 500;
@@ -1086,6 +1166,36 @@ class EngineSim {
 
   get rpm() {
     return this.omega * 9.549296585513721;
+  }
+
+  // Tuning maps from the workshop: an ignition trim over rpm and manifold
+  // pressure, the full-load mixture and boost target over rpm, and the share
+  // of that boost each gear may use. Cells left as the factory set them are
+  // dropped, so an untouched map changes nothing at all.
+  setMaps(m) {
+    this.maps = m ?? null;
+    const flat = (a) => (a ? Float64Array.from(a.flat()) : null);
+    this.mRpm = flat(m?.rpm);
+    this.mKpa = flat(m?.kpa);
+    this.mSpark = flat(m?.spark);
+    if (this.mSpark && this.mSpark.every((x) => x === 0)) this.mSpark = null;
+    this.mAfr = flat(m?.afr);
+    if (this.mAfr && this.mAfr.every((x) => x === this.afrTarget)) this.mAfr = null;
+    this.mBoost = flat(m?.boost);
+    this.mGear = flat(m?.gear);
+    if (this.mGear && this.mGear.every((x) => x === 1)) this.mGear = null;
+  }
+
+  // ignition trim (degrees) at this rpm and manifold pressure
+  sparkMap(rpm) {
+    const cols = this.mRpm.length;
+    const pc = axisAt(this.mRpm, rpm), pr = axisAt(this.mKpa, this.pPl / 1000);
+    const c = Math.min(cols - 2, Math.floor(pc)), r = Math.min(this.mKpa.length - 2, Math.floor(pr));
+    const fc = pc - c, fr = pr - r;
+    const t = this.mSpark, i = r * cols + c;
+    const lo = t[i] + (t[i + 1] - t[i]) * fc;
+    const hi = t[i + cols] + (t[i + cols + 1] - t[i + cols]) * fc;
+    return lo + (hi - lo) * fr;
   }
 
   setOctane(ron) {
@@ -1436,17 +1546,23 @@ class EngineSim {
     }
     if (this.limCut && this.limiterType === 'fuel') fuelOn = false;
     let afr = this.afrTarget;
-    if (cranking) afr = 11;
-    if (load < 0.6) afr = 14.7 + (afr - 14.7) * Math.max(0, load - 0.35) / 0.25;
+    // (afr0: what the factory map would have given, to judge the change by)
+    let afr0 = afr;
+    if (this.mAfr) afr = lerpAt(this.mAfr, axisAt(this.mRpm, rpm));
+    if (cranking) afr = afr0 = 11;
+    if (load < 0.6) {
+      afr = 14.7 + (afr - 14.7) * Math.max(0, load - 0.35) / 0.25;
+      afr0 = 14.7 + (afr0 - 14.7) * Math.max(0, load - 0.35) / 0.25;
+    }
     if (this.dfco && this.burbleActive) {
       fuelOn = this.ignition;
-      afr = 11.5;
+      afr = afr0 = 11.5;
     }
     if (this.alsActive) {
       fuelOn = this.ignition;
-      afr = 10.5;
+      afr = afr0 = 10.5;
     }
-    if (this.launchCut) afr = 11.5;
+    if (this.launchCut) afr = afr0 = 11.5;
     if (this.tcCut > 0.45 && rnd() < (this.tcCut - 0.45) * 1.6) fuelOn = false; // TC cuts fuel
     // (the nitrous kit adds the fuel to match its oxygen)
     const fuel = fuelOn ? o2 / afr : 0;
@@ -1454,12 +1570,30 @@ class EngineSim {
     this.cFuel[c] = fuel;
     this.cBurnable[c] = burnable;
     this.telFuel += fuel;
+    this.lastAfr = fuelOn ? afr : 0;
+
+    // A mixture moved away from the factory's: richer burns a little faster
+    // (towards lambda 0.9), makes a little more torque, and keeps the end gas
+    // cooler (more fuel evaporating, a cooler flame), so it knocks later;
+    // leaner burns slower and hotter and knocks sooner.
+    let mixDur = 1, mixQ = 1, cool = 0;
+    this.cKl[c] = 1;
+    this.cEgt[c] = 1;
+    if (fuel > 0 && afr !== afr0) {
+      const lam = afr / AFR_ST, lam0 = afr0 / AFR_ST;
+      mixDur = flameSpeed(lam0) / flameSpeed(lam);
+      mixQ = richGain(lam) / richGain(lam0);
+      this.cKl[c] = Math.exp(3.5 * (lam - lam0));
+      this.cEgt[c] = egtGain(lam) / egtGain(lam0);
+      cool = (fuel - o2 / afr0) * 200e3;
+    }
 
     // add fuel vapour to charge
     if (fuel > 0) {
       const T = this.cU[c] / (m * CV);
       this.cm[c] = m + fuel;
       this.cU[c] += fuel * CV * T;
+      if (cool !== 0) this.cU[c] -= clamp(cool, -0.1 * this.cU[c], 0.1 * this.cU[c]);
     }
 
     let spark = this.ignition && fuel > 0;
@@ -1484,9 +1618,11 @@ class EngineSim {
     let dur =
       50 * this.cfg.burnScale * (0.82 + 0.3 * rpmF) * (1 + 2.2 * Math.max(0, xr - 0.06)) * (1 + 0.7 * Math.max(0, 0.55 - load));
     dur *= 1 + 0.45 * sig * gauss();
+    if (mixDur !== 1) dur *= mixDur;
     if (dur < 20) dur = 20;
     // Spark advance for best torque (CA50 around 8-10 deg ATDC).
     let adv = 0.5 * dur - 9 + this.sparkTrim + this.ecu.sparkBase + this.sparkAdj - this.knockRet - this.tipRet;
+    if (this.mSpark) adv += this.sparkMap(rpm);
     // factory spark map: knock-limited retard when lugging and under boost
     if (load > 0.6) adv -= 10 * clamp((2400 - rpm) / 1400, 0, 1) * Math.min(1, (load - 0.6) / 0.35) + Math.max(0, load - 0.75) * 4 + Math.max(0, load - 1) * 3;
     if (cranking) adv = 5;
@@ -1503,8 +1639,10 @@ class EngineSim {
     // A flame lit after TDC burns into an expanding, cooling charge: slower.
     if (adv < 0) dur *= 1 + -adv / 16;
     let q = burnable * LHV * this.cfg.combustion * Math.max(0.2, 1 + sig * gauss());
+    if (mixQ !== 1) q *= mixQ;
     if (nos > 0) q += nos * NOS_DH * this.cfg.combustion;
     this.cQ[c] = q;
+    this.lastAdv = adv;
     this.cDur[c] = dur;
     let sp = this.tdcFire - adv;
     sp = ((sp % this.cycle) + this.cycle) % this.cycle;
@@ -1542,7 +1680,7 @@ class EngineSim {
     if (!this.twoStroke) this.cExB[c] = this.cMb[c] / this.cm[c];
     // EGT estimate weighted by mass
     const T = this.cU[c] / (this.cm[c] * CV);
-    this.egtAcc += T * this.cm[c];
+    this.egtAcc += T * this.cm[c] * this.cEgt[c];
     this.egtW += this.cm[c];
   }
 
@@ -1714,7 +1852,12 @@ class EngineSim {
       // wheel races ahead of the boost it is about to make).
       // (anti-lag aims a little lower: enough to come back on boost at once
       // without the relief valve venting all the while)
-      const tgt = this.alsActive ? this.boostTarget * 0.7 : this.boostTarget;
+      // (the tuning map sets the target by rpm, and a share of it by gear)
+      let bt = this.boostTarget;
+      if (this.mBoost) bt = lerpAt(this.mBoost, axisAt(this.mRpm, rpm)) * 1e5;
+      if (this.mGear && this.gear > 0 && (this.mode === 'drive' || this.mode === 'flyby')) bt *= this.mGear[Math.min(this.gear, this.mGear.length) - 1];
+      this.boostNow = bt;
+      const tgt = this.alsActive ? bt * 0.7 : bt;
       const b = this.pB - P_AMB;
       const e = (b - tgt) / (tgt + 2e4);
       this.pBrate += ((this.pB - this.pBprev) / dtc - this.pBrate) * Math.min(1, dtc * 40);
@@ -1733,7 +1876,7 @@ class EngineSim {
       this.wg += (wgT - this.wg) * Math.min(1, dtc * 25);
       // Blow-off valve opens on closed throttle with pressure in the pipes; with
       // anti-lag it doubles as a pressure relief above the boost target.
-      const relief = this.alsActive && this.pB - P_AMB > this.boostTarget;
+      const relief = this.alsActive && this.pB - P_AMB > bt;
       // (vacuum referenced: it opens on the pressure drop across a closing
       // throttle, before the plate is even shut, but not across one still
       // opening as the driver gets back on it)
@@ -1776,6 +1919,7 @@ class EngineSim {
     for (let c = 0; c < this.n; c++) this.cLeak[c] = 1 + lk * (2.5 + 2.5 * this.cLeakVar[c]);
 
     this.vehicleControl(dtc, rpm);
+    if (this.aeroMic) this.aeroCtl(dtc);
 
     // Temperatures -> pipe sound speed
     if (this.twoStroke) {
@@ -2138,7 +2282,7 @@ class EngineSim {
     const rasp = this.rasp26;
     const kLeak = this.kLeak;
     const cLeak = this.cLeak;
-    const cKi = this.cKi, cPs = this.cPs, cTs = this.cTs, cKq = this.cKq, cKa = this.cKa, cKf = this.cKf, cKph = this.cKph;
+    const cKi = this.cKi, cPs = this.cPs, cTs = this.cTs, cKq = this.cKq, cKa = this.cKa, cKf = this.cKf, cKph = this.cKph, cKl = this.cKl;
     const kTauInv = this.kTauInv, kDecay = this.kDecay;
     const floatSev = this.floatSev;
     const cBi = this.cBi, cBe = this.cBe;
@@ -2228,7 +2372,7 @@ class EngineSim {
       if (cBurn[c] === 2 && cKi[c] >= 0 && rpm > 500) {
         // Livengood-Wu: sum dt / tau(p, T_endgas); knock when it reaches 1
         const Tu = cTs[c] * Math.pow(p / cPs[c], 0.259);
-        cKi[c] += dt * Math.exp(1.7 * Math.log(p * 9.869e-6) - 3800 / Tu) * kTauInv;
+        cKi[c] += dt * Math.exp(1.7 * Math.log(p * 9.869e-6) - 3800 / Tu) * kTauInv * cKl[c];
         if (cKi[c] >= 1) {
           cKi[c] = -1;
           const rem = 1 - cXb[c];
@@ -2896,6 +3040,140 @@ class EngineSim {
     return w;
   }
 
+  // The wind's own random stream (xorshift), centred on zero.
+  arnd() {
+    let s = this.aRs;
+    s ^= s << 13;
+    s ^= s >>> 17;
+    s ^= s << 5;
+    this.aRs = s;
+    return (s >>> 0) * 2.3283064365386963e-10 - 0.5;
+  }
+
+  // Wind, control rate: gusts, the filters' tuning and the levels.
+  //
+  // Air tearing off the pillars, mirrors and seals sheds vortices at a
+  // Strouhal frequency (f ~ U/size, so the hiss climbs with speed) and
+  // radiates as a dipole: pressure ~ U^3 in theory, nearer U^2.5 measured in
+  // real cabins (about 15 dB per doubling of speed). The separated,
+  // buffeting flow over the body is lower and grows about as U^2.2. Gusts
+  // and crosswind move the airspeed and the balance between the ears; now
+  // and then a door seal or mirror locks into a whistle. A lorry in the next
+  // lane throws its own wake: a whoosh and a shove of buffeting as you pass.
+  aeroCtl(dtc) {
+    const fs = this.fs;
+    const v = this.v;
+    const near = this.truckDx < 120 && this.truckDx > -120;
+    if (v < 0.5 && !near) {
+      this.aAh = this.aAb = this.aAw = this.aAt = this.aAr = this.aTb = 0;
+      return;
+    }
+    // Ornstein-Uhlenbeck processes: x += -x dt/tau + sigma sqrt(2 dt/tau) N
+    const n = (tau, sig) => sig * Math.sqrt((2 * dtc) / tau) * this.arnd() * 3.4641;
+    this.aGust += (-this.aGust * dtc) / 2.5 + n(2.5, 0.05);
+    this.aTurb += (-this.aTurb * dtc) / 0.12 + n(0.12, 0.03);
+    this.aCross += (-this.aCross * dtc) / 4 + n(4, 0.35);
+    this.aLock += (-this.aLock * dtc) / 1.5 + n(1.5, 0.5);
+    const U = v * Math.max(0.4, 1 + this.aGust + this.aTurb);
+    this.aU = U;
+    const q = U / 70;
+    // hiss band (unity peak), centred on the shedding frequency
+    const g = Math.tan((Math.PI * Math.min(300 + 14 * U, 0.4 * fs)) / fs);
+    const k = 1 / 0.7;
+    this.aH1 = 1 / (1 + g * (g + k));
+    this.aH2 = g * this.aH1;
+    this.aH3 = g * this.aH2;
+    this.aAh = Math.pow(q, 2.5);
+    this.aBa = lpCoef(30 + 1.7 * U, fs);
+    this.aAb = Math.pow(q, 2.2) * Math.max(0, 1 + 3 * this.aGust);
+    const cr = clamp(this.aCross, -1, 1) * 0.3;
+    this.aGl = 1 - cr;
+    this.aGr = 1 + cr;
+    this.aWf = 21 * U;
+    this.aAw = clamp((this.aLock - 0.45) * 2.5, 0, 1) * clamp((U - 38) / 15, 0, 1) * q * q;
+    // the lorry: its wake as the car goes by, and its tyres and engine
+    if (near) {
+      const dx = this.truckDx;
+      const env = Math.exp(-(dx / 9) * (dx / 9));
+      const vr = this.truckVr;
+      this.aAt = ((vr / 40) * (vr / 40)) * env;
+      this.aTb = 1.6 * env * Math.min(1, Math.abs(vr) / 30);
+      this.aAr = 3.8 / Math.hypot(dx, 3.8);
+    } else this.aAt = this.aAr = this.aTb = 0;
+  }
+
+  // Wind, one sample at the mic; returns [l, r] in Pa.
+  aero() {
+    const s = this.aS;
+    const o = this.aOut;
+    const nl = this.arnd(), nr = this.arnd(), nc = this.arnd();
+    // hiss: mostly different at each ear (the flow is torn up), some common
+    const H1 = this.aH1, H2 = this.aH2, H3 = this.aH3;
+    let x = nl + 0.5 * nc;
+    let v3 = x - s[1];
+    let v1 = H1 * s[0] + H2 * v3;
+    let v2 = s[1] + H2 * s[0] + H3 * v3;
+    s[0] = 2 * v1 - s[0];
+    s[1] = 2 * v2 - s[1];
+    let hl = v1 * 1.43;
+    x = nr + 0.5 * nc;
+    v3 = x - s[3];
+    v1 = H1 * s[2] + H2 * v3;
+    v2 = s[3] + H2 * s[2] + H3 * v3;
+    s[2] = 2 * v1 - s[2];
+    s[3] = 2 * v2 - s[3];
+    let hr = v1 * 1.43;
+    // buffet: low and mostly common to both ears; a slow high-pass keeps DC out
+    const ba = this.aBa;
+    s[4] += ba * (nc + 0.35 * nl - s[4]);
+    s[5] += ba * (s[4] - s[5]);
+    s[6] += this.aHpA * (s[5] - s[6]);
+    let b = (s[5] - s[6]) * 9;
+    const cab = this.aeroMic === 2;
+    let l, r;
+    if (cab) {
+      // the glass and seals pass the low buffeting, soften the hiss
+      const ca = this.aCabA;
+      s[7] += ca * (hl - s[7]);
+      s[8] += ca * (hr - s[8]);
+      hl = s[7] * 1.5;
+      hr = s[8] * 1.5;
+      l = hl * this.aAh * 2.3 * this.aGl + b * this.aAb * 1.85;
+      r = hr * this.aAh * 2.3 * this.aGr + b * this.aAb * 1.85;
+      if (this.aAw > 0.001) {
+        this.aWph += (this.aWf * (1 + this.aTurb * 0.6)) / this.fs;
+        this.aWph -= Math.floor(this.aWph);
+        const w = Math.sin(TAU * this.aWph) * this.aAw * 0.05;
+        l += w * 0.4;
+        r += w;
+      }
+    } else {
+      l = hl * this.aAh * 1.8 * this.aGl + b * this.aAb * 0.9;
+      r = hr * this.aAh * 1.8 * this.aGr + b * this.aAb * 0.9;
+    }
+    if (this.aAt > 1e-4 || this.aAr > 0.05) {
+      // lorry on the right: its wake, and the rumble of its tyres and engine
+      s[9] += this.aRumA * (nr - s[9]);
+      s[10] += this.aRumA * (s[9] - s[10]);
+      const iso = cab ? 0.5 : 1;
+      const wk = this.aAt * iso * 3;
+      const tb = b * this.aAb * this.aTb * (cab ? 1.85 : 0.9);
+      const rum = s[10] * 6 * this.aAr * iso * 0.12;
+      l += hl * wk * 0.3 + tb * 0.3 + rum * 0.4;
+      r += hr * wk + tb + rum;
+    }
+    o[0] = l;
+    o[1] = r;
+    return o;
+  }
+
+  // A joint in the road under one axle (amp: Pa at 1 m, roughly).
+  bump(amp) {
+    amp *= 0.75 + 0.5 * (this.arnd() + 0.5); // no two joints alike
+    this.bumpX += amp;
+    this.bumpCl = Math.max(this.bumpCl, amp);
+  }
+
   // Intake, mechanical and chassis sources; write all sources (Pa at 1 m)
   // into the listener's delay lines; scope capture.
   stepSources(rpm, omega, lis) {
@@ -2948,6 +3226,7 @@ class EngineSim {
     if (this.stActive) mech += this.starterSound();
 
     // chassis: road, wind, tyre squeal
+    // (a mic riding on the car hears the wind on its own, in aero())
     let chassis = 0;
     if (this.v > 0.3) {
       const vv = this.v;
@@ -2955,7 +3234,17 @@ class EngineSim {
       this.roadLp += 0.02 * (nz - this.roadLp);
       this.windLp1 += 0.15 * (nz - this.windLp1);
       this.windLp2 += 0.03 * (this.windLp1 - this.windLp2);
-      chassis += this.roadLp * vv * 0.35 + (this.windLp1 - this.windLp2) * vv * vv * 0.0025;
+      const sf = this.surface === 'asphalt' ? 1 : this.surface === 'concrete' ? 1.3 : 1.15;
+      chassis += this.roadLp * vv * 0.35 * sf + (this.aeroMic ? 0 : (this.windLp1 - this.windLp2) * vv * vv * 0.0025);
+    }
+    if (this.bumpX !== 0 || this.bumpCl > 1e-5 || this.bumpY1 > 1e-6 || this.bumpY1 < -1e-6) {
+      // tyre and suspension ring at ~70 Hz; the tread slaps the joint
+      const y = this.bumpB1 * this.bumpY1 + this.bumpB2 * this.bumpY2 + this.bumpX;
+      this.bumpX = 0;
+      this.bumpY2 = this.bumpY1;
+      this.bumpY1 = y;
+      this.bumpCl *= this.bumpClD;
+      chassis += y * this.bumpG + this.arnd() * this.bumpCl * 0.6;
     }
     const sl = Math.abs(this.slip);
     if (sl > 1.2 && this.gear > 0) {
@@ -3103,6 +3392,12 @@ class EngineSim {
         else l += y * g;
       }
     }
+    if (this.aeroMic && (this.aAh > 1e-6 || this.aAt > 1e-6 || this.aAr > 0.05)) {
+      const a = this.aero();
+      const m5 = this.mix[5];
+      l += a[0] * m5;
+      r += a[1] * m5;
+    }
     if (L.cabin) {
       // body boom resonance
       const m = (l + r) * 0.5;
@@ -3235,6 +3530,7 @@ class EngineProcessor extends AudioWorkletProcessor {
         } else if (this.sim.gear === 0) this.sim.gear = 1;
         if (m.mode !== 'flyby') this.flyby = null;
         this.scene = null;
+        this.clearRoad();
         this.updateScene(0);
         break;
       case 'camera':
@@ -3262,6 +3558,13 @@ class EngineProcessor extends AudioWorkletProcessor {
             target: 0,
           };
           s.dynoI = 0;
+        } else if (m.action === 'hold') {
+          // steady state: the absorber holds one speed, the throttle is yours
+          const s = this.sim;
+          const was = s.mode === 'dyno' && s.dyno?.phase === 'hold';
+          s.mode = 'dyno';
+          s.dyno = { active: true, phase: 'hold', t: 0, start: m.rpm, end: m.rpm, rate: 0, target: m.rpm };
+          if (!was) s.dynoI = 0;
         } else if (this.sim.dyno) {
           this.sim.dyno.active = false;
           this.sim.pedal = 0;
@@ -3269,6 +3572,7 @@ class EngineProcessor extends AudioWorkletProcessor {
         break;
       case 'flyby':
         this.scene = null;
+        this.clearRoad();
         this.startFlyby(m);
         break;
       case 'scene':
@@ -3309,6 +3613,7 @@ class EngineProcessor extends AudioWorkletProcessor {
     if (t.nosShot != null) sim.nosShot = t.nosShot;
     if (t.nosRefill) sim.bottle = sim.nosBottle;
     if (t.boost != null && sim.isCentri) sim.setCentriRatio();
+    if (t.maps !== undefined) sim.setMaps(t.maps);
   }
 
   startFlyby(m) {
@@ -3341,6 +3646,7 @@ class EngineProcessor extends AudioWorkletProcessor {
     const s = this.sim;
     if (!s) return;
     this.flyby = null;
+    this.clearRoad();
     const v = s.veh;
     s.mode = 'drive';
     s.autoShift = true;
@@ -3360,6 +3666,32 @@ class EngineProcessor extends AudioWorkletProcessor {
       sc.world = true;
       sc.lisPos = [9, 1.4, 14];
       sc.tree = -1;
+    } else if (m.id === 'autobahn') {
+      // down the slip road at a cruise, in the gear that suits it
+      const v0 = 75 / 3.6;
+      let g = 1;
+      for (let i = v.gears.length; i >= 1; i--) {
+        if ((v0 / v.tire) * v.gears[i - 1] * v.final * 9.549 > s.limitRpm * 0.32) {
+          g = i;
+          break;
+        }
+      }
+      const G = v.gears[g - 1] * v.final;
+      s.gear = g;
+      s.clutch = 1;
+      s.v = v0;
+      s.ww = v0 / v.tire;
+      s.omega = Math.max(s.omega, s.ww * G);
+      sc.trucks = Float64Array.from(m.trucks ?? []);
+      sc.vT = 23; // lorries sit at 83 km/h
+      sc.joints = m.joints ?? [];
+      sc.derest = m.derest ?? 200;
+      sc.wb = v.mass < 500 ? 1.45 : 2.65; // wheelbase
+      sc.ax = [0, -sc.wb];
+      sc.peak = 0;
+      sc.best = 0;
+      sc.bestT = 0;
+      sc.cross = {};
     } else {
       // rolling start in second gear
       const g = Math.min(2, v.gears.length);
@@ -3399,11 +3731,112 @@ class EngineProcessor extends AudioWorkletProcessor {
   sceneEnv(x) {
     const sc = this.scene;
     let env = 'open';
-    for (const seg of sc.track) if (x >= seg.s && x < seg.s + seg.len) env = seg.env ?? 'open';
+    let fl = 18; // metres the change blends over: short under a bridge
+    for (const seg of sc.track) {
+      if (x >= seg.s && x < seg.s + seg.len) {
+        env = seg.env ?? 'open';
+        fl = seg.blend ?? 18;
+      }
+    }
     if (env !== sc.env) {
-      const fade = sc.env == null ? 0.05 : clamp(18 / Math.max(5, this.sim.v), 0.25, 2.5);
+      const b = Math.min(fl, sc.blend ?? 18);
+      const fade = sc.env == null ? 0.05 : clamp(b / Math.max(5, this.sim.v), b < 18 ? 0.03 : 0.25, 2.5);
       sc.env = env;
+      sc.blend = fl;
       this.port.postMessage({ type: 'scene', ev: 'env', env, fade });
+    }
+  }
+
+  // The road under the car: surface, joints, lorries in the next lane.
+  clearRoad() {
+    const s = this.sim;
+    if (!s) return;
+    s.surface = 'asphalt';
+    s.truckDx = 1e9;
+    s.truckVr = 0;
+  }
+
+  // Autobahn: down the slip road at a cruise, floor it at the end of the
+  // speed limit and hold it until the car will go no faster, then lift.
+  autobahnStep(sc, dtb) {
+    const s = this.sim;
+    const x = s.pos;
+    const v = s.v;
+    // lorries in the right-hand lane
+    const tr = sc.trucks;
+    let near = 1e9;
+    for (let i = 0; i < tr.length; i++) {
+      tr[i] += sc.vT * dtb;
+      const dx = tr[i] - x;
+      if (Math.abs(dx) < Math.abs(near)) near = dx;
+    }
+    s.truckDx = near;
+    s.truckVr = v - sc.vT;
+    // surface under the front wheels; slab joints in concrete every 5 m and
+    // expansion joints at each end of a viaduct, front axle then rear
+    let surf = 'asphalt';
+    for (const seg of sc.track) if (x >= seg.s && x < seg.s + seg.len) surf = seg.surface ?? 'asphalt';
+    s.surface = surf;
+    const kv = Math.pow(Math.max(v, 1) / 30, 0.7);
+    for (let a = 0; a < 2; a++) {
+      const p0 = sc.ax[a], p1 = x - (a ? sc.wb : 0);
+      sc.ax[a] = p1;
+      if (p1 <= p0) continue;
+      if (surf === 'concrete' && Math.floor(p1 / 5) > Math.floor(p0 / 5)) s.bump(1.2 * kv * (a ? 0.8 : 1));
+      for (const j of sc.joints) if (p0 < j && p1 >= j) s.bump(3.5 * kv * (a ? 0.8 : 1));
+    }
+    const kmh = v * 3.6;
+    if (sc.phase === 'run') {
+      s.brake = 0;
+      if (x < sc.derest) {
+        // the limit still applies: hold a steady cruise onto the main road
+        s.pedal = clamp(0.25 + (80 / 3.6 - v) * 0.12, 0, 0.9);
+        return;
+      }
+      if (sc.wotT == null) {
+        sc.wotT = sc.t;
+        sc.wotX = x;
+      }
+      s.pedal = 1;
+      // splits: interpolate each crossing within this block
+      for (let k = 100; k <= 450; k += 50) {
+        if (sc.cross[k] == null && kmh >= k) sc.cross[k] = sc.t - (kmh - k) / 3.6 / Math.max(0.2, s.accel);
+      }
+      if (v > sc.peak) {
+        sc.peak = v;
+        sc.peakGear = s.gear;
+        sc.peakRpm = s.rpm;
+        sc.peakX = x - sc.wotX;
+        sc.peakT = sc.t - sc.wotT;
+      }
+      // topped out: no more than 1 km/h gained in the last five seconds
+      if (v > sc.best + 0.28) {
+        sc.best = v;
+        sc.bestT = sc.t;
+      }
+      if ((sc.t - sc.bestT > 5 && sc.t - sc.wotT > 8) || x >= sc.length - 400) {
+        sc.phase = 'lift';
+        sc.liftT = sc.t;
+        const top = sc.peakGear >= s.veh.gears.length;
+        sc.times = {
+          vmax: sc.peak,
+          gear: sc.peakGear,
+          rpm: sc.peakRpm,
+          limiter: top && sc.peakRpm > s.limitRpm - 300,
+          dist: sc.peakX,
+          time: sc.peakT,
+          cross: sc.cross,
+        };
+        this.port.postMessage({ type: 'scene', ev: 'vmax', vmax: sc.peak });
+      }
+    } else if (sc.phase === 'lift') {
+      // off the throttle at speed: the overrun, the wind, the wind dying
+      s.pedal = 0;
+      s.brake = 0;
+      if (sc.t - sc.liftT > 6) this.endScene(false);
+    } else {
+      s.pedal = 0;
+      s.brake = v > 0.5 ? 0.3 : 0;
     }
   }
 
@@ -3415,6 +3848,11 @@ class EngineProcessor extends AudioWorkletProcessor {
     const red = s.limitRpm;
     const v = s.veh;
     s.holdGear = false;
+    if (sc.id === 'autobahn') {
+      this.autobahnStep(sc, dtb);
+      this.sceneEnv(x);
+      return;
+    }
     if (sc.id === 'drag') {
       if (sc.phase === 'stage') {
         s.pedal = 1;
@@ -3549,6 +3987,7 @@ class EngineProcessor extends AudioWorkletProcessor {
     const cabin = !flyby && cam.cabin;
     L.cabin = cabin ? 1 : 0;
     L.moving = !!flyby;
+    sim.aeroMic = flyby ? 0 : cabin ? 2 : 1;
     // The starter hides low beside the bell housing and is heard through the
     // block and body rather than as a point source: wherever the mic is, it
     // keeps roughly the balance against the exhaust that it has from behind.
@@ -3660,6 +4099,7 @@ class EngineProcessor extends AudioWorkletProcessor {
       if (!tune) {
         sim.setOctane(old.octane);
         if (sim.isCentri) sim.setCentriRatio();
+        sim.setMaps(old.maps);
       }
     }
     sim.mix = this.mix;
@@ -3877,11 +4317,14 @@ class EngineProcessor extends AudioWorkletProcessor {
       launch: s.launchCut,
       load: this.load,
       eco: this.eco,
-      scene: this.scene ? { id: this.scene.id, x: s.pos, phase: this.scene.phase, env: this.scene.env } : null,
+      scene: this.scene ? { id: this.scene.id, x: s.pos, phase: this.scene.phase, env: this.scene.env, vmax: this.scene.peak } : null,
       knock: s.knockMax,
       knockN: s.knockN,
       knockRet: s.knockRet,
       float: s.floatSev,
+      adv: s.lastAdv,
+      afr: s.lastAfr,
+      boostTgt: s.boostNow,
     };
     s.afEvents = 0;
     s.afIntensity = 0;

@@ -2,6 +2,7 @@
 // plus a telemetry CSV. Used for tuning and regression checks.
 //
 //   node tools/render.mjs <presetId> <scenario> [out.wav] [--camera rear]
+//   (scenarios: rev idle dyno drive boost flyby autobahn)
 
 import { writeFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -83,7 +84,17 @@ export async function render(presetId, scenarioName, opts = {}) {
   send({ type: 'quality', quality: opts.quality ?? 'full' });
   send({ type: 'config', cfg, tune: opts.tune });
   if (opts.camera) send({ type: 'camera', camera: opts.camera });
-  const scen = SCENARIOS[scenarioName] ?? scenarioName;
+  let scen = SCENARIOS[scenarioName] ?? scenarioName;
+  if (scenarioName === 'autobahn') {
+    // the scripted top-speed run, from the app's own course
+    const { SCENES } = await import(pathToFileURL(path.join(root, 'js/ui/scenes.js')).href);
+    const d = SCENES.autobahn;
+    scen = [
+      [0.0, { type: 'ignition', on: true, crank: true }],
+      [1.8, { type: 'scene', id: 'autobahn', track: d.track, length: d.length, trucks: d.trucks, joints: d.joints, derest: d.derest }],
+      [80.0, { type: 'input', pedal: 0 }],
+    ];
+  }
   const dur = opts.duration ?? Math.max(...scen.map((e) => e[0])) + 3;
   const N = Math.ceil((dur * fs) / 128) * 128;
   const L = new Float32Array(N), R = new Float32Array(N);
