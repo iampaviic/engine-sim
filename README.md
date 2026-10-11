@@ -10,7 +10,7 @@ Serve the folder over HTTP (the audio worklet needs it) and open it in a browser
 node tools/serve.mjs        # http://localhost:8080
 ```
 
-Any static server works, and so does GitHub Pages: the workflow in `.github/workflows/pages.yml` deploys `main` once Pages is set to "GitHub Actions" in the repository settings. Press **START** (or Enter) and use headphones or decent speakers. Most of an engine's character sits below 150 Hz.
+Any static server works, and so does GitHub Pages: the workflow in `.github/workflows/main.yml` deploys `main` once Pages is set to "GitHub Actions" in the repository settings. Press **START** (or Enter) and use headphones or decent speakers. Most of an engine's character sits below 150 Hz.
 
 ## How the sound is made
 
