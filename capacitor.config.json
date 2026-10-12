@@ -1,0 +1,31 @@
+{
+  "appId": "com.iampaviic.firingorder",
+  "appName": "Firing Order",
+  "webDir": "www",
+  "backgroundColor": "#0f0e0c",
+  "loggingBehavior": "debug",
+  "ios": {
+    "contentInset": "never",
+    "scrollEnabled": false,
+    "allowsLinkPreview": false,
+    "preferredContentMode": "mobile"
+  },
+  "android": {
+    "minWebViewVersion": 105
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 800,
+      "launchAutoHide": true,
+      "launchFadeOutDuration": 250,
+      "backgroundColor": "#0f0e0c",
+      "showSpinner": false,
+      "androidScaleType": "CENTER_CROP"
+    },
+    "SystemBars": {
+      "insetsHandling": "css",
+      "initialViewportFitValueHint": "cover",
+      "style": "DARK"
+    }
+  }
+}

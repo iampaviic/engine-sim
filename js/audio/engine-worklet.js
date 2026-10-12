@@ -1,0 +1,4459 @@
+// FIRING ORDER — physically modelled engine sound.
+//
+// Everything audible here comes out of a small physics simulation that runs
+// once per audio sample:
+//
+//   * each cylinder is a 0-D thermodynamic volume (mass + internal energy)
+//     following the slider-crank volume curve, with Wiebe heat release,
+//     cycle-to-cycle combustion variation and compressible valve flow;
+//   * intake runners and every exhaust pipe are bidirectional digital
+//     waveguides (travelling pressure waves) joined by lossless scattering
+//     junctions, so headers, collectors, X-pipes, mufflers and tail pipes
+//     shape the pulses the way real pipes do;
+//   * the tail pipes radiate: far-field pressure = d/dt(mass outflow) / 4πr;
+//   * crank speed is integrated from the gas torque, so idle lope, limiter
+//     bounce and rev-matching all emerge from the model;
+//   * a listener stage renders each source with distance delay (Doppler),
+//     ground reflection, air absorption and head shadowing.
+
+const PI = Math.PI;
+const TAU = 2 * PI;
+const RAD2DEG = 180 / PI;
+const P_AMB = 101325;
+const T_AMB = 298;
+const R = 287;
+const GAM = 1.34;
+const GM1 = GAM - 1;
+const CV = R / GM1;
+const CP = GAM * CV;
+const LHV = 43.5e6;
+const AFR_ST = 14.7;
+const CHOKE = Math.sqrt(GAM / R) * Math.pow(2 / (GAM + 1), (GAM + 1) / (2 * GM1));
+const CHOKE_AIR = Math.sqrt(1.4 / R) * Math.pow(2 / 2.4, 2.4 / 0.8);
+const INV4PI = 1 / (4 * PI);
+const C_AIR = 343;
+// Scales the Douaud-Eyzat ignition delay so factory calibrations sit just
+// under the knock limit on their recommended fuel.
+const KNOCK_CAL = 0.35;
+// Pa of chamber ringing -> Pa at 1 m radiated by the block.
+const KNOCK_RAD = 2.2e-5;
+// Nitrous oxide: oxygen per kg relative to air (36.4% vs 23.1% by mass),
+// heat released as it splits into nitrogen and oxygen (J/kg), heat it soaks
+// up flashing from liquid to gas (J/kg), and flow per horsepower of shot.
+const NOS_O2 = 1.57;
+const NOS_DH = 1.86e6;
+const NOS_LAT = 2.5e5;
+const NOS_PER_HP = 3.5e-4;
+
+const NODE_JUNCTION = 0, NODE_PORT = 1, NODE_OPEN = 2, NODE_CLOSED = 3, NODE_RESISTOR = 4, NODE_PLENUM = 5;
+const DYN_TURBINE = 1, DYN_WASTEGATE = 2, DYN_VALVE = 3, DYN_STAGE = 4;
+
+// ---------------------------------------------------------------------------
+// small helpers
+// ---------------------------------------------------------------------------
+
+let rs = 0x2545f491;
+function rnd() {
+  rs ^= rs << 13;
+  rs ^= rs >>> 17;
+  rs ^= rs << 5;
+  return (rs >>> 0) * 2.3283064365386963e-10;
+}
+function gauss() {
+  return (rnd() + rnd() + rnd() + rnd() - 2) * 1.7320508;
+}
+function ftanh(x) {
+  if (x < -3) return -1;
+  if (x > 3) return 1;
+  const x2 = x * x;
+  return (x * (27 + x2)) / (27 + 9 * x2);
+}
+function clamp(x, a, b) {
+  return x < a ? a : x > b ? b : x;
+}
+// Compressor speed line at flow fraction x of choke: a peak with surge on its
+// left. In reverse flow the spinning wheel resists like a restriction, so the
+// pressure needed to push air backwards rises: that closes the deep-surge
+// cycle (the "flutter"). h (0..1) is the size of the hump left of the peak:
+// it grows with tip speed, so a slow wheel only stalls mildly and the flutter
+// dies away as the turbo winds down.
+function speedLine(x, h) {
+  if (x >= 1) return Math.max(-0.6, -2 * (x - 1));
+  if (x >= 0.32) {
+    // flat across the middle of the map, diving only as it nears choke
+    const y = (x - 0.32) / 0.68;
+    const y2 = y * y;
+    const y4 = y2 * y2;
+    return 1 - 0.18 * y2 - 0.82 * y4 * y4 * y2;
+  }
+  if (x >= 0) {
+    const y = (0.32 - x) / 0.32;
+    return 1 - 0.28 * h * y * y;
+  }
+  return 1 - 0.28 * h + 3.5 * x * x;
+}
+// Valve lift (fraction of max) after a floating valve hits its seat: a big
+// first rebound, a smaller second one. ph = crank degrees since closing.
+function bounce(ph) {
+  if (ph < 17) return 0.3 * Math.sin((PI * ph) / 17);
+  if (ph < 23) return 0;
+  if (ph < 36) return 0.12 * Math.sin((PI * (ph - 23)) / 13);
+  return 0;
+}
+function crossed(prev, cur, ev) {
+  return prev <= cur ? prev < ev && ev <= cur : ev > prev || ev <= cur;
+}
+// One-pole low-pass coefficient for cutoff f (Hz).
+function lpCoef(f, fs) {
+  return 1 - Math.exp((-TAU * Math.min(f, fs * 0.45)) / fs);
+}
+
+// Where x falls on a map axis: index plus fraction, held at the ends.
+function axisAt(a, x) {
+  const n = a.length;
+  if (x <= a[0]) return 0;
+  if (x >= a[n - 1]) return n - 1;
+  let i = 0;
+  while (x > a[i + 1]) i++;
+  return i + (x - a[i]) / (a[i + 1] - a[i]);
+}
+function lerpAt(t, p) {
+  const i = Math.min(t.length - 2, Math.floor(p));
+  const f = p - i;
+  return t[i] + (t[i + 1] - t[i]) * f;
+}
+// Laminar flame speed against lambda (shape only): fastest a little rich.
+function flameSpeed(lam) {
+  const phi = 1 / lam;
+  return Math.pow(phi, 0.25) * Math.exp(-4.5 * (phi - 1.1) * (phi - 1.1));
+}
+// Torque from a given charge of air against lambda: best around 0.88, from
+// the extra moles and less dissociation; too rich it burns incompletely.
+// (Leaner than 1 the fuel itself runs short, which the burn already counts.)
+const RICH_LAM = [0.6, 0.7, 0.75, 0.8, 0.88, 0.95, 1];
+const RICH_GAIN = [0.86, 0.94, 0.972, 0.99, 1, 0.986, 0.965];
+function richGain(lam) {
+  if (lam >= 1) return 0.965;
+  if (lam <= 0.6) return 0.86;
+  return lerpAt(RICH_GAIN, axisAt(RICH_LAM, lam));
+}
+// Exhaust temperature against lambda (shape only): the flame is hottest a
+// little lean of stoichiometric; extra fuel soaks up heat as it dissociates.
+const EGT_LAM = [0.6, 0.75, 0.85, 0.95, 1.05, 1.15, 1.3];
+const EGT_GAIN = [0.83, 0.91, 0.96, 0.995, 1, 0.985, 0.95];
+function egtGain(lam) {
+  return lerpAt(EGT_GAIN, axisAt(EGT_LAM, lam));
+}
+
+// Mass flow through an orifice of effective area A (Cd included), driven by
+// pressure difference D > 0, solved implicitly against the combined reacting
+// impedance Z of both sides (pipe wave impedance + chamber compliance), and
+// limited by choked flow from the upstream stagnation state (p0, T0).
+function orifice(A, D, rho, Z, p0, sqrtT0, choke) {
+  const K = A * Math.sqrt(2 * rho);
+  const B = K * Z;
+  const s = (2 * D) / (B + Math.sqrt(B * B + 4 * D));
+  const m = K * s;
+  const mc = (choke * A * p0) / sqrtT0;
+  return m < mc ? m : mc;
+}
+
+// Two-pole resonator (band-pass) state packed in arrays.
+class ResBank {
+  constructor(freqs, qs, gains, fs) {
+    const n = freqs.length;
+    this.n = n;
+    this.b0 = new Float64Array(n);
+    this.a1 = new Float64Array(n);
+    this.a2 = new Float64Array(n);
+    this.y1 = new Float64Array(n);
+    this.y2 = new Float64Array(n);
+    this.g = Float64Array.from(gains);
+    for (let i = 0; i < n; i++) {
+      const w = (TAU * freqs[i]) / fs;
+      const r = Math.exp(-w / (2 * qs[i]));
+      this.a1[i] = -2 * r * Math.cos(w);
+      this.a2[i] = r * r;
+      this.b0[i] = (1 - r * r) * 0.5;
+    }
+  }
+  tick(x) {
+    let out = 0;
+    const { b0, a1, a2, y1, y2, g } = this;
+    for (let i = 0; i < this.n; i++) {
+      const y = b0[i] * x - a1[i] * y1[i] - a2[i] * y2[i];
+      y2[i] = y1[i];
+      y1[i] = y;
+      out += y * g[i];
+    }
+    return out;
+  }
+}
+
+// Fourth-order band-pass: two identical constant-peak biquads. For noises
+// that must stay in their band; a pair of one-pole filters leaks a flat
+// hiss right up to Nyquist.
+class Band4 {
+  constructor(f, q, fs) {
+    const w = (TAU * f) / fs;
+    const al = Math.sin(w) / (2 * q);
+    const a0 = 1 + al;
+    this.b0 = al / a0;
+    this.a1 = (-2 * Math.cos(w)) / a0;
+    this.a2 = (1 - al) / a0;
+    this.x1 = this.x2 = this.y1 = this.y2 = this.z1 = this.z2 = 0;
+  }
+  tick(x) {
+    const { b0, a1, a2 } = this;
+    const y = b0 * (x - this.x2) - a1 * this.y1 - a2 * this.y2;
+    const z = b0 * (y - this.y2) - a1 * this.z1 - a2 * this.z2;
+    this.x2 = this.x1;
+    this.x1 = x;
+    this.y2 = this.y1;
+    this.y1 = y;
+    this.z2 = this.z1;
+    this.z1 = z;
+    return z;
+  }
+}
+
+// Struck structural modes: a unit impulse sets mode i ringing at amplitude
+// g[i], dying away with time constant tau[i] (s).
+class Modes {
+  constructor(freqs, taus, gains, fs) {
+    const n = freqs.length;
+    this.n = n;
+    this.a1 = new Float64Array(n);
+    this.a2 = new Float64Array(n);
+    this.b = new Float64Array(n);
+    this.y1 = new Float64Array(n);
+    this.y2 = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      const w = (TAU * Math.min(freqs[i], fs * 0.45)) / fs;
+      const r = Math.exp(-1 / (taus[i] * fs));
+      this.a1[i] = 2 * r * Math.cos(w);
+      this.a2[i] = -r * r;
+      this.b[i] = gains[i] * Math.sin(w);
+    }
+  }
+  tick(x) {
+    let out = 0;
+    const { a1, a2, b, y1, y2 } = this;
+    for (let i = 0; i < this.n; i++) {
+      const y = a1[i] * y1[i] + a2[i] * y2[i] + b[i] * x;
+      y2[i] = y1[i];
+      y1[i] = y;
+      out += y;
+    }
+    return out;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Waveguide pipe network
+// ---------------------------------------------------------------------------
+
+class Net {
+  constructor(d, fs, hot) {
+    this.fs = fs;
+    this.hot = hot;
+    const S = d.S;
+    const L = 2 * S;
+    this.S = S;
+    this.L = L;
+    this.len = d.segLen;
+    this.temp = d.segTemp;
+    this.area = new Float64Array(S);
+    for (let k = 0; k < S; k++) this.area[k] = (PI * d.segDia[k] * d.segDia[k]) / 4;
+    this.delay = new Float64Array(L);
+    this.Zm = new Float64Array(L);
+    this.Y = new Float64Array(L);
+    this.segC = new Float64Array(S);
+
+    // Delay line memory: each line gets a power-of-two ring big enough for the
+    // longest delay it can have (coldest gas).
+    this.lineOff = new Int32Array(L);
+    this.lineMask = new Int32Array(L);
+    const cMin = 300;
+    let total = 0;
+    for (let l = 0; l < L; l++) {
+      const k = l >> 1;
+      const maxD = (this.len[k] / cMin) * fs + 4;
+      let size = 8;
+      while (size < maxD) size <<= 1;
+      this.lineOff[l] = total;
+      this.lineMask[l] = size - 1;
+      total += size;
+    }
+    this.buf = new Float32Array(total);
+
+    // Per-line loss filters (one-pole low-pass + DC gain per trip).
+    // Losses must not touch the mean (DC) component, or the pipes would leak
+    // mass: HF low-pass + broadband damping applied to the AC part only.
+    this.la1 = new Float64Array(L);
+    this.lg = new Float64Array(L);
+    this.lz = new Float64Array(L);
+    this.ld = new Float64Array(L);
+    this.ldA = lpCoef(12, fs);
+    const hfScale = 48000 / fs;
+    for (let l = 0; l < L; l++) {
+      const k = l >> 1;
+      const a = Math.min(0.97, Math.pow(d.segHf[k], hfScale));
+      this.la1[l] = 1 - a;
+      this.lg[l] = d.segG[k];
+    }
+
+    this.inW = new Float64Array(L);
+    this.outW = new Float64Array(L);
+    // Finite-amplitude propagation: pressure crests travel faster
+    // (c + (g+1)/2 u), so strong pulses steepen into near-shocks.
+    // (nlLines is built below, once line ends are known.)
+
+    // Node bookkeeping.
+    this.N = d.N;
+    this.type = d.nodeType;
+    this.es = d.nodeEndStart;
+    this.ec = d.nodeEndCount;
+    this.ends = d.ends;
+    this.np = d.nodeP;
+    this.endNode = new Int32Array(L).fill(-1);
+    for (let i = 0; i < d.N; i++) {
+      for (let k = 0; k < d.nodeEndCount[i]; k++) this.endNode[d.ends[d.nodeEndStart[i] + k]] = i;
+    }
+    // Steepening applies to the outgoing blowdown pulses (lines leaving a port).
+    this.nlLines = Int32Array.from([...Array(L).keys()].filter((l) => d.segNl[l >> 1] && d.nodeType[this.endNode[l]] === NODE_PORT));
+    const lists = { j: [], p: [], o: [], c: [], r: [], pl: [] };
+    for (let i = 0; i < d.N; i++) {
+      switch (d.nodeType[i]) {
+        case NODE_JUNCTION: lists.j.push(i); break;
+        case NODE_PORT: lists.p.push(i); break;
+        case NODE_OPEN: lists.o.push(i); break;
+        case NODE_CLOSED: lists.c.push(i); break;
+        case NODE_RESISTOR: lists.r.push(i); break;
+        case NODE_PLENUM: lists.pl.push(i); break;
+      }
+    }
+    this.junc = Int32Array.from(lists.j);
+    this.ports = Int32Array.from(lists.p);
+    this.portEnds = Int32Array.from(lists.p.map((i) => d.ends[d.nodeEndStart[i]]));
+    this.opens = Int32Array.from(lists.o);
+    this.closeds = Int32Array.from(lists.c);
+    this.res = Int32Array.from(lists.r);
+    this.plenums = Int32Array.from(lists.pl);
+    this.nodeCyls = d.nodeCyls;
+    this.closedK = d.closedK;
+
+    // Junction pressure sources (afterfire) and per-node scratch.
+    this.src = new Float64Array(d.N);
+    this.nodeP = new Float64Array(d.N); // last computed node pressure (for viz)
+
+    // Open-end radiation state
+    const no = this.opens.length;
+    this.oLp = new Float64Array(no);
+    this.oAl = new Float64Array(no);
+    this.oR = new Float64Array(no);
+    this.oQ = new Float64Array(no);
+    this.oCh = new Int32Array(no);
+    for (let i = 0; i < no; i++) {
+      const n = this.opens[i];
+      this.oCh[i] = d.nodeP[n * 4] | 0;
+    }
+
+    // Resistors
+    const nr = this.res.length;
+    this.rR = new Float64Array(nr);
+    this.rK = new Float64Array(nr);
+    this.rDyn = new Int32Array(nr);
+    this.rIdx = new Int32Array(nr);
+    this.rU = new Float64Array(nr);
+    this.rP = new Float64Array(nr); // absorbed power accumulator
+    this.rKstep = new Float64Array(nr).fill(1); // per-sample ramp toward a new K
+    for (let i = 0; i < nr; i++) {
+      const n = this.res[i];
+      this.rR[i] = d.nodeP[n * 4];
+      this.rK[i] = d.nodeP[n * 4 + 1];
+      this.rDyn[i] = d.nodeP[n * 4 + 2] | 0;
+      this.rIdx[i] = d.nodeP[n * 4 + 3] | 0;
+    }
+    this.rClosedK = new Float64Array(nr);
+    for (let i = 0; i < nr; i++) this.rClosedK[i] = this.closedK[this.res[i]] || 3e8;
+
+    this.nlAdv = new Float64Array(L);
+    // (g+1)/(2g p0) per Pa of wave pressure, derated for the large-amplitude
+    // overshoot of the linearised form and for wall friction smearing fronts.
+    this.nlBeta = hot ? (0.55 * 2.33) / (2 * 1.33 * P_AMB) : 0;
+    // Turbulence and cycle-to-cycle gas temperature swings make each pipe's
+    // transit time wander by a fraction of a percent. Inaudible for the low
+    // harmonics, it keeps the highs from repeating identically every cycle.
+    this.wOff = new Float64Array(L);
+    this.wA = new Float64Array(S);
+    this.wB = new Float64Array(S);
+    this.wAmt = hot ? 0.0025 : 0.001;
+    this.t = 1 << 20;
+    this.setGasTemp(hot ? 700 : T_AMB);
+  }
+
+  // Transit-time wander (control rate): an Ornstein-Uhlenbeck process per
+  // segment, ~12 ms correlation, smoothed so the read heads glide.
+  wander(dtc) {
+    const S = this.S, a = this.wA, b = this.wB, dl = this.delay, wo = this.wOff;
+    const k = dtc / 0.012;
+    const g = this.wAmt * Math.sqrt(2 * k);
+    const kb = Math.min(1, dtc * 400);
+    for (let s = 0; s < S; s++) {
+      a[s] += -a[s] * k + g * gauss();
+      b[s] += (a[s] - b[s]) * kb;
+      const D = dl[2 * s];
+      let o = b[s] * D;
+      if (o > 0.05 * D) o = 0.05 * D;
+      else if (o < -0.05 * D) o = -0.05 * D;
+      wo[2 * s] = o;
+      wo[2 * s + 1] = o;
+    }
+  }
+
+  // Update sound speed per segment from the gas temperature (EGT for exhaust).
+  setGasTemp(Tgas) {
+    const fs = this.fs;
+    const gam = this.hot ? 1.33 : 1.4;
+    for (let k = 0; k < this.S; k++) {
+      const T = this.hot ? T_AMB + (Tgas - T_AMB) * this.temp[k] : Tgas;
+      const c = Math.sqrt(gam * R * T);
+      this.segC[k] = c;
+      let D = (this.len[k] / c) * fs;
+      if (D < 1.05) D = 1.05;
+      const Z = c / this.area[k];
+      this.delay[2 * k] = D;
+      this.delay[2 * k + 1] = D;
+      this.Zm[2 * k] = Z;
+      this.Zm[2 * k + 1] = Z;
+      this.Y[2 * k] = 1 / Z;
+      this.Y[2 * k + 1] = 1 / Z;
+    }
+    // Open-end reflection filters depend on c and radius.
+    for (let i = 0; i < this.opens.length; i++) {
+      const n = this.opens[i];
+      const e = this.ends[this.es[n]];
+      const k = e >> 1;
+      const a = this.np[n * 4 + 1];
+      const fc = (0.5 * this.segC[k]) / (TAU * a);
+      this.oAl[i] = lpCoef(fc, fs);
+      this.oR[i] = 0.9;
+    }
+  }
+
+  // Read the wave arriving at every pipe end (fractional delay + losses).
+  // Losses leave the mean (DC) untouched so no mass leaks out of the pipes.
+  read() {
+    const t = this.t, buf = this.buf, lo = this.lineOff, lm = this.lineMask, dl = this.delay;
+    const la1 = this.la1, lz = this.lz, lg = this.lg, ld = this.ld, ldA = this.ldA, inW = this.inW;
+    const nl = this.nlLines, adv = this.nlAdv, wo = this.wOff, B = this.nlBeta;
+    // Finite-amplitude steepening: the crest of a strong pulse travels faster
+    // than its foot, so the front arrives early and sharpens toward a shock.
+    for (let j = 0; j < nl.length; j++) {
+      const l = nl[j];
+      const D = dl[l];
+      const o = lo[l], m = lm[l];
+      let sh = (buf[o + ((t - D) & m)] - ld[l]) * B * D;
+      const lim = 0.3 * D;
+      if (sh > lim) sh = lim;
+      else if (sh < -lim) sh = -lim;
+      // a front may steepen into a shock but never overturn
+      if (sh < adv[l] - 0.98) sh = adv[l] - 0.98;
+      adv[l] = sh;
+    }
+    for (let l = 0, LL = this.L; l < LL; l++) {
+      const pos = t - dl[l] + adv[l] + wo[l];
+      const i0 = pos | 0;
+      const fr = pos - i0;
+      const o = lo[l], m = lm[l];
+      const a = buf[o + (i0 & m)];
+      const x = a + (buf[o + ((i0 + 1) & m)] - a) * fr;
+      const z = lz[l] + la1[l] * (x - lz[l]);
+      lz[l] = z;
+      const d = ld[l] + ldA * (z - ld[l]);
+      ld[l] = d;
+      inW[l ^ 1] = d + (z - d) * lg[l];
+    }
+    // a closed valve reflects: default outgoing wave at port ends
+    const pe = this.portEnds, outW = this.outW;
+    for (let i = 0; i < pe.length; i++) outW[pe[i]] = inW[pe[i]];
+  }
+
+  // Push the outgoing waves into the delay lines and advance time.
+  write() {
+    const t = this.t, buf = this.buf, lo = this.lineOff, lm = this.lineMask, outW = this.outW;
+    for (let l = 0, LL = this.L; l < LL; l++) buf[lo[l] + (t & lm[l])] = outW[l];
+    this.t = t + 1 > 0x3fffffff ? t + 1 - 0x20000000 : t + 1;
+  }
+
+  // Scattering at junctions, resistors (mufflers, turbine, wastegate, valve),
+  // closed ends and radiating open ends. Radiated d(mdot)/dt goes to src[ch].
+  scatter(src, turbP, fs) {
+    const inW = this.inW, outW = this.outW, Y = this.Y, Zm = this.Zm;
+    const es = this.es, ec = this.ec, ends = this.ends, nsrc = this.src;
+    const junc = this.junc;
+    for (let j = 0; j < junc.length; j++) {
+      const nd = junc[j];
+      const st = es[nd], cnt = ec[nd];
+      let sy = 0, sya = 0;
+      for (let k = 0; k < cnt; k++) {
+        const e = ends[st + k];
+        sy += Y[e];
+        sya += Y[e] * inW[e];
+      }
+      const pj = (2 * sya) / sy + nsrc[nd];
+      for (let k = 0; k < cnt; k++) {
+        const e = ends[st + k];
+        outW[e] = pj - inW[e];
+      }
+    }
+    const res = this.res, rR = this.rR, rK = this.rK, rU = this.rU, rDyn = this.rDyn, rIdx = this.rIdx, rKstep = this.rKstep;
+    for (let i = 0; i < res.length; i++) {
+      const nd = res[i];
+      const e1 = ends[es[nd]], e2 = ends[es[nd] + 1];
+      const a1 = inW[e1], a2 = inW[e2];
+      const Z1 = Zm[e1], Z2 = Zm[e2];
+      const B = rR[i] + Z1 + Z2;
+      const D = 2 * (a1 - a2);
+      const K = (rK[i] *= rKstep[i]);
+      let Uf;
+      if (K > 0) {
+        const ad = D < 0 ? -D : D;
+        Uf = (2 * ad) / (B + Math.sqrt(B * B + 4 * K * ad));
+        if (D < 0) Uf = -Uf;
+      } else Uf = D / B;
+      outW[e1] = a1 - Z1 * Uf;
+      outW[e2] = a2 + Z2 * Uf;
+      rU[i] = Uf;
+      if (rDyn[i] === DYN_TURBINE) turbP[rIdx[i]] += (D - (Z1 + Z2) * Uf) * Uf;
+    }
+    const cl = this.closeds;
+    for (let i = 0; i < cl.length; i++) {
+      const e = ends[es[cl[i]]];
+      outW[e] = inW[e];
+    }
+    src[0] = 0;
+    src[1] = 0;
+    src[2] = 0;
+    src[6] = 0;
+    const op = this.opens, oLp = this.oLp, oAl = this.oAl, oR = this.oR, oQ = this.oQ, oCh = this.oCh;
+    for (let i = 0; i < op.length; i++) {
+      const e = ends[es[op[i]]];
+      const a = inW[e];
+      const lp = oLp[i] + oAl[i] * (a - oLp[i]);
+      oLp[i] = lp;
+      const b = -oR[i] * lp;
+      outW[e] = b;
+      const q = (a - b) * Y[e];
+      src[oCh[i]] += (q - oQ[i]) * fs;
+      oQ[i] = q;
+    }
+  }
+
+  // Sample the pressure distribution along segment k at nPts points (viz).
+  sampleSeg(k, nPts, out, o) {
+    const D = this.delay[2 * k];
+    const t = this.t - 1;
+    const buf = this.buf;
+    for (let i = 0; i < nPts; i++) {
+      const f = (i + 0.5) / nPts;
+      // forward wave (A->B) written f*D ago at end A; backward f from B
+      let pos = t - f * D;
+      let i0 = pos | 0;
+      let off = this.lineOff[2 * k], m = this.lineMask[2 * k];
+      const fw = buf[off + (i0 & m)];
+      pos = t - (1 - f) * D;
+      i0 = pos | 0;
+      off = this.lineOff[2 * k + 1];
+      m = this.lineMask[2 * k + 1];
+      const bw = buf[off + (i0 & m)];
+      out[o + i] = fw + bw;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Listener / spatial renderer
+// ---------------------------------------------------------------------------
+
+const N_SRC = 7; // exL, exR, exC, intake, mech, chassis, wastegate dump
+const SRC_BUF = 1 << 17;
+const SRC_MASK = SRC_BUF - 1;
+
+class Listener {
+  constructor(fs) {
+    this.fs = fs;
+    this.buf = new Float32Array(N_SRC * SRC_BUF);
+    this.w = 0;
+    const T = N_SRC * 4; // src x ear x (direct, ground)
+    this.dCur = new Float64Array(T);
+    this.dInc = new Float64Array(T);
+    this.gCur = new Float64Array(T);
+    this.gInc = new Float64Array(T);
+    this.al = new Float64Array(T);
+    this.z1 = new Float64Array(T);
+    this.z2 = new Float64Array(T);
+    this.active = new Uint8Array(N_SRC);
+    this.cabin = 0;
+    this.moving = false;
+    this.boom1 = 0;
+    this.boom2 = 0;
+    this.first = true;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The simulation
+// ---------------------------------------------------------------------------
+
+class EngineSim {
+  constructor(cfg, fs) {
+    this.cfg = cfg;
+    this.fs = fs;
+    this.dt = 1 / fs;
+    const n = cfg.nCyl;
+    this.n = n;
+    this.cycle = cfg.cycle;
+    this.tdcFire = cfg.tdcFire;
+    this.tabScale = cfg.tabN / cfg.cycle;
+    this.vol = cfg.vol;
+    this.dvd = cfg.dvd;
+    this.off = cfg.cylOffset;
+    this.inTabLo = cfg.inTab;
+    this.exTabLo = cfg.exTab;
+    this.inTabHi = cfg.inTabHi;
+    this.exTabHi = cfg.exTabHi;
+    this.vd = cfg.vd;
+    this.dispTot = cfg.displacement;
+
+    this.ex = new Net(cfg.ex, fs, true);
+    this.inn = new Net(cfg.in, fs, false);
+
+    // cylinder -> port ends & afterfire nodes
+    this.cExEnd = new Int32Array(n).fill(-1);
+    this.cInEnd = new Int32Array(n).fill(-1);
+    this.cAf = new Int32Array(n).fill(-1);
+    for (let i = 0; i < this.ex.N; i++) {
+      const cyls = this.ex.nodeCyls[i];
+      if (!cyls) continue;
+      const e = this.ex.ends[this.ex.es[i]];
+      for (const c of cyls) {
+        this.cExEnd[c] = e;
+        this.cAf[c] = this.ex.endNode[e ^ 1];
+      }
+    }
+    for (let i = 0; i < this.inn.N; i++) {
+      const cyls = this.inn.nodeCyls[i];
+      if (!cyls) continue;
+      const e = this.inn.ends[this.inn.es[i]];
+      for (const c of cyls) this.cInEnd[c] = e;
+    }
+
+    // Cylinder state
+    this.cm = new Float64Array(n);
+    this.cU = new Float64Array(n);
+    this.cMb = new Float64Array(n);
+    this.cV = new Float64Array(n);
+    this.cCA = new Float64Array(n);
+    this.cP = new Float64Array(n);
+    this.cP1 = new Float64Array(n);
+    this.cP2 = new Float64Array(n);
+    this.cFuel = new Float64Array(n);
+    this.cBurnable = new Float64Array(n);
+    this.cQ = new Float64Array(n);
+    this.cSpark = new Float64Array(n);
+    this.cDur = new Float64Array(n);
+    this.cBurn = new Uint8Array(n); // 0 idle, 1 armed, 2 burning, 3 done
+    this.cXb = new Float64Array(n);
+    this.cFired = new Float64Array(n); // viz: recent combustion intensity
+    this.cAirIn = new Float64Array(n);
+    this.cRunB = new Float64Array(n); // burned gas pushed back into the intake runner
+    this.cExB = new Float64Array(n).fill(0.9); // burned fraction of gas in this cylinder's exhaust port
+    for (let c = 0; c < n; c++) {
+      let ca = this.off[c] % this.cycle;
+      this.cCA[c] = ca;
+      const V = this.volAt(ca);
+      this.cV[c] = V;
+      const m = (P_AMB * V) / (R * T_AMB);
+      this.cm[c] = m;
+      this.cU[c] = m * CV * T_AMB;
+      this.cMb[c] = 0.05 * m;
+      this.cP[c] = P_AMB;
+      this.cP1[c] = P_AMB;
+      this.cP2[c] = P_AMB;
+    }
+
+    // Two-stroke: a sealed crankcase under each piston, fed through a reed
+    // valve and emptied up the transfer ports; an exhaust power valve.
+    const ts = cfg.twoStroke;
+    this.twoStroke = !!ts;
+    if (ts) {
+      this.ccTot = ts.ccTot;
+      this.reedA = ts.reedArea;
+      this.reedP0 = ts.reedP0;
+      this.reedPf = ts.reedPf;
+      this.scavK = ts.scav;
+      this.exPool = 0.7 * cfg.vd; // kg of gas the header holds, about
+      this.pvRpm = ts.pv;
+      this.pv = 0; // power valve 0 = low-speed port .. 1 = raised
+      this.reedK = lpCoef(650, fs); // petals can't follow faster than this
+      this.ccM = new Float64Array(n);
+      this.ccU = new Float64Array(n);
+      this.ccB = new Float64Array(n); // burned gas blown back into the crankcase
+      this.ccV = new Float64Array(n);
+      this.ccP = new Float64Array(n).fill(P_AMB);
+      this.cTf = new Float64Array(n).fill(T_AMB); // fresh charge temperature in the cylinder
+      this.evapH = 350e3 / cfg.ecu.afr; // latent heat of the fuel per kg of air
+      this.cReed = new Float64Array(n);
+      for (let c = 0; c < n; c++) {
+        const V = this.ccTot - this.cV[c];
+        this.ccV[c] = V;
+        this.ccM[c] = (P_AMB * V) / (R * T_AMB);
+        this.ccU[c] = this.ccM[c] * CV * T_AMB;
+      }
+    }
+    this.egtOut = 0; // two-stroke: outflow-weighted exhaust temperature
+    this.egtOutW = 0;
+    this.plugAcc = 0; // two-stroke: charge the chamber pushed back this cycle
+    this.plug = 0;
+
+    // Afterfire pools per exhaust node
+    const N = this.ex.N;
+    this.afFuel = new Float64Array(N);
+    this.afAir = new Float64Array(N);
+    this.afHeat = new Float64Array(N);
+    this.afAmp = new Float64Array(N);
+    this.afEnv = new Float64Array(N);
+    this.afRise = new Float64Array(N);
+    this.afDecay = new Float64Array(N);
+    this.afNodes = Int32Array.from([...new Set(Array.from(this.cAf).filter((x) => x >= 0))]);
+    this.afEvents = 0;
+    this.afMin = (1.18 * cfg.vd) / AFR_ST * 0.06; // ~6% of a cylinder's fuel charge
+    this.afIntensity = 0;
+    this.afSide = 0;
+
+    // Crank
+    this.crank = 0;
+    this.omega = 0;
+    this.J = cfg.inertia;
+    this.torqueGas = 0;
+
+    // Plenum / throttle
+    this.Vpl = cfg.plenumVolume;
+    this.Tpl = T_AMB;
+    this.pPl = P_AMB;
+    this.mPl = (P_AMB * this.Vpl) / (R * T_AMB);
+    this.mdTh = 0;
+    this.mdThPrev = 0;
+    this.runnerFlow = 0;
+    this.runnerFlowPrev = 0;
+    this.Ath = cfg.throttleArea;
+    // air that gets past a closed throttle: less on a small engine
+    this.thrLeak = 2e-6 * clamp(cfg.dispLitres, 0.25, 1);
+
+    // Boost system
+    const ind = cfg.induction;
+    this.fiType = ind.type;
+    this.isTurbo = ind.type === 'turbo';
+    this.isSC = ind.type === 'roots' || ind.type === 'twinscrew';
+    this.isCentri = ind.type === 'centrifugal';
+    this.pB = P_AMB;
+    // boost plumbing and turbos sized by the air the engine breathes: a
+    // rotor moves as much as a four-stroke of twice its chamber volume
+    const airL = cfg.kind === 'rotary' ? cfg.displacement * 1000 : cfg.dispLitres;
+    this.Vb = this.isTurbo || this.isCentri ? 0.004 + airL * 0.0012 : 0.003 + airL * 0.0006;
+    this.TB = T_AMB;
+    this.boostTarget = ind.boost * 1e5;
+    this.boostNow = this.boostTarget; // what the boost control aims at right now
+    this.nT = this.isTurbo ? Math.max(1, ind.count) : this.isCentri ? 1 : 0;
+    this.wt = 0; // turbo shaft speed (rad/s), aggregated over turbos
+    this.mc = 0; // compressor mass flow (Greitzer state)
+    this.mcPrev = 0;
+    this.mcLp = 0;
+    this.mcHp = 0;
+    // turbo voice: surge activity and pulse bursts, band-limited noises for
+    // the whoosh and the stalled wheel, the blade tone's wobble and halo
+    this.sgAct = 0;
+    this.sgActDec = Math.exp(-1 / (0.15 * fs));
+    this.mcSgn = 0;
+    this.burst = 0;
+    this.burstDec = Math.exp(-1 / (0.005 * fs));
+    this.sgD = 0;
+    this.sgDA = lpCoef(2500, fs);
+    this.burstBand = new Band4(1400, 0.8, fs);
+    this.whBand = new Band4(1700, 0.7, fs);
+    this.wJit = 0;
+    this.wJitA = lpCoef(25, fs);
+    this.tpLp = 0;
+    this.tpLpA = lpCoef(300, fs);
+    this.tPulse = 1;
+    this.sgB = new Float64Array(3);
+    this.sgX1 = this.sgX2 = this.sgY1 = this.sgY2 = 0;
+    this.bovBand = new Band4(3000, 0.5, fs);
+    this.sgK = 32;
+    this.sgLpA = lpCoef(392, fs);
+    this.sgHpA = lpCoef(28, fs);
+    this.pBrate = 0;
+    this.pBprev = P_AMB;
+    this.wg = 0; // wastegate opening 0..1
+    this.wtRate = 0;
+    this.wtPrev = 0;
+    this.wt2Prev = 0;
+    this.bov = 0;
+    this.bovS = 0; // per-sample ramps of the control-rate valve positions
+    this.bovStep = 0;
+    this.mdBov = 0;
+    this.turbP = new Float64Array(Math.max(this.nT, 1));
+    this.turbPs = 0;
+    this.scBypass = 1;
+    this.scBypassS = 1;
+    this.scBypassStep = 0;
+    this.scPower = 0;
+    const size = ind.size;
+    // turbo sizing (per turbo) scaled from displacement per turbo
+    const dPer = airL / Math.max(this.nT, 1);
+    this.tJ = 4e-5 * Math.pow(dPer, 1.1) * size * size;
+    this.tRtip = 0.024 * Math.sqrt(dPer / 2) * Math.sqrt(size);
+    this.tChokeK = 0.00072 * Math.pow(dPer, 0.85) * size; // kg/s per (m/s) tip speed
+    // turbine effective area: the housing (A/R) sets where the turbo wakes up;
+    // the wastegate and the sequential valves are sized by the frame
+    const tFrame = 9e-4 * Math.pow(dPer / 2, 0.8) * size;
+    this.tA = tFrame * (ind.ar ?? 1);
+    this.tAwg = tFrame * 2.4;
+    this.tAstage = tFrame * 2.5;
+    // dump valve(s) sized to the engine's air: ~40 mm for a 2 L four
+    this.bovA = 5.5e-4 * Math.pow(airL, 0.8);
+    // inlet duct from the compressor face to the filter (~0.25-0.4 m): a
+    // tube closed at the wheel, open at the filter, as a delay loop
+    const ductL = clamp(0.06 + 9 * this.tRtip, 0.2, 0.42);
+    this.dD = Math.max(4, Math.round(((2 * ductL) / 343) * fs));
+    this.dBuf = new Float64Array(1024);
+    this.dI = 0;
+    this.dLp = 0;
+    this.dLpA = lpCoef(2800, fs);
+    // more compressor, more whoosh: noise power grows with the air moved
+    this.whK = Math.sqrt(airL / 2);
+    // inlet/compressor restriction: a bigger engine per compressor gets a
+    // proportionally bigger wheel
+    // Sequential turbos: half of them (one per side) take all the exhaust
+    // until valves open the second stage above ind.sequential rpm. Each
+    // stage has its own shaft speed and compressor.
+    this.seqRpm = this.isTurbo && this.nT >= 2 && ind.sequential > 0 ? ind.sequential : 0;
+    this.nA = this.seqRpm ? this.nT / 2 : this.nT;
+    this.nB = this.nT - this.nA;
+    this.stage = 0; // second-stage valves, 0..1
+    this.stageT = 0;
+    this.wt2 = 0;
+    this.mc2 = 0;
+    this.flap2 = 0;
+    this.turbPs2 = 0;
+    // tonal voices: a parallel pair (or a sequential stage of two) gets a
+    // second voice, the other turbo spinning a hair slower
+    const voice = () => ({ ph: 0, ph2: 0, jit: 0 });
+    this.vA2 = voice();
+    this.vB = voice();
+    this.vB2 = voice();
+    const restr = (k) => (4e5 * Math.min(1, Math.pow(2.5 / dPer, 2))) / Math.pow(Math.max(k, 1) * size, 2);
+    this.tRestr = restr(this.nA);
+    this.tRestrB = restr(this.nB);
+    this.wgI = 0;
+    this.blades = ind.blades;
+    this.bovType = ind.bov;
+    this.tPhase = 0;
+    this.tPhase2 = 0;
+    this.scPhase = 0;
+    this.turbPsm = 0;
+    this.burbleActive = false;
+    this.alsActive = false;
+    this.launchCut = false;
+    this.shiftRetard = 0;
+    this.accel = 0;
+    this.cycTq = 0;
+    this.cycN = 0;
+    this.cycleTorque = 0;
+    this.strobeOn = true;
+    this.strobeStep = 3;
+    this.strobeAngle = 0;
+    this.snapWait = 0;
+    this.snapGap = Math.round(fs / 45);
+    this.snapReady = null;
+    this.scRatio = ind.ratio;
+    this.scDisp = ind.blowerDisp / 1000;
+    this.scLobes = ind.lobes;
+    this.redline = cfg.ecu.limit;
+    if (this.isCentri) this.setCentriRatio();
+
+    // Knock: Livengood-Wu integral of the end-gas ignition delay
+    // (Douaud-Eyzat correlation) during each burn. When the end gas
+    // autoignites, what is left of the charge burns at once and the chamber
+    // rings at its first acoustic modes (1.84 c / (pi B) and ~1.66x that).
+    this.octane = cfg.ecu.octane;
+    this.setOctane(this.octane);
+    this.kF1 = 1.841 / (PI * cfg.bore);
+    this.kDecay = Math.exp(-1 / (fs * 0.0015));
+    this.cKi = new Float64Array(n);
+    this.cKl = new Float64Array(n).fill(1); // knock tendency from the mixture (tuning maps)
+    this.cEgt = new Float64Array(n).fill(1); // exhaust temperature from the mixture (tuning maps)
+    this.cPs = new Float64Array(n);
+    this.cTs = new Float64Array(n);
+    this.cKq = new Float64Array(n);
+    this.cKa = new Float64Array(n);
+    this.cKf = new Float64Array(n);
+    this.cKph = new Float64Array(n);
+    this.knockRet = 0;
+    this.tipRet = 0;
+    this.thrPrevC = 0;
+    this.knockCtl = true;
+    this.sparkAdj = 0;
+    // Tuning maps (null: the factory calibration)
+    this.maps = null;
+    this.mRpm = this.mKpa = this.mSpark = this.mAfr = this.mBoost = this.mGear = null;
+    this.lastAdv = 0;
+    this.lastAfr = 0;
+    // Following a real car (null: off). kind 'rpm': its engine speed comes
+    // from the car; kind 'speed': only its road speed does.
+    this.follow = null;
+    this.followV = -1; // road speed the wheels are held to (speed kind), m/s
+    this.followA = 0;
+    this.knockSndS = 0;
+    this.knockN = 0;
+    this.knockMax = 0;
+    // Valve float: above the spring's limit the valves loft off the cam and
+    // bounce on their seats after closing.
+    this.floatRpm = cfg.floatRpm;
+    this.floatMul = 1;
+    this.floatSev = 0;
+    this.cBi = new Float64Array(n);
+    this.cBe = new Float64Array(n);
+    let mxe = 1e-9, mxi = 1e-9;
+    for (let i = 0; i < cfg.exTab.length; i++) {
+      mxe = Math.max(mxe, cfg.exTab[i], cfg.exTabHi[i]);
+      mxi = Math.max(mxi, cfg.inTab[i], cfg.inTabHi[i]);
+    }
+    this.maxAeT = mxe;
+    this.maxAiT = mxi;
+    // per-source mixer gains (shared with the processor)
+    this.mix = new Float64Array(N_SRC).fill(1);
+    // screamer pipe: wastegate resistor whose outlet radiates on its own
+    this.wgRes = -1;
+    if (this.ex.opens.some((_, i) => this.ex.oCh[i] === 6)) {
+      for (let i = 0; i < this.ex.res.length; i++) if (this.ex.rDyn[i] === DYN_WASTEGATE) this.wgRes = i;
+    }
+    this.jetLp = 0;
+    this.jetHp = 0;
+
+    // ECU
+    const e = cfg.ecu;
+    this.ecu = e;
+    this.ignition = false;
+    this.starter = false; // key held at START (or the ECU's start request)
+    this.starterT = 0;
+    this.stHold = 0;
+    this.crankRevs = 99;
+    this.syncRevs = 0;
+    this.filmLeft = 0; // injections a cold port wall still soaks up
+    this.rpmAvg = 0;
+    this.running = false;
+    this.idleTarget = e.idle;
+    this.idleI = 0;
+    this.bypass = 0;
+    this.sparkTrim = 0;
+    this.limCut = false;
+    this.dfco = false;
+    this.burble = e.burble;
+    this.liftT = 99;
+    this.antilag = e.antilag;
+    this.limiterType = e.limiter;
+    this.limitRpm = e.limit;
+    this.afrTarget = e.afr;
+    this.launch = false;
+    this.launchRpm = e.launchRpm;
+    this.shiftCut = 0;
+    this.flare = 0;
+    this.coldT = 0;
+    this.camHi = false;
+    this.camSwitch = cfg.camSwitchRpm;
+    // Nitrous: liquid N2O through a solenoid into the intake
+    this.nosShot = cfg.nitrous.shot; // hp
+    this.nosBottle = cfg.nitrous.bottle; // kg when full
+    this.bottle = this.nosBottle;
+    this.nosBtn = false;
+    this.nosOn = false; // spraying
+    this.nosPurge = false;
+    this.nosFlow = 0; // kg/s into the intake
+    this.purgeFlow = 0; // kg/s out of the purge valve
+    this.nosX = 0; // N2O share of the fresh charge
+    this.mNos = 0; // N2O in the plenum, kg
+    this.nosCool = 0; // charge cooling, K
+    this.nosRet = 0; // timing pulled while spraying
+    this.nosClick = 0;
+    this.nosRing = 0;
+    this.nosSol = new Modes([2350, 3900, 6200], [0.005, 0.0035, 0.0025], [0.9, 0.6, 0.35], fs);
+    this.hsA = lpCoef(5200, fs);
+    this.hsB = lpCoef(900, fs);
+    this.hs1 = 0;
+    this.hs2 = 0;
+    this.valveOpen = 0; // exhaust bypass valve 0..1
+    this.valveMode = 'auto';
+    this.sinceStart = 0;
+
+    // Requested inputs
+    this.pedal = 0;
+    this.thrCmd = 0;
+    this.thr = 0;
+    this.thrArea = 0;
+    this.bypassS = 0; // idle air as the throttle sees it, ramped per sample
+    this.bypassStep = 0;
+    this.brake = 0;
+    this.clutchPedal = 0; // 1 = pressed (disengaged)
+    this.blip = 0;
+
+    this.kLeak = 1.5e-10 * (cfg.vd / 5e-4);
+    // Friction constants
+    this.fricK = (cfg.displacement / (4 * PI)) * 1e5 * cfg.friction;
+    this.fric = 0;
+
+    // Feed-forward idle air
+    // (a two-stroke has no intake stroke to pump against: it idles on less)
+    const needed = 1.18 * cfg.displacement * (e.idle / 120) * (cfg.twoStroke ? 0.04 : 0.092);
+    this.bypassFF = needed / ((CHOKE_AIR * P_AMB) / Math.sqrt(T_AMB)) / 0.8;
+
+    // Vehicle / drivetrain
+    const v = cfg.vehicle;
+    this.veh = v;
+    this.mode = 'rev';
+    this.gear = 0;
+    this.v = 0;
+    this.ww = 0;
+    this.pos = 0;
+    this.Jw = 2.2 + v.mass * 0.0008;
+    this.clutch = 0; // engagement 0..1
+    this.clutchT = 0;
+    this.clutchCap = 0;
+    this.shift = null;
+    this.autoShift = true;
+    this.shiftCool = 0;
+    this.tc = true;
+    this.tcCut = 0;
+    this.slip = 0;
+    this.gearTorque = 0;
+    this.gearPhase = 0;
+    this.dynoLoad = 0;
+    this.dynoI = 0;
+    this.dyno = null;
+
+    // Sound bits
+    this.snd = cfg.sound;
+    this.valvetrain = new ResBank(
+      cfg.sound.valvetrain === 'ohv' ? [2300, 3900, 6100] : cfg.sound.valvetrain === 'pneumatic' ? [3400, 5600, 8800] : [3100, 5200, 8200],
+      [9, 12, 14],
+      [1, 0.7, 0.45],
+      fs
+    );
+    this.block = new ResBank([780, 1350, 2150, 3300], [6, 7, 8, 9], [1, 0.8, 0.55, 0.35], fs);
+    this.vtExc = 0;
+    this.combExc = 0;
+    this.srcBuf = new Float64Array(N_SRC);
+    this.ibLp1 = 0;
+    this.ibLp2 = 0;
+    this.ibRes1 = 0;
+    this.ibRes2 = 0;
+    this.itbLp = 0;
+    this.hissLp = 0;
+    this.roadLp = 0;
+    this.windLp1 = 0;
+    this.windLp2 = 0;
+    this.sqPhase = 0;
+    this.sqLp = 0;
+    this.clunk = 0;
+    // Wind at a mic that rides on the car, and the road under it. The wind
+    // draws from its own random stream, so the engine's cycle-to-cycle
+    // variation is the same whether or not it is heard.
+    this.aRs = 0x2545f491;
+    this.aeroMic = 0; // 0 roadside, 1 outside on the car, 2 in the cabin
+    this.aGust = 0; // slow gusts, fraction of the airspeed
+    this.aTurb = 0; // fast turbulence
+    this.aCross = 0; // crosswind: which side of the car the wind favours
+    this.aLock = 0; // whistle lock-in
+    this.aU = 0;
+    this.aH1 = this.aH2 = this.aH3 = 0; // hiss band-pass (TPT state-variable filter)
+    this.aBa = 0; // buffet low-pass
+    this.aAh = this.aAb = this.aAw = this.aAt = this.aAr = this.aTb = 0; // levels: hiss, buffet, whistle, lorry wake, lorry rumble, lorry buffet
+    this.aWf = 0; // whistle frequency
+    this.aWph = 0;
+    this.aGl = this.aGr = 1;
+    this.aS = new Float64Array(16);
+    this.aCabA = lpCoef(1700, fs);
+    this.aRumA = lpCoef(260, fs);
+    this.aHpA = lpCoef(11, fs);
+    this.aOut = [0, 0];
+    // a lorry in the next lane: how far ahead of the car (m), closing speed (m/s)
+    this.truckDx = 1e9;
+    this.truckVr = 0;
+    // road joints: a thump through tyres and suspension, and the tread's slap
+    this.surface = 'asphalt';
+    this.bumpX = 0;
+    this.bumpY1 = 0;
+    this.bumpY2 = 0;
+    this.bumpCl = 0;
+    const bw = (TAU * 72) / fs, br = Math.exp(-1 / (0.018 * fs));
+    this.bumpB1 = 2 * br * Math.cos(bw);
+    this.bumpB2 = -br * br;
+    this.bumpG = Math.sin(bw); // impulse in, the same peak out at any rate
+    this.bumpClD = Math.exp(-1 / (0.004 * fs));
+
+    // EGT & temps
+    this.egt = 500;
+    this.egtInst = 500;
+    this.pipeWall = 500; // exhaust pipe wall temperature, K
+    this.egtAcc = 0;
+    this.egtW = 0;
+    this.tempCounter = 0;
+    this.coolant = 0;
+
+    // Telemetry accumulators
+    this.telTq = 0;
+    this.telN = 0;
+    this.telAir = 0;
+    this.telFuel = 0;
+    this.telSpl = 0;
+    this.telSplN = 0;
+    this.torqueAvg = 0;
+    this.airflow = 0;
+    this.ctrlN = 0;
+    this.lastRpm = 0;
+    this.rpmRate = 0;
+    this.landing = 0;
+
+    // Scope (angle domain) capture
+    this.scopeBuf = new Float32Array(16384);
+    this.scopeP = new Float32Array(16384);
+    this.scopeV = new Float32Array(16384);
+    this.scopeW = 0;
+    this.scopeStart = 0;
+    this.scopeReady = null;
+
+    this.lastPost = 0;
+    // per-sample constants
+    this.thrK = lpCoef(6, fs);
+    this.ibA = lpCoef(cfg.airbox === 'open' ? 5200 : cfg.airbox === 'ram' ? 2600 : 900, fs);
+    this.itbA = lpCoef(6500, fs);
+    this.hissA = lpCoef(700, fs);
+    this.itb = cfg.itb ? 1 : 0;
+    this.rasp26 = 26 * cfg.sound.rasp;
+    this.exG = INV4PI * cfg.sound.exhaust;
+    const vtt = cfg.sound.valvetrain;
+    this.vtK = vtt === 'ohv' ? 1.5 : vtt === 'pneumatic' ? 0.6 : vtt === 'none' ? 0 : 1;
+    this.gearK = cfg.sound.gear * (cfg.vehicle.straightCut ? 1 : 0.2);
+    this.initStarter(cfg);
+    this.boosted = this.isTurbo || this.isSC || this.isCentri;
+    const vh = cfg.vehicle;
+    this.axleLoad = vh.mass * 9.81 * (vh.drive === 'awd' ? 1 : vh.rearBias);
+    this.loadTransfer = vh.drive === 'awd' ? 0 : vh.mass * 0.2;
+    this.brakeK = vh.brakeK ?? vh.mass * 9.81 * 0.95;
+    this.dragK = 0.5 * 1.2 * vh.cd * vh.area;
+    this.rollK = vh.mass * 9.81 * 0.012;
+    this.vtExcS = 0;
+    this.combExcS = 0;
+    this.turboSnd = 0;
+    this.scopePrevCA = 0;
+    this.posts = [];
+    this.fade = 0; // output fade in
+  }
+
+  volAt(ca) {
+    const fi = ca * this.tabScale;
+    const i0 = fi | 0;
+    const fr = fi - i0;
+    return this.vol[i0] + (this.vol[i0 + 1] - this.vol[i0]) * fr;
+  }
+
+  get rpm() {
+    return this.omega * 9.549296585513721;
+  }
+
+  // Tuning maps from the workshop: an ignition trim over rpm and manifold
+  // pressure, the full-load mixture and boost target over rpm, and the share
+  // of that boost each gear may use. Cells left as the factory set them are
+  // dropped, so an untouched map changes nothing at all.
+  setMaps(m) {
+    this.maps = m ?? null;
+    const flat = (a) => (a ? Float64Array.from(a.flat()) : null);
+    this.mRpm = flat(m?.rpm);
+    this.mKpa = flat(m?.kpa);
+    this.mSpark = flat(m?.spark);
+    if (this.mSpark && this.mSpark.every((x) => x === 0)) this.mSpark = null;
+    this.mAfr = flat(m?.afr);
+    if (this.mAfr && this.mAfr.every((x) => x === this.afrTarget)) this.mAfr = null;
+    this.mBoost = flat(m?.boost);
+    this.mGear = flat(m?.gear);
+    if (this.mGear && this.mGear.every((x) => x === 1)) this.mGear = null;
+  }
+
+  // ignition trim (degrees) at this rpm and manifold pressure
+  sparkMap(rpm) {
+    const cols = this.mRpm.length;
+    const pc = axisAt(this.mRpm, rpm), pr = axisAt(this.mKpa, this.pPl / 1000);
+    const c = Math.min(cols - 2, Math.floor(pc)), r = Math.min(this.mKpa.length - 2, Math.floor(pr));
+    const fc = pc - c, fr = pr - r;
+    const t = this.mSpark, i = r * cols + c;
+    const lo = t[i] + (t[i + 1] - t[i]) * fc;
+    const hi = t[i + cols] + (t[i + cols + 1] - t[i + cols]) * fc;
+    return lo + (hi - lo) * fr;
+  }
+
+  setOctane(ron) {
+    this.octane = ron;
+    this.kTauInv = (this.cfg.ecu.knockCal || KNOCK_CAL) / (17.68e-3 * Math.pow(ron / 100, 3.402));
+  }
+
+  // Centrifugal blower: pick the pulley ratio that reaches the boost target
+  // at the rev limit (pressure ratio rises with impeller tip speed squared).
+  setCentriRatio() {
+    const PR = 1 + Math.max(0.1, this.boostTarget / P_AMB);
+    const Ut = Math.sqrt((Math.pow(PR, 1 / 3.5) - 1) / 2.17e-6);
+    this.scRatio = (Ut * 1.3) / (this.tRtip * (this.redline / 9.5493) * 3.2);
+  }
+
+  // -------------------------------------------------------------------------
+  // Starter motor
+  // -------------------------------------------------------------------------
+  //
+  // A DC motor on the battery turns the flywheel through its pinion and a
+  // one-way clutch. Every compression stroke loads it: the current climbs,
+  // the armature slows and the gear teeth carry the load. Past top centre the
+  // compressed charge pushes back and the engine runs ahead of the starter
+  // until the next compression catches it up. Multiplied by the gear ratio
+  // the armature's inertia is as large as the engine's, so many cylinders
+  // crank at a steady speed while a twin nearly stops on every compression.
+  // Everything is referred to the crank: N·m, crank rad/s, kg·m².
+
+  initStarter(cfg) {
+    const st = cfg.starter;
+    const fs = this.fs;
+    this.st = st;
+    const Ist = st.volts / st.ohms;
+    this.stTst = st.sat > 0 ? (st.K * Ist * Ist) / (Ist + st.sat) : st.K * Ist; // stall torque
+    this.stIref = 0.35 * Ist;
+    // brushes, bearings and gears: a free armature runs down in under a second
+    this.stLoss0 = 0.035 * this.stTst;
+    this.stLoss1 = (0.05 * this.stTst * st.K) / st.volts;
+    this.stJ = st.inertia;
+    this.stGa = (st.ring / st.pinion) * st.gearing; // armature turns per crank turn
+    this.stV = st.volts;
+    this.stR = st.ohms;
+    this.stW = 0; // armature speed
+    this.stI = 0; // motor current (A)
+    this.stTc = 0; // torque through the one-way clutch
+    this.stLock = false;
+    this.stEng = false; // pinion in mesh, main contacts closed
+    this.stNear = 1; // set by the listener
+    this.alpha = 0; // crank angular acceleration
+    const e = cfg.ecu;
+    // A starter alone can't spin the engine past runRpm; it lets go once the
+    // engine has caught and holds offRpm on its own.
+    this.runRpm = Math.max(Math.min(500, e.idle * 0.6), (1.15 * 9.5493 * st.volts) / st.K);
+    this.offRpm = Math.max(this.runRpm, clamp(e.idle * 0.6, 450, 900));
+
+    // sound
+    this.stActive = false;
+    this.stQuiet = 0;
+    this.stTooth = -1;
+    this.stPin = 0;
+    this.stArm = 0;
+    this.stPlan = 0;
+    this.stKickG = 0;
+    this.stKickC = 0;
+    this.stEnv = 0;
+    this.stEnvK = Math.exp(-1 / (0.7 * fs));
+    this.rkA = lpCoef(110, fs);
+    this.rkB = lpCoef(16, fs);
+    this.rk1 = 0;
+    this.rk2 = 0;
+    this.rkH = 0;
+    // Every pinion tooth and commutator bar is a little different, and the
+    // ring gear is worn where the engine comes to rest between compressions.
+    this.stPinW = Float64Array.from({ length: st.pinion }, (_, k) => clamp(1 + 0.3 * Math.sin((TAU * k) / st.pinion + 1.3) + 0.18 * gauss(), 0.35, 1.9));
+    const rests = Math.max(1, Math.round((this.n * 360) / this.cycle));
+    this.stRingW = Float64Array.from({ length: st.ring }, (_, k) => {
+      const wear = Math.pow(Math.max(0, Math.cos(TAU * ((k / st.ring) * rests + 0.25))), 12);
+      return clamp(1 + 0.08 * gauss() + 0.5 * wear, 0.7, 1.8);
+    });
+    this.stBarW = Float64Array.from({ length: st.bars }, () => clamp(1 + 0.2 * gauss(), 0.5, 1.6));
+    // flywheel, bell housing and starter case modes; sound.starter sets
+    // the level against the engine's own (presets are matched to their idle)
+    const sz = Math.sqrt(st.kw / 1.5) * (cfg.sound.starter ?? 1);
+    const big = Math.pow(2.5 / Math.max(0.6, cfg.dispLitres), 0.12);
+    this.stGear = new Modes(
+      [310 * big, 560 * big, 880 * big, 1330 * big, 2050 * big],
+      [0.014, 0.01, 0.007, 0.005, 0.0035],
+      [0.15 * sz, 0.25 * sz, 0.21 * sz, 0.14 * sz, 0.075 * sz],
+      fs
+    );
+    const small = Math.pow(1.5 / st.kw, 0.15);
+    this.stCase = new Modes([780 * small, 1450 * small, 2350 * small, 3500 * small], [0.006, 0.005, 0.004, 0.003], [0.05 * sz, 0.08 * sz, 0.065 * sz, 0.04 * sz], fs);
+    this.stMagG = 0.02 * sz;
+    this.stPlanG = 0.025 * sz;
+    this.rockG = 0.0008 * (cfg.sound.starter ?? 1);
+
+    // Cranking slowly, compression leaks past the rings, and no two
+    // cylinders seal quite alike.
+    this.cLeak = new Float64Array(this.n).fill(1);
+    this.cLeakVar = Float64Array.from({ length: this.n }, () => clamp(0.6 * gauss(), -0.9, 1.5));
+
+    this.kick = st.type === 'kick';
+    this.kicking = false;
+    if (this.kick) {
+      this.kickTq = st.torque;
+      this.kickW = st.rpm / 9.5493;
+      this.kickRevs = st.revs;
+      this.kickN = 0;
+      this.kickT = 0;
+      this.kickRev = 0;
+      this.kickWait = 0;
+      this.kickGrip = 1;
+      this.kickClick = 0;
+      this.kickClickT = 0;
+      // the leg alone spins it this fast: running means faster than that
+      this.runRpm = st.rpm * 1.15;
+      this.offRpm = this.runRpm;
+    }
+  }
+
+  // Key to START: the solenoid clicks in, and ~40 ms later the pinion is in
+  // mesh and the main contacts close.
+  crankStart(cold) {
+    this.coldT = cold ? 1 : 0;
+    if (this.starter) return;
+    this.starter = true;
+    this.starterT = 0;
+    this.stHold = 0;
+    this.rk1 = this.rk2 = this.rkH = this.J * this.alpha;
+    this.stActive = true;
+    if (this.kick) {
+      // a moment to find compression before the first kick
+      this.kickN = 0;
+      this.kickWait = 0.3;
+    } else {
+      // a cold battery sags further under the cranking current
+      this.stV = this.st.volts * (cold ? 0.98 : 1);
+      this.stR = this.st.ohms * (cold ? 1.06 : 1);
+      this.stKickC += 0.6;
+    }
+    if (!this.running) {
+      // The ECU fires only once it has seen the cam and crank signals (a
+      // dry-sump race engine is spun up for oil pressure first; a magneto
+      // sparks at once), and a cold port wall soaks up the first squirts.
+      this.crankRevs = 0;
+      this.syncRevs = this.kick ? 0.05 : (this.st.type === 'external' ? 7 : 1.1) + 1.3 * rnd();
+      this.filmLeft = cold ? Math.round(this.n * (0.3 + 0.4 * rnd())) + 1 : 0;
+    }
+  }
+
+  // Kick start: one stroke of the lever turns the crank ~2.5 times, then the
+  // gear lets go and the lever springs back up over its ratchet. Another
+  // kick follows if the engine didn't catch.
+  kickControl(dtc) {
+    if (this.kicking) {
+      this.kickT += dtc;
+      if (this.kickRev >= this.kickRevs || this.kickT > 0.45 || !this.starter) {
+        this.kicking = false;
+        this.kickClick = 6;
+        this.kickClickT = 0.06;
+        this.kickWait = 0.8 + 0.4 * rnd();
+        this.stActive = true;
+      }
+    } else if (this.starter && !this.running) {
+      this.kickWait -= dtc;
+      if (this.kickWait <= 0) {
+        if (this.kickN >= 6) {
+          this.starter = false; // flooded or out of breath
+          return;
+        }
+        this.kicking = true;
+        this.kickN++;
+        this.kickT = 0;
+        this.kickRev = 0;
+        this.kickGrip = 0.85 + 0.3 * rnd(); // no two kicks alike
+        this.stKickG += 2.2; // boot on the lever, the kick gear snaps in
+        this.stKickC += 0.8;
+        this.stActive = true;
+      }
+    }
+  }
+
+  // Armature current at crank-referred speed w. A series field saturates
+  // (flux ~ I / (I + sat)), which gives a closed form; sat = 0 is a
+  // permanent-magnet motor.
+  motorCurrent(w) {
+    const V = this.stV, R = this.stR, K = this.st.K, S = this.st.sat;
+    if (S <= 0) {
+      const I = (V - K * w) / R;
+      return I > 0 ? I : 0;
+    }
+    const b = V - R * S - K * w;
+    return (b + Math.sqrt(b * b + 4 * R * V * S)) / (2 * R);
+  }
+
+  motorTorque(I) {
+    const S = this.st.sat;
+    return S > 0 ? (this.st.K * I * I) / (I + S) : this.st.K * I;
+  }
+
+  // Engine and starter for one sample with the pinion in mesh. net: every
+  // other torque on the crank. Returns the new crank speed.
+  stepStarter(omega, net, dt) {
+    const J = this.J, Ja = this.stJ;
+    let wa = this.stW;
+    const I = this.motorCurrent(wa);
+    const Tm = this.motorTorque(I) - this.stLoss0 - this.stLoss1 * wa;
+    this.stI = I;
+    if (this.stLock) {
+      const a = (net + Tm) / (J + Ja);
+      const Tc = Tm - Ja * a; // what the clutch passes on
+      if (Tc >= 0) {
+        this.stTc = Tc;
+        const w = omega + a * dt;
+        this.stW = w > 0 ? w : 0;
+        return this.stW;
+      }
+      // the engine runs ahead: the rollers let go and the teeth unload
+      this.stLock = false;
+      this.stKickG += 0.12;
+    }
+    this.stTc = 0;
+    let w = omega + (net / J) * dt;
+    if (w < 0) w = 0;
+    wa += (Tm / Ja) * dt;
+    if (wa < 0) wa = 0;
+    if (wa >= w) {
+      // caught up: the rollers wedge and the two turn together
+      w = wa = (J * w + Ja * wa) / (J + Ja);
+      this.stLock = true;
+    }
+    this.stW = wa;
+    return w;
+  }
+
+  // Starter sound, Pa at 1 m: pinion teeth slapping into the ring gear (hard
+  // under load, a light rattle while the engine runs ahead), brushes
+  // snapping across the commutator, the magnets' hum and the planetary
+  // gears' whine, all following current and speed; the solenoid's clunks;
+  // and the engine rocking on its mounts.
+  starterSound() {
+    if (this.kick) return this.kickSound();
+    const st = this.st;
+    const fs = this.fs;
+    let gx = this.stKickG;
+    let cx = this.stKickC;
+    this.stKickG = 0;
+    this.stKickC = 0;
+    const load = this.stTc / this.stTst;
+    const cur = this.stI / this.stIref;
+    if (this.stEng) {
+      const tooth = ((this.cCA[0] % 360) * st.ring / 360) | 0;
+      if (tooth !== this.stTooth) {
+        this.stTooth = tooth;
+        this.stPin = this.stPin + 1 >= st.pinion ? 0 : this.stPin + 1;
+        gx += (0.35 + 1.3 * load) * this.stPinW[this.stPin] * this.stRingW[tooth] * (0.8 + 0.4 * rnd());
+      }
+    }
+    let tone = 0;
+    const fa = (this.stW * this.stGa) / TAU; // armature turns per second
+    if (fa > 0.2) {
+      const a0 = this.stArm;
+      let a1 = a0 + (fa * st.bars) / fs;
+      if ((a1 | 0) !== (a0 | 0)) cx += (0.15 + 0.6 * cur) * this.stBarW[(a1 | 0) % st.bars] * (0.7 + 0.6 * rnd());
+      if (a1 >= st.bars) a1 -= st.bars;
+      this.stArm = a1;
+      tone += Math.sin((TAU * st.poles * a1) / st.bars) * cur * this.stMagG;
+      if (st.sun > 0) {
+        let p = this.stPlan + (st.sun * fa * (1 - 1 / st.gearing)) / fs;
+        p -= Math.floor(p);
+        this.stPlan = p;
+        tone += (Math.sin(TAU * p) + 0.3 * Math.sin(2 * TAU * p + 0.9)) * (0.4 + load + 0.3 * cur) * this.stPlanG * Math.min(1, fa / 40);
+      }
+    }
+    // the mounts react the crank's angular acceleration: a low thud with
+    // every compression, and a kick when the engine catches
+    this.stEnv = this.stEng ? 1 : this.stEnv * this.stEnvK;
+    this.rk1 += this.rkA * (this.J * this.alpha - this.rk1);
+    this.rk2 += this.rkA * (this.rk1 - this.rk2);
+    this.rkH += this.rkB * (this.rk2 - this.rkH);
+    const thud = 0.4 * ftanh(((this.rk2 - this.rkH) * this.rockG * this.stEnv) / 0.4);
+    if (this.stEng || this.stW > 0.3 || this.stEnv > 2e-3) this.stQuiet = 0;
+    else if (++this.stQuiet > fs * 0.1) this.stActive = false;
+    return (this.stGear.tick(gx) + this.stCase.tick(cx) + tone + thud) * this.stNear;
+  }
+
+  // Kick start sound: the kick gear snapping in and whirring through the
+  // primary drive, the lever ratcheting back up and topping out on its stop,
+  // and the engine rocking on its mounts.
+  kickSound() {
+    let gx = this.stKickG;
+    let cx = this.stKickC;
+    this.stKickG = 0;
+    this.stKickC = 0;
+    if (this.kicking) {
+      const tooth = ((this.cCA[0] % 360) * 18 / 360) | 0; // primary gear teeth
+      if (tooth !== this.stTooth) {
+        this.stTooth = tooth;
+        gx += 0.12 * (0.6 + 0.8 * rnd());
+      }
+    }
+    if (this.kickClick > 0) {
+      this.kickClickT -= this.dt;
+      if (this.kickClickT <= 0) {
+        this.kickClick--;
+        if (this.kickClick > 0) cx += 0.4 * (0.7 + 0.6 * rnd());
+        else gx += 1.1;
+        this.kickClickT = 0.014 + 0.01 * rnd();
+      }
+    }
+    this.stEnv = this.kicking ? 1 : this.stEnv * this.stEnvK;
+    this.rk1 += this.rkA * (this.J * this.alpha - this.rk1);
+    this.rk2 += this.rkA * (this.rk1 - this.rk2);
+    this.rkH += this.rkB * (this.rk2 - this.rkH);
+    const thud = 0.4 * ftanh(((this.rk2 - this.rkH) * this.rockG * this.stEnv) / 0.4);
+    if (this.kicking || this.kickClick > 0 || this.stEnv > 2e-3) this.stQuiet = 0;
+    else if (++this.stQuiet > this.fs * 0.1) this.stActive = false;
+    return (this.stGear.tick(gx) + this.stCase.tick(cx) + thud) * this.stNear;
+  }
+
+  // -------------------------------------------------------------------------
+  // Per-cycle cylinder events
+  // -------------------------------------------------------------------------
+
+  onIVC(c, rpm) {
+    if (this.twoStroke) {
+      // charge pushed back in by the chamber this cycle, per cylinder
+      this.plug += ((this.plugAcc * this.n) / (1.18 * this.vd) - this.plug) * 0.15;
+      this.plugAcc = 0;
+    }
+    const m = this.cm[c];
+    const mb = this.cMb[c];
+    const fresh = Math.max(0, m - mb);
+    const xr = mb / m;
+    const load = fresh / (1.18 * this.vd);
+    this.cAirIn[c] = fresh;
+    this.telAir += fresh;
+    // nitrous in the charge: its oxygen counts 1.57 times
+    const nos = fresh * this.nosX;
+    const o2 = nos > 0 ? fresh + (NOS_O2 - 1) * nos : fresh;
+
+    const cranking = rpm < 350;
+    let fuelOn = this.ignition && !this.dfco && this.crankRevs >= this.syncRevs;
+    // cold start: the first squirts wet the port walls instead of the charge
+    if (fuelOn && this.filmLeft > 0) {
+      this.filmLeft--;
+      fuelOn = false;
+    }
+    if (this.limCut && this.limiterType === 'fuel') fuelOn = false;
+    let afr = this.afrTarget;
+    // (afr0: what the factory map would have given, to judge the change by)
+    let afr0 = afr;
+    if (this.mAfr) afr = lerpAt(this.mAfr, axisAt(this.mRpm, rpm));
+    if (cranking) afr = afr0 = 11;
+    if (load < 0.6) {
+      afr = 14.7 + (afr - 14.7) * Math.max(0, load - 0.35) / 0.25;
+      afr0 = 14.7 + (afr0 - 14.7) * Math.max(0, load - 0.35) / 0.25;
+    }
+    if (this.dfco && this.burbleActive) {
+      fuelOn = this.ignition;
+      afr = afr0 = 11.5;
+    }
+    if (this.alsActive) {
+      fuelOn = this.ignition;
+      afr = afr0 = 10.5;
+    }
+    if (this.launchCut) afr = afr0 = 11.5;
+    if (this.tcCut > 0.45 && rnd() < (this.tcCut - 0.45) * 1.6) fuelOn = false; // TC cuts fuel
+    // (the nitrous kit adds the fuel to match its oxygen)
+    const fuel = fuelOn ? o2 / afr : 0;
+    const burnable = Math.min(fuel, o2 / AFR_ST);
+    this.cFuel[c] = fuel;
+    this.cBurnable[c] = burnable;
+    this.telFuel += fuel;
+    this.lastAfr = fuelOn ? afr : 0;
+
+    // A mixture moved away from the factory's: richer burns a little faster
+    // (towards lambda 0.9), makes a little more torque, and keeps the end gas
+    // cooler (more fuel evaporating, a cooler flame), so it knocks later;
+    // leaner burns slower and hotter and knocks sooner.
+    let mixDur = 1, mixQ = 1, cool = 0;
+    this.cKl[c] = 1;
+    this.cEgt[c] = 1;
+    if (fuel > 0 && afr !== afr0) {
+      const lam = afr / AFR_ST, lam0 = afr0 / AFR_ST;
+      mixDur = flameSpeed(lam0) / flameSpeed(lam);
+      mixQ = richGain(lam) / richGain(lam0);
+      this.cKl[c] = Math.exp(3.5 * (lam - lam0));
+      this.cEgt[c] = egtGain(lam) / egtGain(lam0);
+      cool = (fuel - o2 / afr0) * 200e3;
+    }
+
+    // add fuel vapour to charge
+    if (fuel > 0) {
+      const T = this.cU[c] / (m * CV);
+      this.cm[c] = m + fuel;
+      this.cU[c] += fuel * CV * T;
+      if (cool !== 0) this.cU[c] -= clamp(cool, -0.1 * this.cU[c], 0.1 * this.cU[c]);
+    }
+
+    let spark = this.ignition && fuel > 0;
+    if (this.limCut && this.limiterType === 'spark') spark = false;
+    if (this.shiftCut > 0) spark = false;
+    if (this.launchCut && rnd() < 0.55) spark = false;
+
+
+    // Combustion variability grows with residual gas and light load.
+    const sig = 0.016 + 0.45 * Math.max(0, xr - 0.14) + 0.04 * Math.max(0, 0.4 - load);
+    let misfire = false;
+    if (xr > 0.3 && rnd() < (xr - 0.3) * 1.6) misfire = true;
+    if (load < 0.08 && rnd() < (0.08 - load) * 5) misfire = true;
+    if (cranking && rnd() < 0.25) misfire = true;
+
+    if (!spark || misfire || burnable <= 0) {
+      this.cBurn[c] = 0;
+      this.cQ[c] = 0;
+      return;
+    }
+    const rpmF = Math.min(rpm, 16000) / 7000;
+    let dur =
+      50 * this.cfg.burnScale * (0.82 + 0.3 * rpmF) * (1 + 2.2 * Math.max(0, xr - 0.06)) * (1 + 0.7 * Math.max(0, 0.55 - load));
+    dur *= 1 + 0.45 * sig * gauss();
+    if (mixDur !== 1) dur *= mixDur;
+    if (dur < 20) dur = 20;
+    // Spark advance for best torque (CA50 around 8-10 deg ATDC).
+    let adv = 0.5 * dur - 9 + this.sparkTrim + this.ecu.sparkBase + this.sparkAdj - this.knockRet - this.tipRet;
+    if (this.mSpark) adv += this.sparkMap(rpm);
+    // factory spark map: knock-limited retard when lugging and under boost
+    if (load > 0.6) adv -= 10 * clamp((2400 - rpm) / 1400, 0, 1) * Math.min(1, (load - 0.6) / 0.35) + Math.max(0, load - 0.75) * 4 + Math.max(0, load - 1) * 3;
+    if (cranking) adv = 5;
+    if (this.dfco && this.burbleActive) adv = -18 - 22 * rnd() * this.burble;
+    if (this.alsActive) adv = -38 - 16 * rnd();
+    if (this.launchCut) adv = -15 - 10 * rnd();
+    if (nos > 0) {
+      // oxygen-rich charge burns faster; the nitrous controller pulls timing
+      dur /= 1 + (2 * nos) / fresh;
+      adv -= this.nosRet;
+    }
+    if (this.shiftRetard > 0) adv -= 25 * this.shiftRetard;
+    if (this.tcCut > 0) adv -= 28 * Math.min(1, this.tcCut * 2);
+    // A flame lit after TDC burns into an expanding, cooling charge: slower.
+    if (adv < 0) dur *= 1 + -adv / 16;
+    let q = burnable * LHV * this.cfg.combustion * Math.max(0.2, 1 + sig * gauss());
+    if (mixQ !== 1) q *= mixQ;
+    if (nos > 0) q += nos * NOS_DH * this.cfg.combustion;
+    this.cQ[c] = q;
+    this.lastAdv = adv;
+    this.cDur[c] = dur;
+    let sp = this.tdcFire - adv;
+    sp = ((sp % this.cycle) + this.cycle) % this.cycle;
+    this.cSpark[c] = sp;
+    this.cBurn[c] = 1;
+    this.cXb[c] = 0;
+  }
+
+  onEVO(c) {
+    const fuel = this.cFuel[c];
+    const burnable = this.cBurnable[c];
+    let xb = 0;
+    const st = this.cBurn[c];
+    if (st === 2) xb = this.cXb[c];
+    else if (st === 3) xb = 1;
+    // Unburned fuel leaves with the exhaust; late combustion keeps burning.
+    const unburnt = fuel - burnable * xb;
+    const fresh = this.cAirIn[c];
+    const airLeft = Math.max(0, fresh - burnable * xb * AFR_ST);
+    const node = this.cAf[c];
+    if (node >= 0) {
+      this.afFuel[node] += unburnt;
+      this.afAir[node] += airLeft + (this.alsActive ? fresh * 0.8 : 0); // ALS secondary air
+      const T = this.cU[c] / (this.cm[c] * CV);
+      // a charge still burning at EVO carries flame into the pipe
+      const heat = st === 2 ? 1 : st === 3 ? 0.12 : 0.05;
+      this.afHeat[node] = Math.max(this.afHeat[node] * 0.9, heat * clamp((T - 700) / 900, 0, 1) + (st === 2 ? 0.5 : 0));
+    }
+    if (st >= 2) {
+      this.cMb[c] = this.cm[c] * (0.6 + 0.4 * xb);
+      this.cFired[c] = Math.min(1.5, this.cQ[c] * xb / (1.18 * this.vd * 3.0e6));
+    }
+    this.cBurn[c] = 0;
+    this.cFuel[c] = 0;
+    if (!this.twoStroke) this.cExB[c] = this.cMb[c] / this.cm[c];
+    // EGT estimate weighted by mass
+    const T = this.cU[c] / (this.cm[c] * CV);
+    this.egtAcc += T * this.cm[c] * this.cEgt[c];
+    this.egtW += this.cm[c];
+  }
+
+  // -------------------------------------------------------------------------
+  // Control-rate logic (ECU, gearbox automation, boost control)
+  // -------------------------------------------------------------------------
+
+  control(dtc) {
+    const rpm = this.rpm;
+    const e = this.ecu;
+    this.sinceStart += dtc;
+
+    // Starter: let go once the engine has caught and holds its own speed
+    if (this.starter) {
+      this.starterT += dtc;
+      this.crankRevs += (rpm / 60) * dtc;
+      this.stHold = this.running && rpm > this.offRpm ? this.stHold + dtc : 0;
+      if (!this.ignition || this.stHold > 0.1 || this.starterT > (this.kick ? 9 : 6)) this.starter = false;
+    }
+    if (this.kick) this.kickControl(dtc);
+    // the pinion meshes and the main contacts close ~40 ms after the key
+    const eng = this.starter && this.starterT > 0.04 && !this.kick;
+    if (eng !== this.stEng) {
+      this.stEng = eng;
+      this.stLock = false;
+      this.stTc = 0;
+      if (eng) {
+        this.stKickG += 3.5; // pinion slams into the ring gear
+        this.stKickC += 3;
+      } else {
+        this.stKickC += 1.6; // plunger springs back, pinion out
+        this.stKickG += 0.8;
+      }
+      this.stActive = true;
+    }
+    // cycle-averaged speed: cranking a big twin swings the instantaneous rpm
+    // far more than the threshold
+    this.rpmAvg += (rpm - this.rpmAvg) * Math.min(1, dtc * 6);
+    if (!this.running && this.ignition && this.rpmAvg > this.runRpm) {
+      this.running = true;
+      this.flare = e.startFlare;
+      this.idleI = 0;
+      this.sinceStart = 0;
+    }
+    if (this.running && (rpm < 120 || !this.ignition)) this.running = false;
+
+    // Idle target with start flare & cold fast idle
+    this.flare *= Math.exp(-dtc / 1.4);
+    this.coldT = Math.max(0, this.coldT - dtc / 25);
+    this.idleTarget = e.idle + this.flare + 250 * this.coldT;
+
+    // Idle speed control (bypass air PI + fast spark trim)
+    const idleActive = this.ignition && this.pedal < 0.03;
+    // rpm rate for predictive fuel resume / dashpot
+    const dRpm = (rpm - this.lastRpm) / dtc;
+    this.lastRpm = rpm;
+    this.rpmRate += (dRpm - this.rpmRate) * Math.min(1, dtc * 20);
+    if (idleActive && this.running) {
+      // integrate unless coasting down fast (anti-windup)
+      // act on where the revs are heading, not just where they are
+      const errP = this.idleTarget - (rpm + this.rpmRate * 0.25);
+      // Learn only once the revs have landed: integrating the overshoot of a
+      // blip or lift-off would leave the idle sagging for seconds afterwards.
+      if (!this.dfco && this.landing < 0.15 && this.liftT > 1.2) {
+        const ei = clamp(errP, -250, 400);
+        this.idleI = clamp(this.idleI + ei * (ei > 60 ? 9e-4 : 4e-4) * dtc, -0.9, 2.5);
+      }
+      if (this.dfco) {
+        // dashpot: hold air proportional to speed while coasting down
+        this.bypass = this.bypassFF * clamp(0.9 + this.idleI, 0.5, 2.5) * clamp((0.8 * rpm) / this.idleTarget, 1, 4);
+      } else {
+        const pe = clamp(errP, -500, 800);
+        this.landing *= Math.exp(-dtc / 0.5);
+        this.bypass = clamp(this.bypassFF * (1 + this.idleI + pe * 7e-4 + 1.2 * this.landing), this.bypassFF * 0.1, this.bypassFF * 5);
+      }
+      this.sparkTrim = clamp(errP * 0.05, -12, 18);
+    } else {
+      this.bypass += (this.bypassFF * (1 + this.idleI) - this.bypass) * Math.min(1, dtc * 3);
+      this.sparkTrim *= 0.9;
+    }
+    // cranking air; a two-stroke kicked over at speed needs no extra
+    if (!this.running) this.bypass = this.bypassFF * (this.twoStroke ? 1 : 1.6);
+
+    // Decel fuel cut / burble
+    // Coast (decel fuel cut) vs idle regulation. Fuel resumes early when the
+    // revs are falling fast so the engine lands softly on its idle speed.
+    const resume = this.idleTarget + 250 + clamp(-this.rpmRate * 0.15, 0, 900);
+    if (this.pedal < 0.03 && this.running && !this.launch && !this.twoStroke) {
+      if (this.dfco) {
+        if (rpm < resume) {
+          this.dfco = false;
+          // extra air for a soft landing, in proportion to how fast the revs fall
+          this.landing = clamp(-this.rpmRate / 2500, 0, 1);
+        }
+      } else if (rpm > this.idleTarget + 700 && (this.liftT < 2 || rpm > this.idleTarget + 1400)) this.dfco = true;
+    } else this.dfco = false;
+    // Overrun burble: a burst of crackles for a couple of seconds after lift-off.
+    if (this.pedal > 0.25) this.liftT = 0;
+    else this.liftT += dtc;
+    const win = 0.6 + 3.2 * this.burble;
+    this.burbleActive =
+      this.burble > 0 && this.dfco && rpm > 1900 && rpm < this.limitRpm * 0.85 && this.liftT < win && rnd() < 0.25 + 0.5 * this.burble * (1 - this.liftT / win);
+
+    // Anti-lag: keep air & fuel flowing, retard spark massively
+    this.alsActive =
+      this.antilag && this.isTurbo && this.pedal < 0.15 && rpm > 3000 && this.running && this.gear > 0 && (this.mode === 'drive' || this.mode === 'flyby');
+
+    // Rev limiter with hysteresis
+    const lim = this.launch && this.v < 1 ? this.launchRpm : this.limitRpm;
+    if (rpm > lim) this.limCut = true;
+    else if (rpm < lim - (this.launch ? 250 : e.hyst)) this.limCut = false;
+    this.launchCut = this.launch && this.v < 1 && this.limCut;
+    if (this.launchCut) this.limCut = false;
+
+    // Two-stroke exhaust power valve: a servo raises the port roof through
+    // its rpm range
+    if (this.pvRpm) {
+      const pvT = clamp((rpm - this.pvRpm[0]) / (this.pvRpm[1] - this.pvRpm[0]), 0, 1);
+      this.pv += (pvT - this.pv) * Math.min(1, dtc * 5);
+    }
+
+    // VTEC-style cam switch
+    if (this.camSwitch > 0) {
+      if (!this.camHi && rpm > this.camSwitch && this.thr > 0.35) this.camHi = true;
+      else if (this.camHi && (rpm < this.camSwitch - 300 || this.thr < 0.2)) this.camHi = false;
+    }
+
+    // Traction control: trims torque with spark cuts when the driven wheels
+    // spin (the classic stuttering 'brap').
+    if (this.tc && this.gear > 0 && (this.mode === 'drive' || this.mode === 'flyby')) {
+      const allow = 1.6 + 0.12 * this.v;
+      const ex = this.slip - allow;
+      this.tcCut = clamp(this.tcCut + (ex > 0 ? ex * 0.25 : -0.8) * dtc * 10, 0, rpm < 2500 ? 0.2 : 0.7);
+    } else this.tcCut = 0;
+
+    // Shift ignition cut timers
+    if (this.shiftCut > 0) this.shiftCut -= dtc;
+    if (this.shiftRetard > 0) this.shiftRetard = Math.max(0, this.shiftRetard - dtc * 8);
+
+    this.nitrousControl(dtc, rpm);
+
+    // Exhaust bypass valve
+    let vt = 0;
+    if (this.valveMode === 'open') vt = 1;
+    else if (this.valveMode === 'auto') {
+      vt = rpm > 3800 && this.thr > 0.35 ? 1 : this.thr > 0.8 ? 1 : 0;
+      // cold start: the valves stay open through the start flare
+      if (this.running && this.coldT > 0.5 && this.sinceStart < 2.5) vt = 1;
+    }
+    this.valveOpen += (vt - this.valveOpen) * Math.min(1, dtc * 6);
+
+    // Throttle command (pedal, blips, ALS)
+    let cmd = this.pedal;
+    if (this.blip > 0) {
+      cmd = Math.max(cmd, 0.55);
+      this.blip -= dtc;
+    }
+    if (this.alsActive) cmd = Math.max(cmd, 0.11);
+    if (!this.ignition) cmd = this.pedal;
+    this.thrCmd = cmd;
+    // idle air moves in control-rate steps; ramp it so the flow through the
+    // throttle (heard at the intake) has no 1.5 kHz staircase in it
+    this.bypassStep = (this.bypass - this.bypassS) / 32;
+
+    // Boost control
+    if (this.isTurbo || this.isCentri) {
+      // Electronic boost control on the wastegate: a gentle proportional
+      // band, an integral trim, and a lead on the shaft's acceleration (the
+      // wheel races ahead of the boost it is about to make).
+      // (anti-lag aims a little lower: enough to come back on boost at once
+      // without the relief valve venting all the while)
+      // (the tuning map sets the target by rpm, and a share of it by gear)
+      let bt = this.boostTarget;
+      if (this.mBoost) bt = lerpAt(this.mBoost, axisAt(this.mRpm, rpm)) * 1e5;
+      if (this.mGear && this.gear > 0 && (this.mode === 'drive' || this.mode === 'flyby')) bt *= this.mGear[Math.min(this.gear, this.mGear.length) - 1];
+      this.boostNow = bt;
+      const tgt = this.alsActive ? bt * 0.7 : bt;
+      const b = this.pB - P_AMB;
+      const e = (b - tgt) / (tgt + 2e4);
+      this.pBrate += ((this.pB - this.pBprev) / dtc - this.pBrate) * Math.min(1, dtc * 40);
+      this.pBprev = this.pB;
+      // (a sequential pair's second shaft counts once its compressor delivers)
+      const r1 = (this.wt - this.wtPrev) / dtc, r2 = (this.wt2 - this.wt2Prev) / dtc;
+      this.wtRate += (Math.max(0, r1) + (this.mc2 > 0 ? Math.max(0, r2) : 0) - this.wtRate) * Math.min(1, dtc * 30);
+      this.wtPrev = this.wt;
+      this.wt2Prev = this.wt2;
+      // (held while anti-lag runs, so the gate is where it belongs on the way back in)
+      if (!this.alsActive) this.wgI = clamp(this.wgI + e * 3 * dtc, 0, 1);
+      const lead = b > 0.6 * tgt && this.pBrate > 0 ? (this.wtRate * this.tRtip) / 560 : 0;
+      // the actuator spring starts cracking the gate open just short of target
+      const crack = clamp((b - 0.85 * tgt) / (0.25 * tgt + 1e4), 0, 1) * 0.25;
+      const wgT = clamp(this.wgI + crack + e * 1.2 + lead * 0.6, 0, 1);
+      this.wg += (wgT - this.wg) * Math.min(1, dtc * 25);
+      // Blow-off valve opens on closed throttle with pressure in the pipes; with
+      // anti-lag it doubles as a pressure relief above the boost target.
+      const relief = this.alsActive && this.pB - P_AMB > bt;
+      // (vacuum referenced: it opens on the pressure drop across a closing
+      // throttle, before the plate is even shut, but not across one still
+      // opening as the driver gets back on it)
+      const bovT = (this.bovType !== 'none' && this.thr < 0.5 && this.thrCmd < 0.3 && this.pB - this.pPl > 35000 && !this.alsActive) || relief ? 1 : 0;
+      if (bovT) this.bov = Math.min(1, this.bov + dtc * 120);
+      // (anti-lag shuts it again once armed: the boost is there to be kept)
+      else if (this.pB - P_AMB < 12000 || this.thr > 0.3 || this.alsActive) this.bov = Math.max(0, this.bov - dtc * 25);
+      this.bovStep = (this.bov - this.bovS) / 32;
+    }
+    if (this.seqRpm) {
+      // second stage: its valves open above the switch speed under load and
+      // close again lower down or off the throttle
+      if (rpm > this.seqRpm && this.thr > 0.3) this.stageT = 1;
+      else if (rpm < this.seqRpm - 400 || this.thr < 0.12) this.stageT = 0;
+      this.stage += (this.stageT - this.stage) * Math.min(1, dtc * 7);
+    }
+    if (this.isSC) {
+      const byT = this.pedal > 0.55 ? 0 : 1;
+      this.scBypass += (byT - this.scBypass) * Math.min(1, dtc * 12);
+      this.scBypassStep = (this.scBypass - this.scBypassS) / 32;
+    }
+
+    // Valve float above the spring limit; knock retard creeps back.
+    const fRpm = this.floatRpm * this.floatMul;
+    this.floatSev = rpm > fRpm ? Math.min(1.6, (rpm - fRpm) / (0.07 * fRpm)) : 0;
+    if (this.knockRet > 0) this.knockRet = Math.max(0, this.knockRet - dtc * 2);
+    // tip-in retard: a sudden throttle opening fills the cylinders before the
+    // spark map has caught up, so the ECU pulls timing for a moment
+    const dThr = this.thr - this.thrPrevC;
+    this.thrPrevC = this.thr;
+    this.tipRet = Math.max(0, Math.min(8, this.tipRet + (dThr > 0 ? dThr * 30 : 0)) - dtc * 12);
+
+    // Friction torque (FMEP from mean piston speed). Below ~400 rpm the rings
+    // and bearings run short of oil film and drag harder, more so cold.
+    const sp = (2 * this.cfg.stroke * rpm) / 60;
+    const dry = (0.45 + 0.35 * this.coldT) * Math.exp(-(rpm * rpm) / 90000);
+    this.fric = this.fricK * (0.72 + 0.024 * sp + 0.0019 * sp * sp + dry);
+    // turning slowly, compression has time to leak past the rings
+    const lk = clamp((520 - rpm) / 260, 0, 1);
+    for (let c = 0; c < this.n; c++) this.cLeak[c] = 1 + lk * (2.5 + 2.5 * this.cLeakVar[c]);
+
+    this.vehicleControl(dtc, rpm);
+    if (this.aeroMic) this.aeroCtl(dtc);
+
+    // Temperatures -> pipe sound speed
+    if (this.twoStroke) {
+      // everything the port lets out, scavenging air and all, averaged
+      // over the last ~50 ms
+      if (this.egtOutW > 0) this.egtInst = this.egtOut / this.egtOutW;
+      else if (!this.running) this.egtInst += (T_AMB + 40 - this.egtInst) * dtc * 0.3;
+      const k = Math.exp(-dtc / 0.05);
+      this.egtOut *= k;
+      this.egtOutW *= k;
+      this.egtAcc = 0;
+      this.egtW = 0;
+    } else if (this.egtW > 0) {
+      this.egtInst = (this.egtAcc / this.egtW) * 0.78;
+      this.egtAcc = 0;
+      this.egtW = 0;
+    } else if (!this.running) {
+      this.egtInst += (T_AMB + 40 - this.egtInst) * dtc * 0.3;
+    }
+    // The pipe walls hold their heat. On fuel cut the engine pumps air that
+    // expanded colder than ambient through them; it picks up heat from the
+    // steel on the way, so the gas in the pipe stays well above ambient and
+    // cools only as fast as the walls do.
+    this.pipeWall += (this.egt - this.pipeWall) * Math.min(1, dtc / (this.egt > this.pipeWall ? 6 : 25));
+    const floor = T_AMB + 0.55 * Math.max(0, this.pipeWall - T_AMB);
+    this.egt += (Math.max(this.egtInst, floor) - this.egt) * Math.min(1, dtc * 1.3);
+    this.ex.wander(dtc);
+    this.inn.wander(dtc);
+    if (++this.tempCounter >= 8) {
+      this.tempCounter = 0;
+      this.ex.setGasTemp(clamp(this.egt, 320, 1250));
+      this.inn.setGasTemp(this.Tpl);
+    }
+    this.updateResistors();
+  }
+
+  // Nitrous. A WOT switch and an rpm window gate the solenoids; with the
+  // throttle shut the button opens the purge valve instead, which vents
+  // the line to the air. The bottle drains with every second of either.
+  nitrousControl(dtc, rpm) {
+    const win = rpm > Math.max(2500, this.ecu.idle * 2) && rpm < this.limitRpm - 300;
+    const spray = this.nosBtn && this.running && this.pedal > 0.85 && win && !this.limCut && this.bottle > 0;
+    const purge = this.nosBtn && this.pedal < 0.1 && this.bottle > 0;
+    if (spray !== this.nosOn) {
+      this.nosOn = spray;
+      this.nosClick += spray ? 1 : 0.6; // the solenoids snap
+    }
+    if (purge !== this.nosPurge) {
+      this.nosPurge = purge;
+      this.nosClick += purge ? 0.8 : 0.5;
+    }
+    // the last of the bottle comes out as a sputter of gas
+    const full = this.nosShot * NOS_PER_HP;
+    const left = clamp(this.bottle / (0.06 * this.nosBottle), 0, 1);
+    this.nosFlow += ((spray ? full * left : 0) - this.nosFlow) * Math.min(1, dtc / 0.03);
+    this.purgeFlow += ((purge ? 1.5 * full * left + 0.004 : 0) - this.purgeFlow) * Math.min(1, dtc / (purge ? 0.01 : 0.12));
+    if (this.nosFlow < 1e-7) this.nosFlow = 0;
+    if (this.purgeFlow < 1e-6) this.purgeFlow = 0;
+    this.bottle = Math.max(0, this.bottle - (this.nosFlow + this.purgeFlow) * dtc);
+    // the chill of it flashing to gas, for its share of the charge
+    if (this.nosX > 0) {
+      const cool = Math.min(40, (this.nosX * NOS_LAT) / 1005);
+      this.nosCool += (cool - this.nosCool) * Math.min(1, dtc / 0.4);
+      this.nosRet = 24 * this.nosX;
+    } else if (this.nosCool > 0) {
+      this.nosCool *= Math.exp(-dtc / 0.8);
+      if (this.nosCool < 0.01) this.nosCool = 0;
+    }
+    if (!this.boosted) this.Tpl = T_AMB - this.nosCool;
+  }
+
+  // Nitrous sounds: the solenoids' snap, the purge valve's roar of gas and,
+  // much quieter, the hiss of the nozzle while it sprays.
+  nitrousSound() {
+    let x = 0;
+    const f = this.purgeFlow + 0.12 * this.nosFlow;
+    if (f > 0) {
+      const nz = rnd() - 0.5;
+      this.hs1 += this.hsA * (nz - this.hs1);
+      this.hs2 += this.hsB * (this.hs1 - this.hs2);
+      // (level set against the engine's own loudness trim, so every car's
+      // purge sits the same distance under its full-throttle roar)
+      x = ((this.hs1 - this.hs2) * 60 * Math.sqrt(f)) / this.snd.trim;
+    }
+    const k = this.nosClick;
+    this.nosClick = 0;
+    if (k > 0) this.nosRing = this.fs * 0.06;
+    if (this.nosRing > 0) {
+      this.nosRing--;
+      x += this.nosSol.tick(k);
+    }
+    return x;
+  }
+
+  // Valves, wastegates and turbines change at control rate; each resistor
+  // glides to its new value over the next 32 samples (geometrically, as K
+  // spans decades) so the flow has no 1.5 kHz staircase in it.
+  updateResistors() {
+    const ex = this.ex;
+    for (let i = 0; i < ex.res.length; i++) {
+      const d = ex.rDyn[i];
+      let K;
+      if (d === DYN_VALVE) {
+        const o = this.valveOpen;
+        const A = 0.0022 * o + 1e-6;
+        K = Math.min(ex.rClosedK[i], (1 / (2 * 0.6 * A * A)) * 0.15);
+      } else if (d === DYN_TURBINE) {
+        const rho = (P_AMB * 1.6) / (R * Math.max(600, this.egt));
+        K = 1 / (2 * rho * this.tA * this.tA);
+      } else if (d === DYN_WASTEGATE) {
+        const rho = (P_AMB * 1.6) / (R * Math.max(600, this.egt));
+        const A = this.tAwg * this.wg * Math.sqrt(this.wg) + 1e-7;
+        K = Math.min(ex.rClosedK[i], 1 / (2 * rho * A * A));
+      } else if (d === DYN_STAGE) {
+        const rho = (P_AMB * 1.6) / (R * Math.max(600, this.egt));
+        const A = this.tAstage * this.stage + 1e-7;
+        K = Math.min(ex.rClosedK[i], 1 / (2 * rho * A * A));
+      } else continue;
+      const k0 = ex.rK[i];
+      ex.rKstep[i] = k0 > 0 ? Math.pow(K / k0, 1 / 32) : 1;
+      if (!(k0 > 0)) ex.rK[i] = K;
+    }
+  }
+
+  vehicleControl(dtc, rpm) {
+    const v = this.veh;
+    if (this.follow) this.followStep(dtc);
+    if (this.mode === 'dyno') {
+      this.gear = 0;
+      this.clutchCap = 0;
+      if (this.dyno && this.dyno.active) {
+        const d = this.dyno;
+        d.t += dtc;
+        if (d.phase === 'settle') {
+          d.target = d.start;
+          this.pedal = 1;
+          if (d.t > 1.2) {
+            d.phase = 'sweep';
+            d.t = 0;
+          }
+        } else if (d.phase === 'sweep') {
+          d.target = d.start + d.rate * d.t;
+          this.pedal = 1;
+          if (d.target >= d.end) {
+            d.phase = 'done';
+            d.active = false;
+            this.pedal = 0;
+            this.posts.push({ type: 'dyno-done' });
+          }
+        }
+        // PI absorber
+        const errW = rpm - d.target;
+        if (d.phase === 'follow') {
+          // a motoring dyno: it brakes the engine or drives it, so the engine
+          // runs where the car's does, on overrun too; the lead covers the
+          // torque to speed the crank up along with the car's
+          if (d.target < 250 || this.stEng) {
+            this.dynoI = 0;
+            this.dynoLoad = 0;
+          } else {
+            this.dynoI = clamp(this.dynoI + errW * 25 * dtc, -1500, 6000);
+            this.dynoLoad = errW * 4 + this.dynoI - this.J * (d.rate / 9.5493) * 0.8;
+          }
+        } else {
+          this.dynoI = clamp(this.dynoI + errW * 25 * dtc, 0, 6000);
+          this.dynoLoad = Math.max(0, errW * 4 + this.dynoI);
+        }
+        if (d.phase === 'sweep' && d.t > 0.05 && this.telN > 0) {
+          // record brake torque vs rpm
+        }
+      } else {
+        this.dynoLoad = Math.max(0, this.dynoLoad - dtc * 2000);
+        this.dynoI = 0;
+      }
+      return;
+    }
+    this.dynoLoad = 0;
+    if (this.mode === 'rev') {
+      this.gear = 0;
+      this.clutchCap = 0;
+      this.v *= Math.max(0, 1 - dtc * 2);
+      this.ww = this.v / v.tire;
+      return;
+    }
+    // drive / flyby
+    const maxT = 1.5 * this.peakTorqueGuess();
+    const G = this.gear > 0 ? v.gears[this.gear - 1] * v.final : 0;
+    const wIn = this.ww * G;
+
+    if (this.shift) {
+      const s = this.shift;
+      s.t += dtc;
+      const T = v.shiftTime;
+      if (s.phase === 'out') {
+        this.clutch = Math.max(0, 1 - s.t / (T * 0.3));
+        if (s.t >= T * 0.3) {
+          this.gear = s.to;
+          s.phase = 'in';
+          s.t = 0;
+          if (s.dir < 0) this.blip = T * 0.9;
+        }
+      } else {
+        this.clutch = Math.min(1, s.t / (T * 0.7));
+        if (s.t >= T * 0.7) {
+          this.clutch = 1;
+          this.shift = null;
+        }
+      }
+    } else if (this.gear > 0) {
+      // Auto-clutch for pulling away and stopping.
+      const stall = Math.max(900, this.ecu.idle * 1.15);
+      if (this.launch && this.v < 1 && this.pedal > 0.5) {
+        this.clutch = 0;
+      } else if (wIn * 9.549 < stall && this.pedal < 0.05) {
+        // creeping / stopping: let the clutch slip to avoid stalling
+        this.clutch += (0 - this.clutch) * Math.min(1, dtc * 10);
+      } else if (wIn * 9.549 < rpm - 150 && this.v < 14) {
+        // pull-away: slip the clutch to hold the engine near a launch speed
+        // that rises with pedal (DCT-style launch).
+        const tgt = stall + 250 + this.pedal * Math.max(0, this.launchRpm - stall - 250) * 0.85;
+        this.clutch = clamp(this.clutch + (rpm - tgt) * 0.0009 * dtc * 60, 0, 1);
+      } else {
+        this.clutch = Math.min(1, this.clutch + dtc * 6);
+      }
+      if (this.clutchPedal > 0.5) this.clutch = 0;
+    } else {
+      this.clutch = 0;
+    }
+    this.clutchCap = maxT * this.clutch;
+
+    // Automatic gear selection (sporty DCT logic: holds the gear on lift-off,
+    // blips down when slowing). Decisions use road speed, not wheel speed, so
+    // wheelspin doesn't confuse it.
+    this.shiftCool = Math.max(0, this.shiftCool - dtc);
+    if (this.autoShift && !this.shift && this.gear > 0 && this.shiftCool <= 0) {
+      const red = this.limitRpm;
+      const roadRpm = (this.v / v.tire) * G * 9.549;
+      const up = this.pedal > 0.6 ? red - 250 : 2600 + 3200 * this.pedal;
+      const down = this.pedal > 0.8 ? red * 0.52 : this.pedal > 0.1 ? 1500 + 900 * this.pedal : 1450 + 350 * this.brake;
+      if (this.pedal > 0.12 && rpm > up && roadRpm > up * 0.8 && this.gear < v.gears.length && this.clutch > 0.95 && (!this.holdGear || rpm > red - 200)) this.requestShift(1);
+      else if (roadRpm < down && this.gear > 1 && this.v > 3) {
+        const G2 = v.gears[this.gear - 2] * v.final;
+        if ((this.v / v.tire) * G2 * 9.549 < red - 600) this.requestShift(-1);
+      }
+    }
+    if (this.gear > 1 && this.v < 1.5 && !this.shift && this.pedal < 0.05) this.gear = 1;
+  }
+
+  peakTorqueGuess() {
+    const boost = this.isTurbo || this.isSC || this.isCentri ? 1 + this.boostTarget / P_AMB : 1;
+    return 110 * this.cfg.dispLitres * boost + 50;
+  }
+
+  // Following a real car, control rate: carry each reading forward along its
+  // trend until the next one arrives (they come 5 to 25 times a second) and
+  // smooth the steps out.
+  followStep(dtc) {
+    const f = this.follow;
+    f.age += dtc;
+    const ahead = Math.min(f.age, 0.3);
+    const k = Math.min(1, dtc * 22);
+    f.pedS += (f.pedal - f.pedS) * k;
+    this.pedal = f.pedS;
+    this.brake = f.brake;
+    const vT = Math.max(0, f.v + f.a * Math.min(f.age, 0.5));
+    f.vS += (vT - f.vS) * Math.min(1, dtc * 12);
+    if (f.kind === 'rpm') {
+      const rT = Math.max(0, f.rpm + f.rate * ahead);
+      f.rpmS += (rT - f.rpmS) * k;
+      if (this.dyno?.phase === 'follow') {
+        this.dyno.target = f.rpmS;
+        this.dyno.rate = f.age < 0.3 ? f.rate : 0;
+      }
+      // the wind and the road still go by at the car's speed
+      this.v = f.vS;
+      this.ww = this.v / this.veh.tire;
+      this.followV = -1;
+    } else {
+      this.followV = f.vS;
+      this.followA = f.age < 0.5 ? f.a : 0;
+    }
+  }
+
+  // A reading from the car: rpm (with its rate, rpm/s) when it reports one,
+  // else just road speed; pedal 0..1; speed m/s; accel m/s^2.
+  setFollow(m) {
+    if (m.stop) {
+      this.follow = null;
+      this.followV = -1;
+      if (this.dyno?.phase === 'follow') this.dyno.active = false;
+      this.dynoLoad = 0;
+      this.pedal = 0;
+      this.brake = 0;
+      return;
+    }
+    const kind = m.rpm != null ? 'rpm' : 'speed';
+    let f = this.follow;
+    if (!f || f.kind !== kind) {
+      f = this.follow = { kind, age: 0, rpm: m.rpm ?? 0, rate: 0, pedal: 0, pedS: 0, brake: 0, v: m.speed ?? 0, vS: m.speed ?? 0, a: 0, rpmS: m.rpm ?? this.rpm };
+      if (kind === 'rpm') {
+        this.mode = 'dyno';
+        this.gear = 0;
+        this.dyno = { active: true, phase: 'follow', t: 0, start: 0, end: 0, rate: 0, target: f.rpmS };
+        this.dynoI = 0;
+      } else {
+        this.mode = 'drive';
+        this.dyno = null;
+        this.autoShift = true;
+        this.shift = null;
+        if (this.gear === 0) this.gear = 1;
+        this.clutch = 1;
+        const vh = this.veh;
+        this.ww = f.v / vh.tire;
+        this.v = f.v;
+      }
+    }
+    f.age = 0;
+    if (m.rpm != null) {
+      f.rpm = m.rpm;
+      f.rate = m.rate ?? 0;
+    }
+    f.pedal = clamp(m.pedal ?? 0, 0, 1);
+    f.brake = clamp(m.brake ?? 0, 0, 1);
+    f.v = Math.max(0, m.speed ?? 0);
+    f.a = m.accel ?? 0;
+  }
+
+  requestShift(dir) {
+    const v = this.veh;
+    if (this.mode !== 'drive' && this.mode !== 'flyby') return;
+    if (this.shift) return;
+    const to = clamp(this.gear + dir, 0, v.gears.length);
+    if (to === this.gear) return;
+    if (this.gear === 0) {
+      this.gear = to;
+      this.clutch = 0;
+      return;
+    }
+    if (to === 0) {
+      this.gear = 0;
+      return;
+    }
+    this.shift = { dir, to, t: 0, phase: 'out' };
+    this.shiftCool = dir > 0 ? 1.2 : 0.6;
+    if (dir > 0 && this.pedal > 0.3) {
+      this.shiftCut = v.shiftTime * 0.45;
+      this.shiftRetard = 1;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Main render loop
+  // -------------------------------------------------------------------------
+
+  render(outL, outR, nFrames, L) {
+    const dt = this.dt;
+    const cycle = this.cycle;
+    const thrK = this.thrK;
+    let omega = this.omega;
+    let crank = this.crank;
+    for (let s = 0; s < nFrames; s++) {
+      if (++this.ctrlN >= 32) {
+        this.ctrlN = 0;
+        this.omega = omega;
+        this.crank = crank;
+        this.control(32 * dt);
+      }
+      this.thr += (this.thrCmd - this.thr) * thrK;
+
+      // crank advance
+      const rpm = omega * 9.549296585513721;
+      const crankPrev = crank;
+      crank += omega * dt * RAD2DEG;
+      if (crank >= cycle) {
+        crank -= cycle;
+        if (this.cycN > 0) this.cycleTorque = this.cycTq / this.cycN;
+        this.cycTq = 0;
+        this.cycN = 0;
+      }
+
+      // pipes in -> cylinders -> pipe junctions -> pipes out
+      this.ex.read();
+      this.inn.read();
+      const torque = this.stepCylinders(crank, rpm);
+      this.stepAfterfireSources();
+      this.ex.scatter(this.srcBuf, this.turbP, this.fs);
+      this.stepIntake();
+      this.ex.write();
+      this.inn.write();
+      this.stepAfterfirePools();
+      const scTorque = this.stepBoost(omega);
+      omega = this.stepDrivetrain(omega, torque, scTorque);
+
+      // strobe snapshot for the visualiser
+      if (this.snapWait > 0) this.snapWait--;
+      else if (!this.snapReady) {
+        if (!this.strobeOn || omega < 3 || crossed(crankPrev, crank, this.strobeAngle)) {
+          this.crank = crank;
+          this.snapReady = this.captureSnap();
+          this.snapWait = this.snapGap;
+          if (this.strobeOn) this.strobeAngle = (this.strobeAngle + this.strobeStep) % cycle;
+        }
+      }
+
+      this.stepSources(rpm, omega, L);
+      const out = this.listen(L);
+      outL[s] = out[0];
+      outR[s] = out[1];
+    }
+    this.omega = omega;
+    this.crank = crank;
+  }
+
+  // One time step of every cylinder: volume change, combustion, valve flows
+  // (coupled implicitly to the pipe waves), blow-by. Returns gas torque.
+  stepCylinders(crank, rpm) {
+    const dt = this.dt;
+    const n = this.n;
+    const cycle = this.cycle;
+    const tabScale = this.tabScale;
+    const vol = this.vol, dvd = this.dvd, off = this.off;
+    const cm = this.cm, cU = this.cU, cMb = this.cMb, cV = this.cV, cCA = this.cCA, cP = this.cP;
+    const cP1 = this.cP1, cP2 = this.cP2;
+    const cBurn = this.cBurn, cXb = this.cXb, cQ = this.cQ, cSpark = this.cSpark, cDur = this.cDur;
+    const cExEnd = this.cExEnd, cInEnd = this.cInEnd, cRunB = this.cRunB, cExB = this.cExB;
+    const ex = this.ex, inn = this.inn;
+    const exIn = ex.inW, exOut = ex.outW, exZ = ex.Zm;
+    const inIn = inn.inW, inOut = inn.outW, inZ = inn.Zm;
+    const hi = this.camHi;
+    const exTab = hi ? this.exTabHi : this.exTabLo;
+    const inTab = hi ? this.inTabHi : this.inTabLo;
+    let ivc = hi ? this.cfg.ivcHi : this.cfg.ivc;
+    let evo = hi ? this.cfg.evoHi : this.cfg.evo;
+    const evc = this.cfg.evc;
+    // two-stroke: the power valve blends the exhaust port between its low
+    // and raised roof; the charge is trapped as the port closes
+    const ts = this.twoStroke;
+    const pv = ts ? this.pv : 0;
+    const exTabP = this.exTabHi;
+    if (ts) {
+      ivc += (this.cfg.ivcHi - ivc) * pv;
+      evo += (this.cfg.evoHi - evo) * pv;
+    }
+    const ccM = this.ccM, ccU = this.ccU, ccB = this.ccB, ccV = this.ccV, ccP = this.ccP, cReed = this.cReed;
+    const ccTot = this.ccTot, scavK = this.scavK, exPool = this.exPool, cTf = this.cTf, evapH = this.evapH;
+    const reedA = this.reedA, reedP0 = this.reedP0, reedPf = this.reedPf, reedK = this.reedK;
+    let egtOut = 0, egtOutW = 0, plugAcc = 0;
+    const rasp = this.rasp26;
+    const kLeak = this.kLeak;
+    const cLeak = this.cLeak;
+    const cKi = this.cKi, cPs = this.cPs, cTs = this.cTs, cKq = this.cKq, cKa = this.cKa, cKf = this.cKf, cKph = this.cKph, cKl = this.cKl;
+    const kTauInv = this.kTauInv, kDecay = this.kDecay;
+    const floatSev = this.floatSev;
+    const cBi = this.cBi, cBe = this.cBe;
+    let knockSnd = 0;
+    const Tint = this.Tpl;
+    const sqTint = Math.sqrt(Tint);
+    const Tex = Math.max(450, this.egt * 0.85);
+    const sqTex = Math.sqrt(Tex);
+    let torque = 0;
+    let vtExc = 0;
+    let combExc = 0;
+    for (let c = 0; c < n; c++) {
+      let ca = crank + off[c];
+      if (ca >= cycle) ca -= cycle;
+      const caPrev = cCA[c];
+      cCA[c] = ca;
+      const fi = ca * tabScale;
+      const i0 = fi | 0;
+      const fr = fi - i0;
+      const V = vol[i0] + (vol[i0 + 1] - vol[i0]) * fr;
+      const dvdth = dvd[i0] + (dvd[i0 + 1] - dvd[i0]) * fr;
+
+      if (caPrev !== ca) {
+        if (crossed(caPrev, ca, ivc)) {
+          this.onIVC(c, rpm);
+          vtExc += 1;
+          if (floatSev > 0) {
+            cBi[c] = floatSev * (0.45 + 0.8 * rnd());
+            vtExc += floatSev * 3;
+          }
+        }
+        if (cBurn[c] === 1 && crossed(caPrev, ca, cSpark[c])) {
+          cBurn[c] = 2;
+          // end-gas reference state at the spark
+          cPs[c] = cP1[c];
+          cTs[c] = cU[c] / (cm[c] * CV);
+          cKi[c] = 0;
+        }
+        if (crossed(caPrev, ca, evo)) this.onEVO(c);
+        if (crossed(caPrev, ca, evc)) {
+          vtExc += 1;
+          if (floatSev > 0) {
+            cBe[c] = floatSev * (0.45 + 0.8 * rnd());
+            vtExc += floatSev * 3;
+          }
+        }
+      }
+
+      let m = cm[c];
+      let U = cU[c];
+      const Vo = cV[c];
+      const dV = V - Vo;
+      U = (U * (1 - (GM1 * 0.5 * dV) / Vo)) / (1 + (GM1 * 0.5 * dV) / V);
+      if (ts) {
+        // the crankcase grows as the piston rises
+        const Vc = ccTot - V;
+        const dVc = Vc - ccV[c];
+        ccU[c] = (ccU[c] * (1 - (GM1 * 0.5 * dVc) / ccV[c])) / (1 + (GM1 * 0.5 * dVc) / Vc);
+        ccV[c] = Vc;
+      }
+
+      if (cBurn[c] === 2) {
+        let ph = ca - cSpark[c];
+        if (ph < 0) ph += cycle;
+        const x = ph / cDur[c];
+        let xb;
+        if (x >= 1) {
+          xb = 1;
+          cBurn[c] = 3;
+        } else {
+          xb = 1 - Math.exp(-5 * x * x * x);
+        }
+        U += cQ[c] * (xb - cXb[c]);
+        cXb[c] = xb;
+        if (xb === 1) cMb[c] = m;
+      }
+      if (cKq[c] > 0) {
+        // autoignited end gas releases its heat almost at once
+        const r = cKq[c] * 0.3;
+        U += r;
+        cKq[c] = cKq[c] - r < 1 ? 0 : cKq[c] - r;
+      }
+
+      let T = U / (m * CV);
+      let p = (GM1 * U) / V;
+
+      if (cBurn[c] === 2 && cKi[c] >= 0 && rpm > 500) {
+        // Livengood-Wu: sum dt / tau(p, T_endgas); knock when it reaches 1
+        const Tu = cTs[c] * Math.pow(p / cPs[c], 0.259);
+        cKi[c] += dt * Math.exp(1.7 * Math.log(p * 9.869e-6) - 3800 / Tu) * kTauInv * cKl[c];
+        if (cKi[c] >= 1) {
+          cKi[c] = -1;
+          const rem = 1 - cXb[c];
+          if (rem > 0.03) {
+            cKq[c] += cQ[c] * rem * 0.6; // the rest is lost to the scrubbed walls
+            cXb[c] = 1;
+            cBurn[c] = 3;
+            cMb[c] = m;
+            const amp = 0.35 * rem * p;
+            cKa[c] = amp;
+            cKf[c] = this.kF1 * Math.sqrt(GAM * R * Math.max(1500, T));
+            cKph[c] = 0;
+            this.knockN++;
+            if (amp > this.knockMax) this.knockMax = amp;
+            if (this.knockCtl) this.knockRet = Math.min(15, this.knockRet + 1.5 + amp / 1.5e5);
+          }
+        }
+      }
+      let ring = 0;
+      if (cKa[c] > 20) {
+        const ph = cKph[c] + cKf[c] * dt;
+        cKph[c] = ph;
+        ring = cKa[c] * (Math.sin(TAU * ph) + 0.45 * Math.sin(TAU * 1.66 * ph + 0.5));
+        cKa[c] *= kDecay;
+        knockSnd += ring;
+      }
+
+      // exhaust valve (plus seat bounce when the valves float)
+      let ae = exTab[i0] + (exTab[i0 + 1] - exTab[i0]) * fr;
+      if (pv > 0) ae += pv * (exTabP[i0] + (exTabP[i0 + 1] - exTabP[i0]) * fr - ae);
+      if (cBe[c] > 0) {
+        let ph = ca - evc;
+        if (ph < 0) ph += cycle;
+        if (ph < 40) ae += this.maxAeT * cBe[c] * bounce(ph);
+        else cBe[c] = 0;
+      }
+      if (ae > 1e-9) {
+        const e = cExEnd[c];
+        const zm = exZ[e];
+        const zc = (GAM * R * T * dt) / V;
+        const D = p - P_AMB - 2 * exIn[e];
+        let md;
+        if (D >= 0) {
+          const rho = p / (R * T);
+          md = orifice(ae, D, rho, zm + zc, p, Math.sqrt(T), CHOKE);
+          // turbulent jet noise through the valve gap
+          const vj = md / (rho * ae);
+          exOut[e] += (rnd() - 0.5) * md * (vj < 600 ? vj : 600) * rasp;
+        } else {
+          const pp = P_AMB + 2 * exIn[e];
+          md = -orifice(ae, -D, pp / (R * Tex), zm + zc, pp, sqTex, CHOKE);
+        }
+        exOut[e] += zm * md;
+        const dm = md * dt;
+        if (dm > 0) {
+          if (ts) {
+            // Loop scavenging: the fresh charge pushes the burned gas ahead
+            // of it, so what leaves is more burned (and hotter) than the
+            // cylinder average. Two zones: fresh charge at the temperature it
+            // came in at, burned gas holding the rest of the energy.
+            const mb = cMb[c] < m ? cMb[c] : m;
+            const xo = mb < m ? 1 - Math.pow(1 - mb / m, scavK) : 1;
+            const mf = m - mb;
+            let Tb = mb > 1e-9 ? (U / CV - mf * cTf[c]) / mb : T;
+            if (Tb < T) Tb = T;
+            const Tout = xo * Tb + (1 - xo) * cTf[c];
+            U -= dm * CP * Tout;
+            egtOut += dm * Tout;
+            egtOutW += dm;
+            cMb[c] -= dm * xo;
+            if (cMb[c] < 0) cMb[c] = 0;
+            // the header holds a mix of what left lately: what the pipe
+            // pushes back in is that mix (short-circuited charge included)
+            cExB[c] += (xo - cExB[c]) * (dm < exPool ? dm / exPool : 1);
+          } else {
+            U -= dm * CP * T;
+            cMb[c] -= (cMb[c] * dm) / m;
+          }
+        } else {
+          // backflow from the port: only as 'burned' as what went out
+          U -= dm * CP * Tex;
+          cMb[c] -= dm * cExB[c];
+          if (ts) plugAcc -= dm; // the chamber stuffing charge back in
+        }
+        m -= dm;
+        if (m < 1e-7) m = 1e-7;
+        T = U / (m * CV);
+        p = (GM1 * U) / V;
+      }
+
+      if (ts) {
+        // Transfer ports: crankcase charge up into the cylinder, or burned
+        // gas blown back down while the cylinder is still above crankcase
+        // pressure (low revs, big throttle).
+        const at = inTab[i0] + (inTab[i0 + 1] - inTab[i0]) * fr;
+        let mc = ccM[c], Uc = ccU[c];
+        const Vc = ccV[c];
+        if (at > 1e-9) {
+          const Tc = Uc / (mc * CV);
+          const pc = (GM1 * Uc) / Vc;
+          const zs = (GAM * R * T * dt) / V + (GAM * R * Tc * dt) / Vc;
+          const D = pc - p;
+          let md;
+          if (D >= 0) md = orifice(at, D, pc / (R * Tc), zs, pc, Math.sqrt(Tc), CHOKE_AIR);
+          else md = -orifice(at, -D, p / (R * T), zs, p, Math.sqrt(T), CHOKE);
+          const dm = md * dt;
+          if (dm > 0) {
+            const b = (ccB[c] * dm) / mc;
+            cTf[c] += (Tc - cTf[c]) * (dm < m ? dm / m : 1);
+            U += dm * CP * Tc;
+            Uc -= dm * CP * Tc;
+            cMb[c] += b;
+            ccB[c] -= b;
+          } else {
+            const b = (cMb[c] * -dm) / m;
+            U += dm * CP * T;
+            Uc -= dm * CP * T;
+            cMb[c] -= b;
+            ccB[c] += b;
+          }
+          m += dm;
+          mc -= dm;
+          if (m < 1e-7) m = 1e-7;
+          if (mc < 1e-7) mc = 1e-7;
+          T = U / (m * CV);
+          p = (GM1 * U) / V;
+        }
+        // Reed valve: the petals lift with the pressure difference across
+        // them and only ever let the charge in.
+        const e = cInEnd[c];
+        const pu = P_AMB + 2 * inIn[e];
+        const dp = pu - (GM1 * Uc) / Vc;
+        const tgt = dp > reedP0 ? (dp - reedP0 < reedPf ? (dp - reedP0) / reedPf : 1) : 0;
+        const rd = cReed[c] + reedK * (tgt - cReed[c]);
+        cReed[c] = rd;
+        if (rd > 1e-4 && dp > 0) {
+          const zm = inZ[e];
+          const md = orifice(reedA * rd, dp, pu / (R * Tint), zm + (GAM * R * (Uc / (mc * CV)) * dt) / Vc, pu, sqTint, CHOKE_AIR);
+          inOut[e] -= zm * md;
+          const dm = md * dt;
+          // the carburettor's fuel evaporates on the way in and cools it
+          Uc += dm * (CP * Tint - evapH);
+          mc += dm;
+        }
+        ccM[c] = mc;
+        ccU[c] = Uc;
+        ccP[c] = (GM1 * Uc) / Vc;
+      }
+
+      // intake valve
+      let ai = ts ? 0 : inTab[i0] + (inTab[i0 + 1] - inTab[i0]) * fr;
+      if (cBi[c] > 0) {
+        let ph = ca - ivc;
+        if (ph < 0) ph += cycle;
+        if (ph < 40) ai += this.maxAiT * cBi[c] * bounce(ph);
+        else cBi[c] = 0;
+      }
+      if (ai > 1e-9) {
+        const e = cInEnd[c];
+        const zm = inZ[e];
+        const zc = (GAM * R * T * dt) / V;
+        const pu = P_AMB + 2 * inIn[e];
+        const D = pu - p;
+        let md;
+        if (D >= 0) md = orifice(ai, D, pu / (R * Tint), zm + zc, pu, sqTint, CHOKE_AIR);
+        else md = -orifice(ai, -D, p / (R * T), zm + zc, p, Math.sqrt(T), CHOKE);
+        inOut[e] -= zm * md;
+        const dm = md * dt;
+        if (dm > 0) {
+          U += dm * CP * Tint;
+          // reverted exhaust gas comes back first and stays burned gas
+          const rb = cRunB[c];
+          if (rb > 0) {
+            const b = dm < rb ? dm : rb;
+            cMb[c] += b;
+            cRunB[c] = rb - b;
+          }
+        } else {
+          U += dm * CP * T;
+          const bOut = (cMb[c] * -dm) / m;
+          cMb[c] -= bOut;
+          cRunB[c] += bOut;
+        }
+        m += dm;
+        if (m < 1e-7) m = 1e-7;
+      }
+
+      // ring leakage (blow-by) toward crankcase
+      const leak = (p - P_AMB) * kLeak * cLeak[c];
+      if (leak > 0 && leak * dt < m * 0.01) {
+        U -= leak * dt * CP * T;
+        if (ts) cMb[c] -= (cMb[c] * leak * dt) / m;
+        m -= leak * dt;
+      }
+
+      const Tmin = m * CV * 180;
+      if (U < Tmin) U = Tmin;
+      cm[c] = m;
+      cU[c] = U;
+      cV[c] = V;
+      p = (GM1 * U) / V;
+      // combustion noise excitation: positive jerk of cylinder pressure
+      const jerk = p - 2 * cP1[c] + cP2[c];
+      if (jerk > 0) combExc += jerk;
+      cP2[c] = cP1[c];
+      cP1[c] = p;
+      cP[c] = p + ring;
+      torque += (p - (ts ? ccP[c] : P_AMB)) * dvdth;
+    }
+    if (ts) {
+      this.egtOut += egtOut;
+      this.egtOutW += egtOutW;
+      this.plugAcc += plugAcc;
+    }
+    this.torqueGas = torque;
+    this.vtExcS = vtExc;
+    this.combExcS = combExc;
+    this.knockSndS = knockSnd;
+    return torque;
+  }
+
+  // Afterfire pressure sources at exhaust junctions (decaying bangs).
+  stepAfterfireSources() {
+    const afNodes = this.afNodes;
+    const exSrc = this.ex.src;
+    for (let k = 0; k < afNodes.length; k++) {
+      const nd = afNodes[k];
+      let src0 = 0;
+      const env = this.afEnv[nd];
+      if (env > 1e-4) {
+        this.afRise[nd] += (1 - this.afRise[nd]) * 0.35;
+        src0 = this.afAmp[nd] * env * this.afRise[nd] * (1 + 0.6 * (rnd() - 0.5));
+        this.afEnv[nd] = env * this.afDecay[nd];
+      }
+      exSrc[nd] = src0;
+    }
+  }
+
+  // Unburned fuel pools in the exhaust: random ignition -> bang.
+  stepAfterfirePools() {
+    const afNodes = this.afNodes;
+    const dt = this.dt;
+    const thresh = this.alsActive ? this.afMin * 4 : this.afMin;
+    for (let k = 0; k < afNodes.length; k++) {
+      const nd = afNodes[k];
+      const f = this.afFuel[nd];
+      if (f > thresh) {
+        const heat = this.afHeat[nd];
+        const air = this.afAir[nd];
+        const mix = air / (f * AFR_ST + 1e-9);
+        const rate = heat * 90 * (mix > 0.25 ? 1 : mix * 4) * (this.egt > 650 ? 1 : 0.3);
+        if (rnd() < rate * dt) {
+          const frac = 0.35 + 0.65 * rnd();
+          const burnt = Math.min(f, air / AFR_ST + f * 0.3) * frac;
+          const E = burnt * LHV;
+          this.afFuel[nd] -= burnt;
+          this.afAir[nd] = Math.max(0, air - burnt * AFR_ST);
+          const amp = Math.min(60000, 36 * Math.pow(E, 0.8)) * (0.7 + 0.6 * rnd());
+          this.afAmp[nd] = Math.max(this.afAmp[nd] * this.afEnv[nd], amp);
+          this.afEnv[nd] = 1;
+          this.afRise[nd] = 0;
+          this.afDecay[nd] = Math.exp(-1 / (this.fs * (0.0006 + 0.0022 * rnd())));
+          this.afEvents++;
+          this.afIntensity = Math.max(this.afIntensity, amp / 30000);
+          // (an open wastegate lets much of the bang bypass the wheel)
+          if (this.isTurbo && this.alsActive) this.wt += (0.07 * E * (1 - 0.85 * this.wg)) / (this.tJ * this.nT * Math.max(this.wt, 2000));
+        }
+        this.afFuel[nd] = f * (1 - dt * 7);
+        this.afHeat[nd] = heat * (1 - dt * 3);
+      } else if (this.afAir[nd] > 0) {
+        this.afAir[nd] *= 1 - dt * 7;
+      }
+    }
+  }
+
+  // Intake runner junctions, plenum boundary and throttle flow.
+  stepIntake() {
+    const inn = this.inn;
+    const inIn = inn.inW, inOut = inn.outW, inY = inn.Y;
+    const es = inn.es, ec = inn.ec, ends = inn.ends;
+    const junc = inn.junc;
+    for (let j = 0; j < junc.length; j++) {
+      const nd = junc[j];
+      const st = es[nd], cnt = ec[nd];
+      let sy = 0, sya = 0;
+      for (let k = 0; k < cnt; k++) {
+        const e = ends[st + k];
+        sy += inY[e];
+        sya += inY[e] * inIn[e];
+      }
+      const pj = (2 * sya) / sy;
+      for (let k = 0; k < cnt; k++) {
+        const e = ends[st + k];
+        inOut[e] = pj - inIn[e];
+      }
+    }
+    const pg = this.pPl - P_AMB;
+    let qr = 0;
+    const pls = inn.plenums;
+    for (let i = 0; i < pls.length; i++) {
+      const nd = pls[i];
+      const st = es[nd], cnt = ec[nd];
+      for (let k = 0; k < cnt; k++) {
+        const e = ends[st + k];
+        inOut[e] = pg - inIn[e];
+        qr += (pg - 2 * inIn[e]) * inY[e];
+      }
+    }
+    this.runnerFlow = qr;
+    // throttle (implicit against plenum compliance)
+    const dt = this.dt;
+    const boosted = this.boosted;
+    const pUp = boosted ? this.pB : P_AMB;
+    const Tup = boosted ? this.TB : T_AMB;
+    const kpl = (R * this.Tpl * dt) / this.Vpl;
+    const pPred = this.pPl - kpl * qr;
+    // butterfly area vs opening, every sample: a stepped area would buzz
+    const th = this.thr > 0 ? (this.thr < 1 ? this.thr : 1) : 0;
+    this.thrArea = this.Ath * 0.82 * th * Math.sqrt(th * Math.sqrt(th)); // th^1.75
+    this.bypassS += this.bypassStep;
+    const A = this.thrArea + this.bypassS + this.thrLeak;
+    const D = pUp - pPred;
+    let md;
+    if (D >= 0) md = orifice(A, D, pUp / (R * Tup), kpl, pUp, Math.sqrt(Tup), CHOKE_AIR);
+    else md = -orifice(A, -D, this.pPl / (R * this.Tpl), kpl, this.pPl, Math.sqrt(this.Tpl), CHOKE_AIR);
+    this.mdTh = md;
+    if (this.nosFlow > 0 || this.mNos > 0) {
+      // nitrous mixes into the plenum and leaves with the charge
+      const x = this.mNos / this.mPl;
+      this.mNos += (this.nosFlow - (md < 0 ? qr - md : qr) * x) * dt;
+      if (this.mNos < 1e-10) this.mNos = 0;
+      this.nosX = x;
+    }
+    this.mPl += (md + this.nosFlow - qr) * dt;
+    if (this.mPl < 1e-6) this.mPl = 1e-6;
+    this.pPl = (this.mPl * R * this.Tpl) / this.Vpl;
+  }
+
+  // Turbocharger / supercharger dynamics and their sounds. Returns the torque
+  // the crank spends driving a supercharger.
+  stepBoost(omega) {
+    this.turboSnd = 0;
+    if (this.isTurbo || this.isCentri) return this.stepTurbo(omega);
+    if (this.isSC) return this.stepBlower(omega);
+    return 0;
+  }
+
+  stepTurbo(omega) {
+    const dt = this.dt, fs = this.fs;
+    let scTorque = 0;
+    // Greitzer compressor + plenum model; compressor map is a speed line with
+    // a peak (surge on its left), scaled with tip speed squared.
+    const nA = this.nA;
+    const Ut = this.wt * this.tRtip;
+    const mChoke = this.tChokeK * Math.max(Ut, 80) * nA;
+    const PRm = Math.pow(1 + 2.17e-6 * Ut * Ut, 3.5);
+    let pc = P_AMB * (1 + (PRm - 1) * speedLine(this.mc / mChoke, clamp((Ut / 400 - 0.4) / 0.45, 0, 1))) - this.tRestr * this.mc * Math.abs(this.mc);
+    if (pc < 0.4 * P_AMB) pc = 0.4 * P_AMB;
+    const Lc = 0.35;
+    this.mc += ((0.0016 * nA) / Lc) * (pc - this.pB) * dt;
+    // Second stage (sequential turbos): its compressor delivers through a
+    // check flap, only once its exhaust valve is open and it has spooled up
+    // past the boost already in the pipes.
+    let mc2 = 0;
+    if (this.nB) {
+      const Ut2 = this.wt2 * this.tRtip;
+      const mCh2 = this.tChokeK * Math.max(Ut2, 80) * this.nB;
+      const PRm2 = Math.pow(1 + 2.17e-6 * Ut2 * Ut2, 3.5);
+      const pc2 = P_AMB * (1 + (PRm2 - 1) * speedLine(this.mc2 / mCh2, clamp((Ut2 / 400 - 0.4) / 0.45, 0, 1))) - this.tRestrB * this.mc2 * Math.abs(this.mc2);
+      this.mc2 += ((0.0016 * this.nB) / Lc) * (pc2 - this.pB) * dt;
+      if (this.mc2 < 0) this.mc2 = 0;
+      // its check valve swings open over a fifth of a second, so the second
+      // stage eases in instead of slamming its boost into the pipes, and
+      // swings shut in a tenth as the stage drops out (no click as it cuts off)
+      if (this.stage < 0.2) this.flap2 = Math.max(0, this.flap2 - dt * 10);
+      else if (pc2 > this.pB || this.mc2 > 0) this.flap2 = Math.min(1, this.flap2 + dt * 5);
+      if (this.mc2 > this.flap2 * mCh2) this.mc2 = this.flap2 * mCh2;
+      mc2 = this.mc2;
+    }
+    // BOV vent
+    let mb = 0;
+    this.bovS += this.bovStep;
+    if (this.bovS > 0.01 && this.pB > P_AMB) {
+      const Ab = this.bovA * this.bovS;
+      mb = orifice(Ab, this.pB - P_AMB, this.pB / (R * this.TB), 0, this.pB, Math.sqrt(this.TB), CHOKE_AIR);
+    }
+    this.mdBov = mb;
+    this.pB += ((R * this.TB) / this.Vb) * (this.mc + mc2 - this.mdTh - mb) * dt;
+    if (!(this.pB > 0.3 * P_AMB)) {
+      this.pB = 0.3 * P_AMB;
+      if (this.mc < 0) this.mc = 0;
+    }
+    if (this.pB > 4.5 * P_AMB) this.pB = 4.5 * P_AMB;
+    if (!(Math.abs(this.mc) < 5)) this.mc = 0;
+    // shafts
+    const PR = this.pB / P_AMB;
+    const work = (1005 * T_AMB * (Math.pow(PR, 0.2857) - 1)) / 0.7; // J per kg compressed
+    // Air shoved back out through the spinning wheel has to be given the
+    // wheel's swirl all over again (about U^2 per kg): surge brakes the shaft
+    // hard, so each flutter cycle comes a little slower and lower than the last.
+    const Pc = this.mc > 0 ? this.mc * work : -this.mc * Ut * Ut * 0.85;
+    const wMax = 560 / this.tRtip;
+    if (this.isTurbo) {
+      // smoothed turbine power from the exhaust network's turbine resistors
+      let tp = 0, tp2 = 0;
+      for (let i = 0; i < this.turbP.length; i++) {
+        if (i < nA) tp += this.turbP[i];
+        else tp2 += this.turbP[i];
+        this.turbP[i] = 0;
+      }
+      const rhoT = (P_AMB * 1.6) / (R * Math.max(600, this.egt));
+      this.turbPs += (tp / rhoT - this.turbPs) * 0.002;
+      this.turbPsm = Math.max(0, this.turbPs) * 1.5;
+      // each exhaust pulse that kicks the wheel swells its whistle
+      this.tpLp += this.tpLpA * (tp / rhoT - this.tpLp);
+      this.tPulse = 0.7 + 0.3 * clamp(this.tpLp / Math.max(this.turbPs, 1e-3), 0, 3);
+      const w = Math.max(this.wt, 300);
+      // with the throttle shut the wheel churns the trapped air against the
+      // boost instead of moving it: an aerodynamic loss that grows with speed
+      const low = clamp(1 - this.mc / (0.25 * mChoke), 0, 1);
+      const churn = (low * this.wt * this.wt * (this.pB / P_AMB)) / (wMax * 2.2);
+      this.wt += ((this.turbPsm * 0.72 - Pc) / (this.tJ * nA * w) - this.wt * 0.08 - churn) * dt;
+      if (this.wt < 0) this.wt = 0;
+      if (this.wt > wMax) this.wt = wMax;
+      if (this.nB) {
+        this.turbPs2 += (tp2 / rhoT - this.turbPs2) * 0.002;
+        const w2 = Math.max(this.wt2, 300);
+        this.wt2 += ((Math.max(0, this.turbPs2) * 1.08 - mc2 * work) / (this.tJ * this.nB * w2) - this.wt2 * 0.08) * dt;
+        if (this.wt2 < 0) this.wt2 = 0;
+        if (this.wt2 > wMax) this.wt2 = wMax;
+      }
+    } else {
+      // centrifugal supercharger: gear-driven impeller
+      this.wt = omega * this.scRatio * 3.2;
+      scTorque = Pc / Math.max(omega, 30);
+    }
+    const Tc = T_AMB * (1 + (Math.pow(Math.max(PR, 1), 0.2857) - 1) / 0.7);
+    this.TB = Tc - 0.72 * (Tc - T_AMB);
+    this.Tpl = this.TB - this.nosCool;
+    // Blade-pass whistle and shaft whine. The wheel never sings a clean
+    // sine: flow unsteadiness wobbles its tone by a few tenths of a percent,
+    // each exhaust pulse that kicks the turbine swells it, and turbulence
+    // round the blades smears it into a narrow band of noise.
+    const fShaft = this.wt / TAU;
+    this.wJit += this.wJitA * (rnd() - 0.5 - this.wJit);
+    const jit = 1 + this.wJit * 0.3;
+    const fB = fShaft * this.blades * jit;
+    this.tPhase += fB / fs;
+    this.tPhase -= Math.floor(this.tPhase);
+    this.tPhase2 += (fShaft * jit) / fs;
+    this.tPhase2 -= Math.floor(this.tPhase2);
+    if (++this.sgK >= 32) {
+      this.sgK = 0;
+      this.setBand(clamp(fB, 200, 0.4 * fs), 40);
+    }
+    const nh = rnd() - 0.5;
+    const sb = this.sgB;
+    const halo = sb[0] * (nh - this.sgX2) - sb[1] * this.sgY1 - sb[2] * this.sgY2;
+    this.sgX2 = this.sgX1;
+    this.sgX1 = nh;
+    this.sgY2 = this.sgY1;
+    this.sgY1 = halo;
+    // A small wheel's blade pass goes ultrasonic at full spool: fade it out
+    // before Nyquist instead of letting it fold back down as a false whistle.
+    const whistle = (Math.sin(TAU * this.tPhase) * 0.85 + halo * 2.5) * this.bladeFade(fB);
+    const whine = Math.sin(TAU * this.tPhase2) + 0.3 * Math.sin(2 * TAU * this.tPhase2);
+    const Utn = Ut / 400;
+    // Each turbo sings with its share of the flow. Twins never run at quite
+    // the same speed (one bank breathes a little differently), so the pair
+    // beats against itself: the chorus of a twin-turbo engine.
+    const ampA = Utn * Utn * (0.15 + (3 * Math.abs(this.mc)) / nA) * 0.8 * this.tPulse;
+    let snd = (whistle * 10 + whine * 0.5) * ampA;
+    if (nA > 1) snd += this.tone(this.vA2, fShaft * 0.991) * ampA;
+    if (mb > 0) {
+      // the dump valve's jet: broadband, but centred a few kHz up like any jet
+      // (Lighthill: its loudness falls away fast as the pressure behind it bleeds off)
+      const dpb = Math.max(0, this.pB - P_AMB);
+      snd += this.bovBand.tick(rnd() - 0.5) * mb * Math.sqrt(dpb) * (dpb / 1e5) * 0.5;
+    }
+    const Utn2 = (this.wt2 * this.tRtip) / 400;
+    if (this.nB && Utn2 > 0.02) {
+      // the second stage whistles and whines on its own pitch, first as its
+      // valve lets it pre-spool, then fully once it delivers
+      const ampB = Utn2 * Utn2 * (0.15 + (3 * mc2) / this.nB) * 0.8 * this.tPulse;
+      const f2 = this.wt2 / TAU;
+      snd += this.tone(this.vB, f2) * ampB;
+      if (this.nB > 1) snd += this.tone(this.vB2, f2 * 0.991) * ampB;
+    }
+    // Whoosh: broadband 1-3 kHz noise the compressor makes working up its
+    // speed line, loudest nearest surge (high boost on little flow, as when
+    // it spools at low revs). It reaches us through the inlet duct.
+    const xf = this.mc / mChoke;
+    const wl = Utn * Utn * clamp(xf / 0.06, 0, 1) * (0.35 + 1.3 * clamp((0.6 - xf) / 0.35, 0, 1)) + (mc2 > 0 ? 0.35 * Utn2 * Utn2 : 0);
+    let exc = this.whBand.tick(rnd() - 0.5) * wl * 4.9 * this.whK;
+    // Surge (the flutter). Each reversal of the flow is a sharp pressure
+    // pulse at the compressor face, and the moment the flow snaps forward
+    // again is another. Every pulse rings the inlet duct, a tube closed at
+    // the wheel and open at the filter, whose quarter-wave modes (about 300,
+    // 900 and 1500 Hz for 0.3 m) give it the hollow "tu" of a turbo's
+    // flutter; the stalling wheel adds a short breath of noise at the onset.
+    const dmc = (this.mc + mc2 - this.mcPrev) * fs;
+    this.mcPrev = this.mc + mc2;
+    if (this.mc < 0) this.sgAct = 1;
+    else this.sgAct *= this.sgActDec;
+    if ((this.mcSgn >= 0) !== (this.mc >= 0)) {
+      // (as hard as the flow turns: a deep surge cycle slams, a mild one sighs)
+      const pg = clamp((this.pB - P_AMB) / 1e5, 0, 2.5);
+      const hard = clamp(Math.abs(this.sgD) / 150, 0, 1);
+      this.burst = Math.max(this.burst, (this.mc < 0 ? 1 : 0.45) * hard * (0.15 + pg) * (0.3 + Utn));
+    }
+    this.mcSgn = this.mc;
+    this.burst *= this.burstDec;
+    this.sgD += this.sgDA * (dmc - this.sgD);
+    if (this.sgAct > 1e-3 || this.burst > 1e-4) {
+      exc += this.sgD * this.sgAct * 0.2 + this.burstBand.tick(rnd() - 0.5) * this.burst * 18;
+    }
+    const dl = this.dBuf[(this.dI - this.dD) & 1023];
+    this.dLp += this.dLpA * (dl - this.dLp);
+    const yd = exc - 0.86 * this.dLp;
+    this.dBuf[this.dI] = yd;
+    this.dI = (this.dI + 1) & 1023;
+    snd += yd;
+    // the inlet radiates the flow's own pulsation as a soft thump
+    this.mcLp += this.sgLpA * (dmc - this.mcLp);
+    this.mcHp += this.sgHpA * (this.mcLp - this.mcHp);
+    this.turboSnd = snd + (this.mcLp - this.mcHp) * INV4PI * 0.6;
+    return scTorque;
+  }
+
+  // Band-pass (constant peak gain) at f with quality q.
+  setBand(f, q) {
+    const w = (TAU * f) / this.fs;
+    const al = Math.sin(w) / (2 * q);
+    const a0 = 1 + al;
+    this.sgB[0] = al / a0;
+    this.sgB[1] = (-2 * Math.cos(w)) / a0;
+    this.sgB[2] = (1 - al) / a0;
+  }
+
+  // One turbo's tones at shaft frequency f: the blade-pass whistle and the
+  // shaft whine, wobbling with the turbo's own flow unsteadiness.
+  tone(v, f) {
+    const fs = this.fs;
+    v.jit += this.wJitA * (rnd() - 0.5 - v.jit);
+    const fj = f * (1 + v.jit * 0.3);
+    const fb = fj * this.blades;
+    v.ph += fb / fs;
+    v.ph -= Math.floor(v.ph);
+    v.ph2 += fj / fs;
+    v.ph2 -= Math.floor(v.ph2);
+    const ph2 = TAU * v.ph2;
+    return Math.sin(TAU * v.ph) * 8.5 * this.bladeFade(fb) + (Math.sin(ph2) + 0.3 * Math.sin(2 * ph2)) * 0.5;
+  }
+
+  // Level for a blade tone at f. The filter element and the duct's bends
+  // soak up what's above about 8 kHz (a full-spool whistle at 15 kHz is a
+  // faint sizzle, not a scream), and it's gone before 0.42 fs.
+  bladeFade(f) {
+    const fs = this.fs;
+    const r = (f / 8000) * (f / 8000);
+    const g = 1 / Math.sqrt(1 + r * r);
+    return f < 0.3 * fs ? g : f < 0.42 * fs ? (g * (0.42 * fs - f)) / (0.12 * fs) : 0;
+  }
+
+  stepBlower(omega) {
+    const dt = this.dt, fs = this.fs;
+    const wb = omega * this.scRatio;
+    const PR = this.pB / P_AMB;
+    const ev = clamp(1 - 0.12 * (PR - 1), 0.5, 1);
+    const vflow = ((this.scDisp * wb) / TAU) * ev;
+    const msc = (P_AMB / (R * T_AMB)) * vflow;
+    let mby = 0;
+    this.scBypassS += this.scBypassStep;
+    const Aby = 0.0018 * this.scBypassS + 1e-6;
+    if (this.pB > P_AMB) mby = orifice(Aby, this.pB - P_AMB, this.pB / (R * this.TB), 0, this.pB, Math.sqrt(this.TB), CHOKE_AIR);
+    else mby = -orifice(Aby, P_AMB - this.pB, P_AMB / (R * T_AMB), 0, P_AMB, Math.sqrt(T_AMB), CHOKE_AIR);
+    this.pB += ((R * this.TB) / this.Vb) * (msc - this.mdTh - mby) * dt;
+    if (this.pB < 0.4 * P_AMB) this.pB = 0.4 * P_AMB;
+    const eta = this.fiType === 'twinscrew' ? 0.7 : 0.55;
+    const P = (msc * 1005 * T_AMB * (Math.pow(Math.max(PR, 1), 0.2857) - 1)) / eta + msc * 2000;
+    const Tc = T_AMB * (1 + (Math.pow(Math.max(PR, 1), 0.2857) - 1) / eta);
+    this.TB = Tc - 0.65 * (Tc - T_AMB);
+    this.Tpl = this.TB - this.nosCool;
+    // rotor whine at the lobe-passing frequency
+    this.scPhase += ((wb / TAU) * this.scLobes) / fs;
+    this.scPhase -= Math.floor(this.scPhase);
+    const ph = TAU * this.scPhase;
+    const wv = Math.sin(ph) + 0.45 * Math.sin(2 * ph + 0.3) + 0.2 * Math.sin(3 * ph + 1.1);
+    this.turboSnd = wv * (wb / 1000) * (0.25 + 1.5 * Math.max(0, PR - 1) + 0.6 * msc) * 0.18;
+    return P / Math.max(omega, 30);
+  }
+
+  // Crank, clutch, wheels and car. Returns the new crank speed.
+  stepDrivetrain(omega, torque, scTorque) {
+    const dt = this.dt;
+    let tq = torque - this.fric * ftanh(omega * 0.5) - scTorque;
+    if (this.kicking) {
+      // the leg pushes hardest from rest and can't drive the crank past the
+      // speed it straightens at
+      const f = 1 - omega / this.kickW;
+      if (f > 0) tq += this.kickTq * this.kickGrip * f;
+      this.kickRev += (omega * dt) / TAU;
+    }
+    let load = 0;
+    if (this.mode === 'dyno') {
+      load = this.dynoLoad;
+    } else if (this.gear > 0 && this.clutchCap > 0) {
+      const v = this.veh;
+      const G = v.gears[this.gear - 1] * v.final;
+      const slipW = omega - this.ww * G;
+      const Jwe = this.Jw + 0.04 * G * G;
+      const kmax = 0.45 / (this.clutchCap * dt * (1 / this.J + (G * G) / Jwe) + 1e-9);
+      const k = kmax < 0.6 ? kmax : 0.6;
+      load = this.clutchCap * ftanh(slipW * k);
+      this.clutchT = load;
+      // wheel & car
+      const vv = this.v;
+      const slipV = this.ww * v.tire - vv;
+      const Nz = this.axleLoad + this.loadTransfer * Math.max(0, this.accel);
+      const as = slipV < 0 ? -slipV : slipV;
+      const mu = v.mu * ftanh(slipV / 0.55) * (1 - 0.22 * clamp((as - 1.5) / 8, 0, 1));
+      const Fx = Nz * mu;
+      const brakeT = this.brake * this.brakeK * v.tire * 0.45 * ftanh(this.ww * 4);
+      this.ww += ((load * G * 0.92 - Fx * v.tire - brakeT) / Jwe) * dt;
+      const drag = this.dragK * vv * vv + this.rollK * ftanh(vv * 2);
+      const brakeF = this.brake * this.brakeK * 0.55 * ftanh(vv * 3);
+      const acc = (Fx - drag - brakeF) / v.mass;
+      this.accel = acc;
+      this.v = vv + acc * dt;
+      if (this.v < 0 && this.brake > 0.05) this.v = 0;
+      this.slip = slipV;
+      this.gearTorque = load;
+    } else if (this.mode === 'drive' || this.mode === 'flyby') {
+      // coasting in neutral / clutch open
+      const v = this.veh;
+      const vv = this.v;
+      const drag = this.dragK * vv * vv + this.rollK * ftanh(vv * 2);
+      const brakeF = this.brake * this.brakeK * ftanh(vv * 3);
+      this.accel = (-drag - brakeF) / v.mass;
+      this.v = Math.max(0, vv + this.accel * dt);
+      this.ww = this.v / v.tire;
+      this.slip = 0;
+      this.clutchT = 0;
+      this.gearTorque = 0;
+    }
+    if (this.followV >= 0 && this.mode === 'drive') {
+      // following a real car's speed: the road holds the wheels to it
+      this.v = this.followV;
+      this.ww = this.v / this.veh.tire;
+      this.slip = 0;
+      this.accel = this.followA;
+    }
+    this.pos += this.v * dt;
+    const net = torque - this.fric - scTorque;
+    this.telTq += net;
+    this.telN++;
+    this.cycTq += net;
+    this.cycN++;
+    let w;
+    if (this.stEng) w = this.stepStarter(omega, tq - load, dt);
+    else {
+      w = omega + ((tq - load) / this.J) * dt;
+      if (w < 0) w = 0;
+      if (this.stW > 0) {
+        // pinion out: the armature runs down on its own
+        const wa = this.stW - ((this.stLoss0 + this.stLoss1 * this.stW) / this.stJ) * dt;
+        this.stW = wa > 0 ? wa : 0;
+        this.stI = 0;
+      }
+    }
+    this.alpha = (w - omega) / dt;
+    return w;
+  }
+
+  // The wind's own random stream (xorshift), centred on zero.
+  arnd() {
+    let s = this.aRs;
+    s ^= s << 13;
+    s ^= s >>> 17;
+    s ^= s << 5;
+    this.aRs = s;
+    return (s >>> 0) * 2.3283064365386963e-10 - 0.5;
+  }
+
+  // Wind, control rate: gusts, the filters' tuning and the levels.
+  //
+  // Air tearing off the pillars, mirrors and seals sheds vortices at a
+  // Strouhal frequency (f ~ U/size, so the hiss climbs with speed) and
+  // radiates as a dipole: pressure ~ U^3 in theory, nearer U^2.5 measured in
+  // real cabins (about 15 dB per doubling of speed). The separated,
+  // buffeting flow over the body is lower and grows about as U^2.2. Gusts
+  // and crosswind move the airspeed and the balance between the ears; now
+  // and then a door seal or mirror locks into a whistle. A lorry in the next
+  // lane throws its own wake: a whoosh and a shove of buffeting as you pass.
+  aeroCtl(dtc) {
+    const fs = this.fs;
+    const v = this.v;
+    const near = this.truckDx < 120 && this.truckDx > -120;
+    if (v < 0.5 && !near) {
+      this.aAh = this.aAb = this.aAw = this.aAt = this.aAr = this.aTb = 0;
+      return;
+    }
+    // Ornstein-Uhlenbeck processes: x += -x dt/tau + sigma sqrt(2 dt/tau) N
+    const n = (tau, sig) => sig * Math.sqrt((2 * dtc) / tau) * this.arnd() * 3.4641;
+    this.aGust += (-this.aGust * dtc) / 2.5 + n(2.5, 0.05);
+    this.aTurb += (-this.aTurb * dtc) / 0.12 + n(0.12, 0.03);
+    this.aCross += (-this.aCross * dtc) / 4 + n(4, 0.35);
+    this.aLock += (-this.aLock * dtc) / 1.5 + n(1.5, 0.5);
+    const U = v * Math.max(0.4, 1 + this.aGust + this.aTurb);
+    this.aU = U;
+    const q = U / 70;
+    // hiss band (unity peak), centred on the shedding frequency
+    const g = Math.tan((Math.PI * Math.min(300 + 14 * U, 0.4 * fs)) / fs);
+    const k = 1 / 0.7;
+    this.aH1 = 1 / (1 + g * (g + k));
+    this.aH2 = g * this.aH1;
+    this.aH3 = g * this.aH2;
+    this.aAh = Math.pow(q, 2.5);
+    this.aBa = lpCoef(30 + 1.7 * U, fs);
+    this.aAb = Math.pow(q, 2.2) * Math.max(0, 1 + 3 * this.aGust);
+    const cr = clamp(this.aCross, -1, 1) * 0.3;
+    this.aGl = 1 - cr;
+    this.aGr = 1 + cr;
+    this.aWf = 21 * U;
+    this.aAw = clamp((this.aLock - 0.45) * 2.5, 0, 1) * clamp((U - 38) / 15, 0, 1) * q * q;
+    // the lorry: its wake as the car goes by, and its tyres and engine
+    if (near) {
+      const dx = this.truckDx;
+      const env = Math.exp(-(dx / 9) * (dx / 9));
+      const vr = this.truckVr;
+      this.aAt = ((vr / 40) * (vr / 40)) * env;
+      this.aTb = 1.6 * env * Math.min(1, Math.abs(vr) / 30);
+      this.aAr = 3.8 / Math.hypot(dx, 3.8);
+    } else this.aAt = this.aAr = this.aTb = 0;
+  }
+
+  // Wind, one sample at the mic; returns [l, r] in Pa.
+  aero() {
+    const s = this.aS;
+    const o = this.aOut;
+    const nl = this.arnd(), nr = this.arnd(), nc = this.arnd();
+    // hiss: mostly different at each ear (the flow is torn up), some common
+    const H1 = this.aH1, H2 = this.aH2, H3 = this.aH3;
+    let x = nl + 0.5 * nc;
+    let v3 = x - s[1];
+    let v1 = H1 * s[0] + H2 * v3;
+    let v2 = s[1] + H2 * s[0] + H3 * v3;
+    s[0] = 2 * v1 - s[0];
+    s[1] = 2 * v2 - s[1];
+    let hl = v1 * 1.43;
+    x = nr + 0.5 * nc;
+    v3 = x - s[3];
+    v1 = H1 * s[2] + H2 * v3;
+    v2 = s[3] + H2 * s[2] + H3 * v3;
+    s[2] = 2 * v1 - s[2];
+    s[3] = 2 * v2 - s[3];
+    let hr = v1 * 1.43;
+    // buffet: low and mostly common to both ears; a slow high-pass keeps DC out
+    const ba = this.aBa;
+    s[4] += ba * (nc + 0.35 * nl - s[4]);
+    s[5] += ba * (s[4] - s[5]);
+    s[6] += this.aHpA * (s[5] - s[6]);
+    let b = (s[5] - s[6]) * 9;
+    const cab = this.aeroMic === 2;
+    let l, r;
+    if (cab) {
+      // the glass and seals pass the low buffeting, soften the hiss
+      const ca = this.aCabA;
+      s[7] += ca * (hl - s[7]);
+      s[8] += ca * (hr - s[8]);
+      hl = s[7] * 1.5;
+      hr = s[8] * 1.5;
+      l = hl * this.aAh * 2.3 * this.aGl + b * this.aAb * 1.85;
+      r = hr * this.aAh * 2.3 * this.aGr + b * this.aAb * 1.85;
+      if (this.aAw > 0.001) {
+        this.aWph += (this.aWf * (1 + this.aTurb * 0.6)) / this.fs;
+        this.aWph -= Math.floor(this.aWph);
+        const w = Math.sin(TAU * this.aWph) * this.aAw * 0.05;
+        l += w * 0.4;
+        r += w;
+      }
+    } else {
+      l = hl * this.aAh * 1.8 * this.aGl + b * this.aAb * 0.9;
+      r = hr * this.aAh * 1.8 * this.aGr + b * this.aAb * 0.9;
+    }
+    if (this.aAt > 1e-4 || this.aAr > 0.05) {
+      // lorry on the right: its wake, and the rumble of its tyres and engine
+      s[9] += this.aRumA * (nr - s[9]);
+      s[10] += this.aRumA * (s[9] - s[10]);
+      const iso = cab ? 0.5 : 1;
+      const wk = this.aAt * iso * 3;
+      const tb = b * this.aAb * this.aTb * (cab ? 1.85 : 0.9);
+      const rum = s[10] * 6 * this.aAr * iso * 0.12;
+      l += hl * wk * 0.3 + tb * 0.3 + rum * 0.4;
+      r += hr * wk + tb + rum;
+    }
+    o[0] = l;
+    o[1] = r;
+    return o;
+  }
+
+  // A joint in the road under one axle (amp: Pa at 1 m, roughly).
+  bump(amp) {
+    amp *= 0.75 + 0.5 * (this.arnd() + 0.5); // no two joints alike
+    this.bumpX += amp;
+    this.bumpCl = Math.max(this.bumpCl, amp);
+  }
+
+  // Intake, mechanical and chassis sources; write all sources (Pa at 1 m)
+  // into the listener's delay lines; scope capture.
+  stepSources(rpm, omega, lis) {
+    const fs = this.fs;
+    const snd = this.snd;
+    const src = this.srcBuf;
+
+    // Snorkel/airbox: d/dt of throttle mass flow through a low-pass airbox;
+    // ITB/velocity stacks radiate the runner mouths directly.
+    let dq = (this.mdTh - this.mdThPrev) * fs;
+    this.mdThPrev = this.mdTh;
+    // throttle hiss: the jet through a nearly closed plate, growing as the
+    // manifold vacuum deepens; the airbox muffles it like everything else
+    const pr = this.pPl / P_AMB;
+    if (pr < 0.9 && this.mdTh > 0) {
+      const nz = rnd() - 0.5;
+      this.hissLp += this.hissA * (nz - this.hissLp);
+      dq += (nz - this.hissLp) * this.mdTh * 120 * (0.9 - pr);
+    }
+    const ibA = this.ibA;
+    this.ibLp1 += ibA * (dq - this.ibLp1);
+    this.ibLp2 += ibA * (this.ibLp1 - this.ibLp2);
+    let intake = this.ibLp2 * (1 - this.itb * 0.6);
+    if (this.itb) {
+      const dr = (this.runnerFlow - this.runnerFlowPrev) * fs;
+      this.itbLp += this.itbA * (dr - this.itbLp);
+      intake += this.itbLp * 0.55;
+    }
+    this.runnerFlowPrev = this.runnerFlow;
+    intake = intake * INV4PI * snd.intake + this.turboSnd;
+    if (this.nosFlow > 0 || this.purgeFlow > 0 || this.nosClick > 0 || this.nosRing > 0) intake += this.nitrousSound();
+
+    // mechanical: valve seating ticks + combustion knock through the block
+    if (rpm > 30 && this.vtExcS > 0) {
+      const r6 = rpm / 6000;
+      this.vtExc += this.vtExcS * r6 * (r6 + 0.15) * this.vtK * (0.7 + 0.6 * rnd());
+    }
+    const vtOut = this.valvetrain.tick(this.vtExc * (rnd() * 0.5 + 0.75));
+    this.vtExc *= 0.2;
+    const cb = this.block.tick(this.combExcS * 1e-4);
+    let mech = (vtOut * 7 + cb * 0.04 + this.knockSndS * KNOCK_RAD) * snd.mech;
+    // straight-cut / gearbox whine
+    if (this.gear > 0 && this.clutch > 0.5) {
+      const fin = (this.ww * this.veh.final) / TAU;
+      this.gearPhase += (fin * 29) / fs;
+      this.gearPhase -= Math.floor(this.gearPhase);
+      const amp = this.gearK * (0.02 + Math.abs(this.gearTorque) / 400) * Math.min(1, fin / 20);
+      mech += Math.sin(TAU * this.gearPhase) * amp + Math.sin(2 * TAU * this.gearPhase + 1) * amp * 0.4;
+    }
+    if (this.stActive) mech += this.starterSound();
+
+    // chassis: road, wind, tyre squeal
+    // (a mic riding on the car hears the wind on its own, in aero())
+    let chassis = 0;
+    if (this.v > 0.3) {
+      const vv = this.v;
+      const nz = rnd() - 0.5;
+      this.roadLp += 0.02 * (nz - this.roadLp);
+      this.windLp1 += 0.15 * (nz - this.windLp1);
+      this.windLp2 += 0.03 * (this.windLp1 - this.windLp2);
+      const sf = this.surface === 'asphalt' ? 1 : this.surface === 'concrete' ? 1.3 : 1.15;
+      chassis += this.roadLp * vv * 0.35 * sf + (this.aeroMic ? 0 : (this.windLp1 - this.windLp2) * vv * vv * 0.0025);
+    }
+    if (this.bumpX !== 0 || this.bumpCl > 1e-5 || this.bumpY1 > 1e-6 || this.bumpY1 < -1e-6) {
+      // tyre and suspension ring at ~70 Hz; the tread slaps the joint
+      const y = this.bumpB1 * this.bumpY1 + this.bumpB2 * this.bumpY2 + this.bumpX;
+      this.bumpX = 0;
+      this.bumpY2 = this.bumpY1;
+      this.bumpY1 = y;
+      this.bumpCl *= this.bumpClD;
+      chassis += y * this.bumpG + this.arnd() * this.bumpCl * 0.6;
+    }
+    const sl = Math.abs(this.slip);
+    if (sl > 1.2 && this.gear > 0) {
+      this.sqPhase += (820 + 180 * Math.sin(this.pos * 3 + sl) + (rnd() - 0.5) * 300) / fs;
+      this.sqPhase -= Math.floor(this.sqPhase);
+      chassis += Math.sin(TAU * this.sqPhase) * Math.min(1, (sl - 1.2) / 4) * 1.4;
+    }
+
+    // The wastegate dump leaves as a near-sonic jet: broadband turbulent
+    // roar on top of the pulses the pipe carries (Lighthill: power ~ U^8,
+    // so pressure ~ flow^4 relative; a softer power keeps it controllable).
+    if (this.wgRes >= 0) {
+      const u = this.ex.rU[this.wgRes];
+      const nz = rnd() - 0.5;
+      this.jetLp += 0.45 * (nz - this.jetLp);
+      this.jetHp += 0.04 * (this.jetLp - this.jetHp);
+      const a = u > 0 ? u : 0;
+      src[6] = src[6] * 2.5 + (this.jetLp - this.jetHp) * a * a * 9e3;
+    }
+
+    // assemble sources (Pa at 1 m)
+    const exG = this.exG;
+    const buf = lis.buf;
+    const w = lis.w;
+    const mix = this.mix;
+    buf[w] = src[0] * exG * mix[0];
+    buf[SRC_BUF + w] = src[1] * exG * mix[1];
+    buf[2 * SRC_BUF + w] = src[2] * exG * mix[2];
+    buf[3 * SRC_BUF + w] = intake * mix[3];
+    buf[4 * SRC_BUF + w] = mech * mix[4];
+    buf[5 * SRC_BUF + w] = chassis * mix[5];
+    buf[6 * SRC_BUF + w] = src[6] * exG * mix[6];
+    lis.w = (w + 1) & SRC_MASK;
+
+    // scope capture (tail pipe sum, cylinder 1 pressure & volume)
+    const sw = this.scopeW;
+    this.scopeBuf[sw] = (src[0] + src[1] + src[2]) * exG;
+    this.scopeP[sw] = this.cP[0];
+    this.scopeV[sw] = this.cV[0];
+    this.scopeW = (sw + 1) & 16383;
+    const ca0 = this.cCA[0];
+    if (crossed(this.scopePrevCA, ca0, this.tdcFire)) this.onScopeCycle();
+    this.scopePrevCA = ca0;
+  }
+
+  // Snapshot of cylinders + pressure along every exhaust pipe (visualiser).
+  captureSnap() {
+    const n = this.n;
+    const ex = this.ex;
+    const P = 10;
+    const a = new Float32Array(8 + n * 4 + ex.S * P);
+    a[0] = this.crank;
+    a[1] = this.rpm;
+    a[2] = this.egt;
+    a[3] = this.pPl;
+    a[4] = this.pB;
+    a[5] = this.valveOpen;
+    a[6] = this.wg;
+    a[7] = this.bov;
+    let o = 8;
+    const exT = this.camHi ? this.exTabHi : this.exTabLo;
+    const inT = this.camHi ? this.inTabHi : this.inTabLo;
+    if (!this.maxAe) {
+      let me = 1e-9, mi = 1e-9;
+      for (let i = 0; i < exT.length; i++) {
+        if (exT[i] > me) me = exT[i];
+        if (inT[i] > mi) mi = inT[i];
+      }
+      this.maxAe = me;
+      this.maxAi = mi;
+    }
+    for (let c = 0; c < n; c++) {
+      const i0 = (this.cCA[c] * this.tabScale) | 0;
+      a[o++] = this.cP[c] / 1e5;
+      a[o++] = exT[i0] / this.maxAe;
+      a[o++] = inT[i0] / this.maxAi;
+      a[o++] = this.cBurn[c] === 2 ? this.cXb[c] + 0.01 : 0;
+    }
+    for (let k = 0; k < ex.S; k++) {
+      ex.sampleSeg(k, P, a, o);
+      o += P;
+    }
+    return a;
+  }
+
+  onScopeCycle() {
+    const end = this.scopeW;
+    let len = (end - this.scopeStart) & 16383;
+    this.scopeStart = end;
+    if (len < 64 || len > 16000) return;
+    if (this.scopeReady) return; // previous not yet posted
+    const N = 360;
+    const sig = new Float32Array(N);
+    const pr = new Float32Array(N);
+    const vo = new Float32Array(N);
+    const st = (end - len) & 16383;
+    for (let i = 0; i < N; i++) {
+      const a = (i / N) * len;
+      const i0 = a | 0;
+      const idx = (st + i0) & 16383;
+      sig[i] = this.scopeBuf[idx];
+      pr[i] = this.scopeP[idx];
+      vo[i] = this.scopeV[idx];
+    }
+    this.scopeReady = { sig, pr, vo };
+  }
+
+  // Render all sources for both ears; returns [L, R] (normalised).
+  listen(L) {
+    const buf = L.buf;
+    const w = (L.w - 1) & SRC_MASK;
+    let l = 0, r = 0;
+    const dC = L.dCur, dI = L.dInc, gC = L.gCur, gI = L.gInc, al = L.al, z1 = L.z1, z2 = L.z2;
+    for (let s = 0; s < N_SRC; s++) {
+      if (!L.active[s]) continue;
+      const base = s * SRC_BUF;
+      for (let k = 0; k < 4; k++) {
+        const t = s * 4 + k;
+        const g = gC[t];
+        gC[t] = g + gI[t];
+        const d = dC[t];
+        dC[t] = d + dI[t];
+        if (g === 0) continue;
+        const pos = w - d;
+        const fl = Math.floor(pos);
+        const f = pos - fl;
+        const i1 = fl & SRC_MASK;
+        const y1 = buf[base + i1];
+        const y2 = buf[base + ((i1 + 1) & SRC_MASK)];
+        let x;
+        if (L.moving) {
+          // cubic Hermite for clean Doppler
+          const y0 = buf[base + ((i1 - 1) & SRC_MASK)];
+          const y3 = buf[base + ((i1 + 2) & SRC_MASK)];
+          const c1 = 0.5 * (y2 - y0);
+          const c2 = y0 - 2.5 * y1 + 2 * y2 - 0.5 * y3;
+          const c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
+          x = ((c3 * f + c2) * f + c1) * f + y1;
+        } else x = y1 + (y2 - y1) * f;
+        let y = z1[t] + al[t] * (x - z1[t]);
+        z1[t] = y;
+        y = z2[t] + al[t] * (y - z2[t]);
+        z2[t] = y;
+        if (k & 1) r += y * g;
+        else l += y * g;
+      }
+    }
+    if (this.aeroMic && (this.aAh > 1e-6 || this.aAt > 1e-6 || this.aAr > 0.05)) {
+      const a = this.aero();
+      const m5 = this.mix[5];
+      l += a[0] * m5;
+      r += a[1] * m5;
+    }
+    if (L.cabin) {
+      // body boom resonance
+      const m = (l + r) * 0.5;
+      L.boom1 += 0.012 * (m - L.boom1);
+      L.boom2 += 0.012 * (L.boom1 - L.boom2);
+      const b = (L.boom1 - L.boom2) * 2.2;
+      l += b;
+      r += b;
+    }
+    const k = 0.02 * this.snd.trim * this.fade;
+    if (this.fade < 1) this.fade = Math.min(1, this.fade + 1 / 2400);
+    this.telSpl += l * l + r * r;
+    this.telSplN++;
+    const o = this._o || (this._o = [0, 0]);
+    o[0] = softclip(l * k);
+    o[1] = softclip(r * k);
+    return o;
+  }
+}
+
+function softclip(x) {
+  const a = x < 0 ? -x : x;
+  if (a < 0.75) return x;
+  const y = 0.75 + 0.25 * ftanh((a - 0.75) * 4);
+  return x < 0 ? -y : y;
+}
+
+// ---------------------------------------------------------------------------
+// Scene: camera / source geometry -> listener tap parameters
+// ---------------------------------------------------------------------------
+
+const CAMERAS = {
+  rear: { pos: [-1.3, 1.0, -6.5], cabin: 0 },
+  exhaust: { pos: [-0.35, 0.45, -3.1], cabin: 0 },
+  side: { pos: [4.5, 1.1, -0.3], cabin: 0 },
+  front: { pos: [1.2, 1.0, 6.0], cabin: 0 },
+  bay: { pos: [0.3, 1.3, 1.4], cabin: 0 },
+  cockpit: { pos: [-0.35, 1.05, 0.1], cabin: 1 },
+  flyby: { pos: [0, 1.4, 0], cabin: 0, world: true, lateral: 7.5 },
+};
+
+function sourcePositions(cfg) {
+  const lay = cfg.vehicle.layout;
+  const engZ = lay === 'mid' ? -0.7 : lay === 'rear' ? -1.8 : 1.5;
+  const intZ = lay === 'mid' ? -0.35 : lay === 'rear' ? -1.4 : 1.9;
+  const intY = lay === 'mid' ? 1.15 : 0.85;
+  // side pipes exit just behind the front wheels (front engines) or ahead of
+  // the rear wheels (mid/rear engines)
+  const side = cfg.exhaustExit === 'side';
+  const sideZ = lay === 'front' ? 0.55 : -0.9;
+  return [
+    side ? [-0.98, 0.3, sideZ] : [-0.5, 0.35, -2.3], // exL
+    side ? [0.98, 0.3, sideZ] : [0.5, 0.35, -2.3], // exR
+    side ? [0.98, 0.3, sideZ] : [0.0, 0.35, -2.3], // exC
+    [0.0, intY, intZ], // intake
+    [0.0, 0.7, engZ], // mech
+    [0.0, 0.3, 0.0], // chassis
+    [0.7, 0.3, engZ - 0.25], // wastegate dump (screamer pipe)
+  ];
+}
+
+// Direction each pipe mouth points (radiation is brighter on that axis).
+function sourceAxes(cfg) {
+  const side = cfg.exhaustExit === 'side';
+  return [side ? [-1, 0, 0] : [0, 0, -1], side ? [1, 0, 0] : [0, 0, -1], side ? [1, 0, 0] : [0, 0, -1], null, null, null, [0.6, -0.8, 0]];
+}
+
+// ---------------------------------------------------------------------------
+// AudioWorkletProcessor
+// ---------------------------------------------------------------------------
+
+class EngineProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.fs = sampleRate;
+    this.sim = null;
+    this.next = null;
+    this.L = new Listener(this.fs);
+    this.camera = 'rear';
+    this.env = 'open';
+    this.flyby = null;
+    this.telEvery = Math.round(this.fs / 40);
+    this.telCount = 0;
+    this.frames = 0;
+    this.pending = [];
+    this.eco = false;
+    this.quality = 'auto';
+    this.busyMs = 0;
+    this.loadFrames = 0;
+    this.load = 0;
+    this.hot = 0;
+    this.upL = this.upR = this.upZL = this.upZR = 0;
+    this.mix = new Float64Array(N_SRC).fill(1);
+    this.port.onmessage = (e) => this.onMessage(e.data);
+  }
+
+  onMessage(m) {
+    switch (m.type) {
+      case 'config':
+        this.cfgMsg = m.cfg;
+        this.installSim(m.cfg, m.tune, !!m.hot);
+        break;
+      case 'quality':
+        this.quality = m.quality;
+        this.setEco(m.quality === 'eco');
+        break;
+      case 'input':
+        if (!this.sim) return;
+        if (m.pedal != null && !this.sim.follow) this.sim.pedal = clamp(m.pedal, 0, 1);
+        if (m.brake != null && !this.sim.follow) this.sim.brake = clamp(m.brake, 0, 1);
+        if (m.clutch != null) this.sim.clutchPedal = m.clutch;
+        if (m.launch != null) this.sim.launch = !!m.launch;
+        if (m.nos != null) this.sim.nosBtn = !!m.nos;
+        break;
+      case 'ignition':
+        if (!this.sim) return;
+        this.sim.ignition = !!m.on;
+        if (m.on && m.crank) this.sim.crankStart(!!m.cold);
+        if (!m.on) this.sim.starter = false;
+        break;
+      case 'shift':
+        this.sim?.requestShift(m.dir);
+        break;
+      case 'mode':
+        if (!this.sim) return;
+        if (this.sim.follow) this.sim.setFollow({ stop: true });
+        this.followOn = false;
+        this.sim.mode = m.mode;
+        if (m.mode !== 'drive' && m.mode !== 'flyby') {
+          this.sim.gear = 0;
+          this.sim.v = 0;
+        } else if (this.sim.gear === 0) this.sim.gear = 1;
+        if (m.mode !== 'flyby') this.flyby = null;
+        this.scene = null;
+        this.clearRoad();
+        this.updateScene(0);
+        break;
+      case 'camera':
+        this.camera = m.camera;
+        this.updateScene(0);
+        break;
+      case 'tune':
+        if (this.sim) this.applyTune(this.sim, m.tune);
+        break;
+      case 'mix':
+        for (let i = 0; i < N_SRC; i++) this.mix[i] = m.gains[i] ?? 1;
+        break;
+      case 'dyno':
+        if (!this.sim) return;
+        if (m.action === 'start') {
+          const s = this.sim;
+          s.mode = 'dyno';
+          s.dyno = {
+            active: true,
+            phase: 'settle',
+            t: 0,
+            start: Math.max(1500, s.ecu.idle * 1.8),
+            end: s.limitRpm - 150,
+            rate: Math.max(400, (s.limitRpm - 1500) / 9),
+            target: 0,
+          };
+          s.dynoI = 0;
+        } else if (m.action === 'hold') {
+          // steady state: the absorber holds one speed, the throttle is yours
+          const s = this.sim;
+          const was = s.mode === 'dyno' && s.dyno?.phase === 'hold';
+          s.mode = 'dyno';
+          s.dyno = { active: true, phase: 'hold', t: 0, start: m.rpm, end: m.rpm, rate: 0, target: m.rpm };
+          if (!was) s.dynoI = 0;
+        } else if (this.sim.dyno) {
+          this.sim.dyno.active = false;
+          this.sim.pedal = 0;
+        }
+        break;
+      case 'flyby':
+        this.scene = null;
+        this.clearRoad();
+        this.startFlyby(m);
+        break;
+      case 'scene':
+        this.startScene(m);
+        break;
+      case 'scene-go':
+        this.sceneGo();
+        break;
+      case 'scene-stop':
+        if (this.scene) this.endScene(true);
+        break;
+      case 'follow':
+        if (!this.sim) return;
+        this.sim.setFollow(m);
+        if (m.stop || !this.followOn) {
+          this.followOn = !m.stop;
+          this.scene = null;
+          this.flyby = null;
+          this.clearRoad();
+          this.updateScene(0);
+        }
+        break;
+      case 'strobe':
+        if (!this.sim) return;
+        this.sim.strobeOn = !!m.on;
+        if (m.step != null) this.sim.strobeStep = m.step;
+        break;
+    }
+  }
+
+  applyTune(sim, t) {
+    if (t.limit != null) sim.limitRpm = t.limit;
+    if (t.limiter != null) sim.limiterType = t.limiter;
+    if (t.burble != null) sim.burble = t.burble;
+    if (t.antilag != null) sim.antilag = !!t.antilag;
+    if (t.boost != null) sim.boostTarget = t.boost * 1e5;
+    if (t.valve != null) sim.valveMode = t.valve;
+    if (t.launchRpm != null) sim.launchRpm = t.launchRpm;
+    if (t.autoShift != null) sim.autoShift = !!t.autoShift;
+    if (t.bov != null) sim.bovType = t.bov;
+    if (t.tc != null) sim.tc = !!t.tc;
+    if (t.spark != null) sim.sparkAdj = t.spark;
+    if (t.octane != null) sim.setOctane(t.octane);
+    if (t.knockCtl != null) {
+      sim.knockCtl = !!t.knockCtl;
+      if (!sim.knockCtl) sim.knockRet = 0;
+    }
+    if (t.springs != null) sim.floatMul = t.springs === 'race' ? 1.12 : 1;
+    if (t.nosShot != null) sim.nosShot = t.nosShot;
+    if (t.nosRefill) sim.bottle = sim.nosBottle;
+    if (t.boost != null && sim.isCentri) sim.setCentriRatio();
+    if (t.maps !== undefined) sim.setMaps(t.maps);
+  }
+
+  startFlyby(m) {
+    const s = this.sim;
+    if (!s) return;
+    s.mode = 'flyby';
+    const v = s.veh;
+    // start in 2nd gear at a speed giving ~45% of redline
+    const g = Math.min(2, v.gears.length);
+    const G = v.gears[g - 1] * v.final;
+    const rpm0 = s.limitRpm * (m.style === 'cruise' ? 0.4 : 0.45);
+    const w = rpm0 / 9.5493;
+    s.gear = g;
+    s.clutch = 1;
+    s.shift = null;
+    s.ww = w / G;
+    s.v = s.ww * v.tire;
+    s.omega = w;
+    s.autoShift = true;
+    const dist = m.distance ?? 220;
+    this.flyby = { t: 0, style: m.style ?? 'wot', start: -dist, x: -dist, done: false, lifted: false };
+    s.pos = 0;
+    this.updateScene(0);
+  }
+
+  // -------------------------------------------------------------- scenes
+  // Scripted runs: the car drives itself along a course while the scene
+  // switches the surroundings (open road, canyon, tunnel) and records times.
+  startScene(m) {
+    const s = this.sim;
+    if (!s) return;
+    this.flyby = null;
+    this.clearRoad();
+    const v = s.veh;
+    s.mode = 'drive';
+    s.autoShift = true;
+    s.shift = null;
+    s.brake = 0;
+    s.launch = false;
+    s.pos = 0;
+    const sc = { id: m.id, t: 0, phase: 'run', env: null, track: m.track ?? [], length: m.length ?? 600, marks: m.marks ?? [], times: {}, done: false, shiftT: 0 };
+    if (m.id === 'drag') {
+      // staged at the line on the launch limiter
+      s.gear = 1;
+      s.clutch = 0;
+      s.v = 0;
+      s.ww = 0;
+      sc.phase = 'stage';
+      s.launch = true;
+      sc.world = true;
+      sc.lisPos = [9, 1.4, 14];
+      sc.tree = -1;
+    } else if (m.id === 'autobahn') {
+      // down the slip road at a cruise, in the gear that suits it
+      const v0 = 75 / 3.6;
+      let g = 1;
+      for (let i = v.gears.length; i >= 1; i--) {
+        if ((v0 / v.tire) * v.gears[i - 1] * v.final * 9.549 > s.limitRpm * 0.32) {
+          g = i;
+          break;
+        }
+      }
+      const G = v.gears[g - 1] * v.final;
+      s.gear = g;
+      s.clutch = 1;
+      s.v = v0;
+      s.ww = v0 / v.tire;
+      s.omega = Math.max(s.omega, s.ww * G);
+      sc.trucks = Float64Array.from(m.trucks ?? []);
+      sc.vT = 23; // lorries sit at 83 km/h
+      sc.joints = m.joints ?? [];
+      sc.derest = m.derest ?? 200;
+      sc.wb = v.mass < 500 ? 1.45 : 2.65; // wheelbase
+      sc.ax = [0, -sc.wb];
+      sc.peak = 0;
+      sc.best = 0;
+      sc.bestT = 0;
+      sc.cross = {};
+    } else {
+      // rolling start in second gear
+      const g = Math.min(2, v.gears.length);
+      const G = v.gears[g - 1] * v.final;
+      const w = (s.limitRpm * (m.id === 'tunnel' ? 0.32 : 0.42)) / 9.5493;
+      s.gear = g;
+      s.clutch = 1;
+      s.ww = w / G;
+      s.v = s.ww * v.tire;
+      s.omega = Math.max(s.omega, w);
+    }
+    this.scene = sc;
+    this.sceneEnv(0);
+    this.port.postMessage({ type: 'scene', ev: 'start', id: m.id });
+    this.updateScene(0);
+  }
+
+  sceneGo() {
+    const sc = this.scene;
+    if (!sc || sc.id !== 'drag' || sc.phase !== 'stage') return;
+    const s = this.sim;
+    sc.goT = sc.t;
+    sc.foul = sc.greenT == null || sc.t < sc.greenT;
+    s.launch = false;
+    sc.phase = 'run';
+  }
+
+  endScene(aborted) {
+    const sc = this.scene;
+    if (!sc || sc.done) return;
+    sc.done = true;
+    sc.phase = 'stop';
+    this.port.postMessage({ type: 'scene', ev: 'done', id: sc.id, aborted: !!aborted, times: sc.times, foul: sc.foul, rt: sc.rt });
+  }
+
+  // which surroundings the car is in at position x (with a blend zone)
+  sceneEnv(x) {
+    const sc = this.scene;
+    let env = 'open';
+    let fl = 18; // metres the change blends over: short under a bridge
+    for (const seg of sc.track) {
+      if (x >= seg.s && x < seg.s + seg.len) {
+        env = seg.env ?? 'open';
+        fl = seg.blend ?? 18;
+      }
+    }
+    if (env !== sc.env) {
+      const b = Math.min(fl, sc.blend ?? 18);
+      const fade = sc.env == null ? 0.05 : clamp(b / Math.max(5, this.sim.v), b < 18 ? 0.03 : 0.25, 2.5);
+      sc.env = env;
+      sc.blend = fl;
+      this.port.postMessage({ type: 'scene', ev: 'env', env, fade });
+    }
+  }
+
+  // The road under the car: surface, joints, lorries in the next lane.
+  clearRoad() {
+    const s = this.sim;
+    if (!s) return;
+    s.surface = 'asphalt';
+    s.truckDx = 1e9;
+    s.truckVr = 0;
+  }
+
+  // Autobahn: down the slip road at a cruise, floor it at the end of the
+  // speed limit and hold it until the car will go no faster, then lift.
+  autobahnStep(sc, dtb) {
+    const s = this.sim;
+    const x = s.pos;
+    const v = s.v;
+    // lorries in the right-hand lane
+    const tr = sc.trucks;
+    let near = 1e9;
+    for (let i = 0; i < tr.length; i++) {
+      tr[i] += sc.vT * dtb;
+      const dx = tr[i] - x;
+      if (Math.abs(dx) < Math.abs(near)) near = dx;
+    }
+    s.truckDx = near;
+    s.truckVr = v - sc.vT;
+    // surface under the front wheels; slab joints in concrete every 5 m and
+    // expansion joints at each end of a viaduct, front axle then rear
+    let surf = 'asphalt';
+    for (const seg of sc.track) if (x >= seg.s && x < seg.s + seg.len) surf = seg.surface ?? 'asphalt';
+    s.surface = surf;
+    const kv = Math.pow(Math.max(v, 1) / 30, 0.7);
+    for (let a = 0; a < 2; a++) {
+      const p0 = sc.ax[a], p1 = x - (a ? sc.wb : 0);
+      sc.ax[a] = p1;
+      if (p1 <= p0) continue;
+      if (surf === 'concrete' && Math.floor(p1 / 5) > Math.floor(p0 / 5)) s.bump(1.2 * kv * (a ? 0.8 : 1));
+      for (const j of sc.joints) if (p0 < j && p1 >= j) s.bump(3.5 * kv * (a ? 0.8 : 1));
+    }
+    const kmh = v * 3.6;
+    if (sc.phase === 'run') {
+      s.brake = 0;
+      if (x < sc.derest) {
+        // the limit still applies: hold a steady cruise onto the main road
+        s.pedal = clamp(0.25 + (80 / 3.6 - v) * 0.12, 0, 0.9);
+        return;
+      }
+      if (sc.wotT == null) {
+        sc.wotT = sc.t;
+        sc.wotX = x;
+      }
+      s.pedal = 1;
+      // splits: interpolate each crossing within this block
+      for (let k = 100; k <= 450; k += 50) {
+        if (sc.cross[k] == null && kmh >= k) sc.cross[k] = sc.t - (kmh - k) / 3.6 / Math.max(0.2, s.accel);
+      }
+      if (v > sc.peak) {
+        sc.peak = v;
+        sc.peakGear = s.gear;
+        sc.peakRpm = s.rpm;
+        sc.peakX = x - sc.wotX;
+        sc.peakT = sc.t - sc.wotT;
+      }
+      // topped out: no more than 1 km/h gained in the last five seconds
+      if (v > sc.best + 0.28) {
+        sc.best = v;
+        sc.bestT = sc.t;
+      }
+      if ((sc.t - sc.bestT > 5 && sc.t - sc.wotT > 8) || x >= sc.length - 400) {
+        sc.phase = 'lift';
+        sc.liftT = sc.t;
+        const top = sc.peakGear >= s.veh.gears.length;
+        sc.times = {
+          vmax: sc.peak,
+          gear: sc.peakGear,
+          rpm: sc.peakRpm,
+          limiter: top && sc.peakRpm > s.limitRpm - 300,
+          dist: sc.peakX,
+          time: sc.peakT,
+          cross: sc.cross,
+        };
+        this.port.postMessage({ type: 'scene', ev: 'vmax', vmax: sc.peak });
+      }
+    } else if (sc.phase === 'lift') {
+      // off the throttle at speed: the overrun, the wind, the wind dying
+      s.pedal = 0;
+      s.brake = 0;
+      if (sc.t - sc.liftT > 6) this.endScene(false);
+    } else {
+      s.pedal = 0;
+      s.brake = v > 0.5 ? 0.3 : 0;
+    }
+  }
+
+  sceneStep(dtb) {
+    const sc = this.scene;
+    const s = this.sim;
+    sc.t += dtb;
+    const x = s.pos;
+    const red = s.limitRpm;
+    const v = s.veh;
+    s.holdGear = false;
+    if (sc.id === 'autobahn') {
+      this.autobahnStep(sc, dtb);
+      this.sceneEnv(x);
+      return;
+    }
+    if (sc.id === 'drag') {
+      if (sc.phase === 'stage') {
+        s.pedal = 1;
+        s.brake = 0;
+        // sportsman tree: three ambers half a second apart, then green
+        const t0 = 2.4;
+        const k = sc.t < t0 ? -1 : Math.min(3, Math.floor((sc.t - t0) / 0.5));
+        if (k !== sc.tree) {
+          sc.tree = k;
+          if (k === 3) sc.greenT = t0 + 1.5;
+          this.port.postMessage({ type: 'scene', ev: 'tree', light: k });
+        }
+        // nobody pressed GO: launch for them after a slow reaction
+        if (sc.greenT != null && sc.t > sc.greenT + 1.2) this.sceneGo();
+      } else if (sc.phase === 'run') {
+        s.pedal = 1;
+        if (sc.leaveT == null && x > 0.3) {
+          sc.leaveT = sc.t;
+          sc.rt = sc.greenT != null ? sc.goT - sc.greenT : 0;
+        }
+        for (const [name, d] of sc.marks) {
+          if (sc.times[name] == null && x >= d && sc.leaveT != null) {
+            // interpolate the crossing within this block
+            const over = (x - d) / Math.max(0.1, s.v);
+            sc.times[name] = sc.t - over - sc.leaveT;
+            sc.times[name + '_v'] = s.v;
+          }
+        }
+        if (x >= sc.length) {
+          sc.phase = 'brake';
+          this.endScene(false);
+        }
+      } else {
+        s.pedal = 0;
+        s.brake = s.v > 0.5 ? 0.7 : 0;
+      }
+      sc.carZ = x;
+      return;
+    }
+    // course driver: brake for the corners ahead, then power out
+    let vt = 1e9;
+    let inCorner = null;
+    for (const seg of sc.track) {
+      if (!seg.v) continue;
+      const vc = seg.v / 3.6;
+      if (x >= seg.s && x < seg.s + seg.len) {
+        inCorner = seg;
+        vt = Math.min(vt, vc);
+      } else if (seg.s > x) vt = Math.min(vt, Math.sqrt(vc * vc + 2 * 8.5 * (seg.s - x)));
+    }
+    let coast = false;
+    if (sc.id === 'tunnel') {
+      // cruise to the portal, drop a gear and floor it through the tunnel
+      const tun = sc.track.find((q) => q.env === 'tunnel');
+      if (x < tun.s - 45) vt = Math.min(vt, s.v < 14 ? 16 : s.v);
+      if (x > tun.s + tun.len - 70 && x < tun.s + tun.len + 40) coast = true; // lift: let it crackle in the tunnel
+      else if (x >= tun.s + tun.len + 40) vt = Math.min(vt, s.v);
+    }
+    if (sc.phase === 'run') {
+      const err = vt - s.v;
+      s.holdGear = !!inCorner;
+      if (coast) {
+        s.pedal = 0;
+        s.brake = 0;
+      } else if (inCorner) {
+        // hold the line: smooth part throttle, brake only if far too fast
+        s.pedal = clamp(0.3 + err * 0.25, 0.05, 0.8);
+        s.brake = err < -3 ? clamp(-err / 8, 0, 0.6) : 0;
+      } else if (err > 1.5) {
+        s.pedal = 1;
+        s.brake = 0;
+      } else if (err < -1) {
+        s.pedal = 0;
+        s.brake = clamp(-err / 6, 0.15, 1);
+      } else {
+        s.pedal = inCorner ? clamp(0.35 + err * 0.3, 0.15, 0.7) : clamp(0.5 + err * 0.4, 0, 1);
+        s.brake = 0;
+      }
+      // a quick driver goes down the box under braking, blipping each time
+      sc.shiftT -= dtb;
+      if (s.brake > 0.1 && !s.shift && s.gear > 1 && sc.shiftT <= 0) {
+        const G2 = v.gears[s.gear - 2] * v.final;
+        const r2 = (s.v / v.tire) * G2 * 9.549;
+        if (r2 < red * 0.82) {
+          s.requestShift(-1);
+          sc.shiftT = 0.35;
+        }
+      }
+      if (sc.id === 'tunnel' && !sc.kicked && x > sc.track.find((q) => q.env === 'tunnel').s - 40 && s.gear > 1) {
+        sc.kicked = true;
+        s.requestShift(-1);
+      }
+      if (x >= sc.length) {
+        sc.phase = 'stop';
+        this.endScene(false);
+      }
+    } else {
+      s.pedal = 0;
+      s.brake = s.v > 0.5 ? 0.6 : 0;
+    }
+    this.sceneEnv(x);
+  }
+
+  // Compute listener tap targets for the current camera and car pose.
+  updateScene(blockLen) {
+    const sim = this.sim;
+    const L = this.L;
+    if (!sim) return;
+    const cam = CAMERAS[this.camera] ?? CAMERAS.rear;
+    const flyby = (sim.mode === 'flyby' && this.flyby) || (this.scene?.world && this.camera === 'scene');
+    const srcs = sourcePositions(sim.cfg);
+    const axes = sourceAxes(sim.cfg);
+    const fs = sim.fs;
+    let carX = 0, carZ = 0;
+    let lisPos, lisRight;
+    if (flyby) {
+      const sc = this.scene?.world ? this.scene : null;
+      carZ = sc ? sc.carZ ?? 0 : this.flyby.x;
+      carX = 0;
+      lisPos = sc ? sc.lisPos : [CAMERAS.flyby.lateral, 1.4, 0];
+      lisRight = [0, 0, 1]; // facing the road (-x): right ear toward +z
+    } else {
+      lisPos = cam.pos;
+      // face the car centre (or forward in cockpit)
+      if (cam.cabin) lisRight = [1, 0, 0];
+      else {
+        const dx = -lisPos[0], dz = -lisPos[2];
+        const d = Math.hypot(dx, dz) || 1;
+        lisRight = [dz / d, 0, -dx / d];
+      }
+    }
+    const cabin = !flyby && cam.cabin;
+    L.cabin = cabin ? 1 : 0;
+    L.moving = !!flyby;
+    sim.aeroMic = flyby ? 0 : cabin ? 2 : 1;
+    // The starter hides low beside the bell housing and is heard through the
+    // block and body rather than as a point source: wherever the mic is, it
+    // keeps roughly the balance against the exhaust that it has from behind.
+    const dist = (p, q) => Math.max(0.35, Math.hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2]));
+    const exM = [carX + srcs[0][0], srcs[0][1], carZ + srcs[0][2]], stM = [carX + srcs[4][0], srcs[4][1], carZ + srcs[4][2]];
+    const rear = CAMERAS.rear.pos;
+    const rel = (dist(lisPos, stM) / dist(lisPos, exM)) / (dist(rear, srcs[4]) / dist(rear, srcs[0]));
+    sim.stNear = clamp(Math.pow(rel, 0.75), 0.08, 1.5) * (cabin ? 0.8 : 1);
+    const active = [
+      sim.ex.opens.some((_, i) => sim.ex.oCh[i] === 0),
+      sim.ex.opens.some((_, i) => sim.ex.oCh[i] === 1),
+      sim.ex.opens.some((_, i) => sim.ex.oCh[i] === 2),
+      true,
+      true,
+      sim.mode === 'drive' || sim.mode === 'flyby' || sim.mode === 'scene' || !!sim.follow,
+      sim.ex.opens.some((_, i) => sim.ex.oCh[i] === 6),
+    ];
+    const n = blockLen || 1;
+    const layout = sim.cfg.vehicle.layout;
+    for (let s = 0; s < N_SRC; s++) {
+      L.active[s] = active[s] ? 1 : 0;
+      const sp = srcs[s];
+      const wx = carX + sp[0], wy = sp[1], wz = carZ + sp[2];
+      for (let ear = 0; ear < 2; ear++) {
+        const sgn = ear === 0 ? -1 : 1;
+        const ex = lisPos[0] + lisRight[0] * 0.09 * sgn;
+        const ey = lisPos[1];
+        const ez = lisPos[2] + lisRight[2] * 0.09 * sgn;
+        for (let path = 0; path < 2; path++) {
+          const t = s * 4 + path * 2 + ear;
+          let gain, delay, fc;
+          const sy = path === 0 ? wy : -wy;
+          const dx = wx - ex, dy = sy - ey, dz = wz - ez;
+          const r = Math.sqrt(dx * dx + dy * dy + dz * dz);
+          delay = (r / C_AIR) * fs + 4;
+          gain = 1 / Math.max(r, 0.35);
+          // air absorption + ground impedance
+          fc = 18000 / (1 + r / 70);
+          if (path === 1) {
+            gain *= 0.62;
+            fc = Math.min(fc, 5200);
+          }
+          // pipe mouths radiate along their axis: brighter on axis
+          const ax = axes[s];
+          if (ax) {
+            const cosA = -(ax[0] * dx + ax[1] * dy + ax[2] * dz) / (r || 1); // +1 on axis
+            fc *= 0.35 + 0.65 * (0.5 + 0.5 * cosA);
+            gain *= 0.8 + 0.35 * cosA;
+          }
+          // head shadow
+          const dot = (dx * lisRight[0] + dz * lisRight[2]) / (r || 1);
+          const facing = sgn * dot;
+          if (facing < 0) {
+            fc *= 0.55 + 0.45 * (1 + facing);
+            gain *= 0.8 + 0.2 * (1 + facing);
+          }
+          if (cabin) {
+            if (path === 1) {
+              gain = 0;
+            } else if (s <= 2) {
+              gain *= sim.cfg.exhaustExit === 'side' ? 0.45 : 0.3;
+              fc = sim.cfg.exhaustExit === 'side' ? 900 : 520;
+            } else if (s === 6) {
+              gain *= 0.4;
+              fc = 1400;
+            } else if (s === 3) {
+              gain *= layout === 'front' ? 0.35 : 0.9;
+              fc = layout === 'front' ? 1500 : 3200;
+            } else if (s === 4) {
+              gain *= 0.45;
+              fc = 2600;
+            } else {
+              gain *= 1.3;
+              fc = 900;
+            }
+          }
+          const alpha = lpCoef(Math.min(fc, fs * 0.45), fs);
+          if (L.first || blockLen === 0) {
+            L.dCur[t] = delay;
+            L.gCur[t] = gain;
+            L.dInc[t] = 0;
+            L.gInc[t] = 0;
+          } else {
+            L.dInc[t] = (delay - L.dCur[t]) / n;
+            L.gInc[t] = (gain - L.gCur[t]) / n;
+          }
+          L.al[t] = alpha;
+        }
+      }
+    }
+    L.first = false;
+  }
+
+  // Build a simulation for cfg; hot = same car with new hardware (keep the
+  // running state). The previous engine keeps rendering briefly for a
+  // crossfade.
+  installSim(cfg, tune, hot) {
+    const old = this.sim;
+    const rate = this.eco ? this.fs / 2 : this.fs;
+    const sim = new EngineSim(cfg, rate);
+    if (old) {
+      sim.mode = old.mode;
+      sim.valveMode = old.valveMode;
+      sim.autoShift = old.autoShift;
+      sim.strobeOn = old.strobeOn;
+      sim.tc = old.tc;
+      sim.strobeStep = old.strobeStep;
+      for (const k of ['limitRpm', 'limiterType', 'burble', 'antilag', 'boostTarget', 'launchRpm', 'bovType', 'sparkAdj', 'knockCtl', 'floatMul', 'nosShot']) if (!tune) sim[k] = old[k];
+      if (!tune) {
+        sim.setOctane(old.octane);
+        if (sim.isCentri) sim.setCentriRatio();
+        sim.setMaps(old.maps);
+      }
+    }
+    sim.mix = this.mix;
+    if (tune) this.applyTune(sim, tune);
+    if (hot && old) {
+      // Same car, new hardware: carry the running state across.
+      for (const k of ['omega', 'ignition', 'running', 'gear', 'v', 'ww', 'pos', 'clutch', 'pedal', 'thr', 'thrCmd', 'brake', 'idleI', 'egt', 'egtInst', 'pipeWall', 'launch', 'dyno', 'dynoI', 'dynoLoad', 'mode', 'flare', 'coldT', 'accel', 'follow', 'followV', 'followA'])
+        sim[k] = old[k];
+      // a start in progress carries on with the new hardware
+      for (const k of ['starter', 'starterT', 'stHold', 'crankRevs', 'syncRevs', 'filmLeft', 'stW', 'stLock', 'stEng', 'stV', 'stR', 'stActive', 'stEnv'])
+        sim[k] = old[k];
+      if (sim.kick && old.kick) for (const k of ['kicking', 'kickN', 'kickT', 'kickRev', 'kickWait', 'kickGrip']) sim[k] = old[k];
+      else if (sim.kick !== old.kick) {
+        sim.stEng = false;
+        sim.stW = 0;
+        sim.kickWait = 0.3;
+      }
+      if (sim.twoStroke) sim.pv = old.pv ?? 0;
+      // same car: the bottle stays as full as it was
+      sim.bottle = sim.nosBottle * (old.bottle / old.nosBottle);
+      sim.nosBtn = old.nosBtn;
+      sim.crank = old.crank % sim.cycle;
+      for (let c = 0; c < sim.n; c++) sim.cCA[c] = (sim.crank + sim.off[c]) % sim.cycle;
+      sim.pPl = old.pPl;
+      sim.mPl = (sim.pPl * sim.Vpl) / (R * sim.Tpl);
+      sim.fade = 1;
+    }
+    if (old && old.fs === sim.fs) {
+      this.xOld = old;
+      this.xL = this.L;
+      this.xN = hot ? 1600 : 4800;
+      this.xT = 0;
+    } else this.xOld = null;
+    this.L = new Listener(sim.fs);
+    this.tmpL ??= new Float32Array(128);
+    this.tmpR ??= new Float32Array(128);
+    this.sim = sim;
+    this.L.first = true;
+    this.updateScene(0);
+  }
+
+  // Half-rate physics for slow devices (output upsampled x2).
+  setEco(on) {
+    if (on === this.eco) return;
+    this.eco = on;
+    if (this.cfgMsg && this.sim) this.installSim(this.cfgMsg, null, true);
+    this.port.postMessage({ type: 'quality', eco: on });
+  }
+
+  // Render a sim into n output frames, upsampling if it runs at half rate.
+  renderSim(sim, lis, L, R, n) {
+    if (sim.fs === this.fs) {
+      sim.render(L, R, n, lis);
+      return;
+    }
+    const h = n >> 1;
+    if (!this.hL || this.hL.length < h) {
+      this.hL = new Float32Array(h);
+      this.hR = new Float32Array(h);
+    }
+    const hL = this.hL, hR = this.hR;
+    sim.render(hL, hR, h, lis);
+    let pl = this.upL, pr = this.upR, zl = this.upZL, zr = this.upZR;
+    const a = 0.72;
+    for (let i = 0; i < h; i++) {
+      const l = hL[i], r = hR[i];
+      zl += a * ((pl + l) * 0.5 - zl);
+      zr += a * ((pr + r) * 0.5 - zr);
+      L[2 * i] = zl;
+      R[2 * i] = zr;
+      zl += a * (l - zl);
+      zr += a * (r - zr);
+      L[2 * i + 1] = zl;
+      R[2 * i + 1] = zr;
+      pl = l;
+      pr = r;
+    }
+    this.upL = pl;
+    this.upR = pr;
+    this.upZL = zl;
+    this.upZR = zr;
+  }
+
+  process(inputs, outputs) {
+    const out = outputs[0];
+    const L = out[0], Rr = out[1] ?? out[0];
+    const nF = L.length;
+    const sim = this.sim;
+    if (!sim) {
+      L.fill(0);
+      if (Rr !== L) Rr.fill(0);
+      return true;
+    }
+    // flyby / scene scripts
+    if (sim.mode === 'flyby' && this.flyby) this.flybyStep(nF / this.fs);
+    if (this.scene && sim.mode === 'drive') this.sceneStep(nF / this.fs);
+    if (sim.mode === 'flyby' || (this.scene?.world && this.camera === 'scene')) this.updateScene(sim.fs === this.fs ? nF : nF >> 1);
+    const t0 = Date.now();
+    const Rw = Rr !== L ? Rr : this.monoR || (this.monoR = new Float32Array(nF));
+    this.renderSim(sim, this.L, L, Rw, nF);
+    if (this.xOld) {
+      const tl = this.tmpL.length >= nF ? this.tmpL : (this.tmpL = new Float32Array(nF));
+      const tr = this.tmpR.length >= nF ? this.tmpR : (this.tmpR = new Float32Array(nF));
+      this.renderSim(this.xOld, this.xL, tl, tr, nF);
+      for (let i = 0; i < nF; i++) {
+        const k = Math.max(0, 1 - (this.xT + i) / this.xN);
+        const kn = 1 - k;
+        L[i] = L[i] * kn + tl[i] * k;
+        if (Rr !== L) Rr[i] = Rr[i] * kn + tr[i] * k;
+      }
+      this.xT += nF;
+      if (this.xT >= this.xN) {
+        this.xOld = null;
+        this.xL = null;
+      }
+    }
+    // CPU load estimate -> automatic half-rate fallback
+    this.busyMs += Date.now() - t0;
+    this.loadFrames += nF;
+    if (this.loadFrames >= this.fs) {
+      const load = this.busyMs / 1000;
+      this.load = load;
+      this.busyMs = 0;
+      this.loadFrames = 0;
+      if (this.quality === 'auto' && !this.eco) {
+        this.hot = load > 0.62 ? this.hot + 1 : 0;
+        if (this.hot >= 2) this.setEco(true);
+      }
+    }
+    this.frames += nF;
+    this.telCount += nF;
+    this.postSnap();
+    if (this.telCount >= this.telEvery) {
+      this.telCount = 0;
+      this.postTelemetry();
+    }
+    return true;
+  }
+
+  flybyStep(dtb) {
+    const f = this.flyby;
+    const s = this.sim;
+    f.t += dtb;
+    f.x = f.start + s.pos;
+    if (f.style === 'wot') {
+      s.pedal = f.x < 90 ? 1 : 0;
+      if (f.x > 90 && !f.lifted) f.lifted = true;
+    } else {
+      // cruise past, then downshift & bark
+      s.pedal = f.x < -30 ? 0.35 : f.x < 40 ? 1 : 0;
+    }
+    if (f.x > 260 && !f.done) {
+      f.done = true;
+      s.pedal = 0;
+      this.port.postMessage({ type: 'flyby-done' });
+    }
+    if (f.done) s.brake = 0.6;
+  }
+
+  postSnap() {
+    const sim = this.sim;
+    if (!sim.snapReady) return;
+    const a = sim.snapReady;
+    sim.snapReady = null;
+    this.port.postMessage({ type: 'snap', data: a, segPts: 10, strobe: sim.strobeOn, step: sim.strobeStep }, [a.buffer]);
+  }
+
+  postTelemetry() {
+    const s = this.sim;
+    const tq = s.cycleTorque;
+    s.torqueAvg += (tq - s.torqueAvg) * 0.5;
+    s.telTq = 0;
+    s.telN = 0;
+    const spl = s.telSplN ? Math.sqrt(s.telSpl / s.telSplN) : 0;
+    s.telSpl = 0;
+    s.telSplN = 0;
+    const msg = {
+      type: 'tel',
+      rpm: s.rpm,
+      tq: s.torqueAvg,
+      thr: s.thr,
+      pedal: s.pedal,
+      map: s.pPl,
+      boost: s.pB - P_AMB,
+      egt: s.egt,
+      turbo: (s.wt * 60) / TAU,
+      turbo2: s.nB ? (s.wt2 * 60) / TAU : null,
+      stage: s.stage,
+      gear: s.gear,
+      speed: s.v,
+      clutch: s.clutch,
+      lim: s.limCut || s.launchCut,
+      running: s.running,
+      ignition: s.ignition,
+      starter: s.starter,
+      af: s.afEvents,
+      afI: s.afIntensity,
+      spl,
+      mode: s.mode,
+      camHi: s.camHi,
+      pv: s.twoStroke ? s.pv : null,
+      nos: s.nosOn,
+      purge: s.nosPurge,
+      bottle: s.bottle / s.nosBottle,
+      kick: s.kick,
+      // a two-stroke "on the pipe": the chamber is stuffing charge back in
+      onPipe: s.twoStroke && s.plug > 0.05 && s.thr > 0.5,
+      valve: s.valveOpen,
+      shifting: !!s.shift,
+      slip: s.slip,
+      pos: s.pos,
+      flyX: this.flyby ? this.flyby.x : null,
+      bov: s.bov,
+      dfco: s.dfco,
+      launch: s.launchCut,
+      load: this.load,
+      eco: this.eco,
+      scene: this.scene ? { id: this.scene.id, x: s.pos, phase: this.scene.phase, env: this.scene.env, vmax: this.scene.peak } : null,
+      knock: s.knockMax,
+      knockN: s.knockN,
+      knockRet: s.knockRet,
+      float: s.floatSev,
+      adv: s.lastAdv,
+      afr: s.lastAfr,
+      boostTgt: s.boostNow,
+      follow: s.follow ? s.follow.kind : null,
+    };
+    s.afEvents = 0;
+    s.afIntensity = 0;
+    s.knockMax = 0;
+    s.knockN = 0;
+    if (s.mode === 'dyno' && s.dyno && s.dyno.phase === 'sweep') msg.dyno = { rpm: s.rpm, tq: s.torqueAvg };
+    this.port.postMessage(msg);
+    if (s.scopeReady) {
+      const sc = s.scopeReady;
+      s.scopeReady = null;
+      this.port.postMessage({ type: 'scope', sig: sc.sig, pr: sc.pr, vo: sc.vo }, [sc.sig.buffer, sc.pr.buffer, sc.vo.buffer]);
+    }
+    for (const p of s.posts) this.port.postMessage(p);
+    s.posts.length = 0;
+  }
+}
+
+registerProcessor('engine-processor', EngineProcessor);
