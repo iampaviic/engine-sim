@@ -591,12 +591,19 @@ class Listener {
     this.dInc = new Float64Array(T);
     this.gCur = new Float64Array(T);
     this.gInc = new Float64Array(T);
+    // per tap: low-pass, its leak (a shelf floor; 0 = plain low-pass), a
+    // second low-pass, and a high-pass (0 = none)
     this.al = new Float64Array(T);
+    this.lk = new Float64Array(T);
+    this.al2 = new Float64Array(T);
+    this.hp = new Float64Array(T);
     this.z1 = new Float64Array(T);
     this.z2 = new Float64Array(T);
+    this.z3 = new Float64Array(T);
     this.active = new Uint8Array(N_SRC);
     this.cabin = 0;
     this.moving = false;
+    this.boomA = lpCoef(92, fs);
     this.boom1 = 0;
     this.boom2 = 0;
     this.first = true;
@@ -3457,7 +3464,7 @@ class EngineSim {
     const buf = L.buf;
     const w = (L.w - 1) & SRC_MASK;
     let l = 0, r = 0;
-    const dC = L.dCur, dI = L.dInc, gC = L.gCur, gI = L.gInc, al = L.al, z1 = L.z1, z2 = L.z2;
+    const dC = L.dCur, dI = L.dInc, gC = L.gCur, gI = L.gInc, al = L.al, lk = L.lk, al2 = L.al2, hp = L.hp, z1 = L.z1, z2 = L.z2, z3 = L.z3;
     for (let s = 0; s < N_SRC; s++) {
       if (!L.active[s]) continue;
       const base = s * SRC_BUF;
@@ -3486,8 +3493,13 @@ class EngineSim {
         } else x = y1 + (y2 - y1) * f;
         let y = z1[t] + al[t] * (x - z1[t]);
         z1[t] = y;
-        y = z2[t] + al[t] * (y - z2[t]);
+        if (lk[t] !== 0) y += lk[t] * (x - y);
+        y = z2[t] + al2[t] * (y - z2[t]);
         z2[t] = y;
+        if (hp[t] !== 0) {
+          z3[t] += hp[t] * (y - z3[t]);
+          y -= z3[t];
+        }
         if (k & 1) r += y * g;
         else l += y * g;
       }
@@ -3501,8 +3513,8 @@ class EngineSim {
     if (L.cabin) {
       // body boom resonance
       const m = (l + r) * 0.5;
-      L.boom1 += 0.012 * (m - L.boom1);
-      L.boom2 += 0.012 * (L.boom1 - L.boom2);
+      L.boom1 += L.boomA * (m - L.boom1);
+      L.boom2 += L.boomA * (L.boom1 - L.boom2);
       const b = (L.boom1 - L.boom2) * 2.2;
       l += b;
       r += b;
@@ -4136,16 +4148,19 @@ class EngineProcessor extends AudioWorkletProcessor {
           const dx = wx - ex, dy = sy - ey, dz = wz - ez;
           const r = Math.sqrt(dx * dx + dy * dy + dz * dz);
           delay = (r / C_AIR) * fs + 4;
-          gain = 1 / Math.max(r, 0.35);
+          // inside, the sound arrives through whole panels, not from a point
+          // beside the ear
+          gain = 1 / Math.max(r, cabin ? 1 : 0.35);
           // air absorption + ground impedance
           fc = 18000 / (1 + r / 70);
           if (path === 1) {
             gain *= 0.62;
             fc = Math.min(fc, 5200);
           }
-          // pipe mouths radiate along their axis: brighter on axis
+          // pipe mouths radiate along their axis: brighter on axis (inside,
+          // what counts is the body panels near the pipes, not the beam)
           const ax = axes[s];
-          if (ax) {
+          if (ax && !cabin) {
             const cosA = -(ax[0] * dx + ax[1] * dy + ax[2] * dz) / (r || 1); // +1 on axis
             fc *= 0.35 + 0.65 * (0.5 + 0.5 * cosA);
             gain *= 0.8 + 0.35 * cosA;
@@ -4157,24 +4172,43 @@ class EngineProcessor extends AudioWorkletProcessor {
             fc *= 0.55 + 0.45 * (1 + facing);
             gain *= 0.8 + 0.2 * (1 + facing);
           }
+          // Into the cabin the sound comes through the body: panels and glass
+          // lose about 6 dB more per octave (the mass law) from a corner fc
+          // until the leaks round the seals, glass edges and grommets take
+          // over and the loss levels off at leak; the trim soaks up the top
+          // (fc2). Behind a mid or rear engine the silencer sits just behind
+          // the bulkhead, so the exhaust is louder in there than up front.
+          // Road roar comes up through the floor and the suspension,
+          // high-passed (fhp) below the tyres' and the body's lowest modes.
+          let leak = 0, fc2 = 0, fhp = 0;
           if (cabin) {
+            const sidePipes = sim.cfg.exhaustExit === 'side';
             if (path === 1) {
               gain = 0;
             } else if (s <= 2) {
-              gain *= sim.cfg.exhaustExit === 'side' ? 0.45 : 0.3;
-              fc = sim.cfg.exhaustExit === 'side' ? 900 : 520;
+              gain *= sidePipes ? 0.35 : layout === 'front' ? 0.55 : layout === 'mid' ? 0.9 : 0.8;
+              fc = sidePipes ? 450 : 280;
+              leak = sidePipes ? 0.15 : 0.1;
+              fc2 = sidePipes ? 8000 : 6000;
             } else if (s === 6) {
               gain *= 0.4;
-              fc = 1400;
+              fc = 700;
+              leak = 0.12;
+              fc2 = 6000;
             } else if (s === 3) {
-              gain *= layout === 'front' ? 0.35 : 0.9;
-              fc = layout === 'front' ? 1500 : 3200;
+              gain *= layout === 'front' ? 0.25 : 0.35;
+              fc = layout === 'front' ? 1100 : 2400;
+              leak = layout === 'front' ? 0.2 : 0.3;
+              fc2 = layout === 'front' ? 5500 : 8000;
             } else if (s === 4) {
               gain *= 0.45;
-              fc = 2600;
+              fc = 1800;
+              leak = 0.25;
+              fc2 = 7000;
             } else {
               gain *= 1.3;
               fc = 900;
+              fhp = 35;
             }
           }
           const alpha = lpCoef(Math.min(fc, fs * 0.45), fs);
@@ -4188,6 +4222,9 @@ class EngineProcessor extends AudioWorkletProcessor {
             L.gInc[t] = (gain - L.gCur[t]) / n;
           }
           L.al[t] = alpha;
+          L.lk[t] = leak;
+          L.al2[t] = fc2 ? lpCoef(fc2, fs) : alpha;
+          L.hp[t] = fhp ? lpCoef(fhp, fs) : 0;
         }
       }
     }
