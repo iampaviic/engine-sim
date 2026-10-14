@@ -390,6 +390,27 @@ class Net {
     this.wB = new Float64Array(S);
     this.wAmt = hot ? 0.0025 : 0.001;
     this.t = 1 << 20;
+
+    // Jet noise: the gas leaving a tail pipe tears into the still air and
+    // the mixing layer roars, broadband, louder the faster it goes.
+    this.jet = hot && no > 0;
+    this.jD = new Float64Array(no); // tail pipe bore, m
+    this.jU = new Float64Array(no); // exit velocity per unit of outflow
+    this.jUs = new Float64Array(no); // exit velocity, the turbulence's view
+    this.jUm = new Float64Array(no); // mean exit velocity
+    this.jHp = new Float64Array(no);
+    this.jHp2 = new Float64Array(no);
+    this.jLp = new Float64Array(no);
+    this.jA1 = new Float64Array(no);
+    this.jA2 = new Float64Array(no);
+    this.jG = new Float64Array(no);
+    for (let i = 0; i < no; i++) {
+      const n = this.opens[i];
+      this.jD[i] = 2 * this.np[n * 4 + 1];
+    }
+    this.jUa = lpCoef(1500, fs);
+    this.jMa = lpCoef(4, fs);
+    this.jRs = 0x6d2b79f5; // its own random stream: the rest is unchanged
     this.setGasTemp(hot ? 700 : T_AMB);
   }
 
@@ -439,7 +460,35 @@ class Net {
       const fc = (0.5 * this.segC[k]) / (TAU * a);
       this.oAl[i] = lpCoef(fc, fs);
       this.oR[i] = 0.9;
+      if (this.jet) this.jetTune(i, k);
     }
+  }
+
+  // Jet noise for open end i (tail segment k), control rate. Mixing noise
+  // peaks at a Strouhal number of about 0.2 (f = 0.2 U/D) and falls away
+  // either side. A hot jet at low Mach makes acoustic power ~ U^6 D^2, so
+  // pressure ~ U^3 D: about 0.5 Pa at 1 m for 100 m/s out of a 70 mm pipe
+  // (Lighthill, plus the excess noise of a hot jet).
+  jetTune(i, k) {
+    const fs = this.fs;
+    const c = this.segC[k];
+    // outflow is mass flow; the gas leaving is at ambient pressure
+    this.jU[i] = (c * c) / (1.33 * P_AMB * this.area[k]);
+    const D = this.jD[i];
+    const fp = clamp((0.2 * Math.max(this.jUm[i], 20)) / D, 80, 0.15 * fs);
+    const f1 = 0.5 * fp, f2 = 2 * fp;
+    this.jA1[i] = lpCoef(f1, fs);
+    this.jA2[i] = lpCoef(f2, fs);
+    // band-passed uniform noise -> unit rms, then Pa at 1 m per (m/s)^3,
+    // scaled to the source units (d(mdot)/dt; the listener divides by 4π)
+    let pw = 0;
+    for (let j = 0; j < 48; j++) {
+      const f = f1 * Math.pow(2, (j - 12) / 4);
+      const h = (f / f1) ** 4 / (1 + (f / f1) ** 2) ** 2 / (1 + (f / f2) ** 2);
+      pw += h * f * 0.1733; // 1/4-octave steps: df = f ln2 / 4
+    }
+    const rms = Math.sqrt(pw / (6 * fs)); // uniform noise: σ² = 1/12 over fs/2
+    this.jG[i] = ((0.5 * (D / 0.07)) / 1e6 / rms) * 4 * PI;
   }
 
   // Read the wave arriving at every pipe end (fractional delay + losses).
@@ -548,6 +597,30 @@ class Net {
       const q = (a - b) * Y[e];
       src[oCh[i]] += (q - oQ[i]) * fs;
       oQ[i] = q;
+      if (this.jet) {
+        // gas drawn back in makes a much weaker jet (inside the pipe)
+        let u = q * this.jU[i];
+        if (u < 0) u *= -0.3;
+        if (u > 300) u = 300;
+        const us = (this.jUs[i] += this.jUa * (u - this.jUs[i]));
+        this.jUm[i] += this.jMa * (us - this.jUm[i]);
+        if (us > 4) {
+          let r = this.jRs;
+          r ^= r << 13;
+          r ^= r >>> 17;
+          r ^= r << 5;
+          this.jRs = r;
+          // turbulence as strong as the gas is fast at this instant, so it
+          // chuffs with every pulse; band-passed after that, since the far
+          // field hears the stresses' second time derivative (no rumble):
+          // two high-pass poles below the peak, one low-pass above it
+          const x = ((r >>> 0) * 2.3283064365386963e-10 - 0.5) * us * us * us;
+          const a1 = this.jA1[i];
+          const h1 = x - (this.jHp[i] += a1 * (x - this.jHp[i]));
+          const h2 = h1 - (this.jHp2[i] += a1 * (h1 - this.jHp2[i]));
+          src[oCh[i]] += (this.jLp[i] += this.jA2[i] * (h2 - this.jLp[i])) * this.jG[i];
+        }
+      }
     }
   }
 
@@ -592,14 +665,18 @@ class Listener {
     this.gCur = new Float64Array(T);
     this.gInc = new Float64Array(T);
     // per tap: low-pass, its leak (a shelf floor; 0 = plain low-pass), a
-    // second low-pass, and a high-pass (0 = none)
+    // second low-pass, a high shelf (corner coefficient and the gain above
+    // it; 1 = none) and a high-pass (0 = none)
     this.al = new Float64Array(T);
     this.lk = new Float64Array(T);
     this.al2 = new Float64Array(T);
+    this.ash = new Float64Array(T);
+    this.shg = new Float64Array(T).fill(1);
     this.hp = new Float64Array(T);
     this.z1 = new Float64Array(T);
     this.z2 = new Float64Array(T);
     this.z3 = new Float64Array(T);
+    this.z4 = new Float64Array(T);
     this.active = new Uint8Array(N_SRC);
     this.cabin = 0;
     this.moving = false;
@@ -3464,7 +3541,8 @@ class EngineSim {
     const buf = L.buf;
     const w = (L.w - 1) & SRC_MASK;
     let l = 0, r = 0;
-    const dC = L.dCur, dI = L.dInc, gC = L.gCur, gI = L.gInc, al = L.al, lk = L.lk, al2 = L.al2, hp = L.hp, z1 = L.z1, z2 = L.z2, z3 = L.z3;
+    const dC = L.dCur, dI = L.dInc, gC = L.gCur, gI = L.gInc, al = L.al, lk = L.lk, al2 = L.al2, ash = L.ash, shg = L.shg, hp = L.hp;
+    const z1 = L.z1, z2 = L.z2, z3 = L.z3, z4 = L.z4;
     for (let s = 0; s < N_SRC; s++) {
       if (!L.active[s]) continue;
       const base = s * SRC_BUF;
@@ -3496,6 +3574,10 @@ class EngineSim {
         if (lk[t] !== 0) y += lk[t] * (x - y);
         y = z2[t] + al2[t] * (y - z2[t]);
         z2[t] = y;
+        if (shg[t] !== 1) {
+          const lo = (z4[t] += ash[t] * (y - z4[t]));
+          y = lo + shg[t] * (y - lo);
+        } else z4[t] = y;
         if (hp[t] !== 0) {
           z3[t] += hp[t] * (y - z3[t]);
           y -= z3[t];
@@ -3575,6 +3657,86 @@ function sourcePositions(cfg) {
 function sourceAxes(cfg) {
   const side = cfg.exhaustExit === 'side';
   return [side ? [-1, 0, 0] : [0, 0, -1], side ? [1, 0, 0] : [0, 0, -1], side ? [1, 0, 0] : [0, 0, -1], null, null, null, [0.6, -0.8, 0]];
+}
+
+// Radius of the pipe mouth feeding each source channel (m).
+function mouthRadii(ex) {
+  const r = new Float64Array(N_SRC).fill(0.035);
+  const seen = new Uint8Array(N_SRC);
+  for (let i = 0; i < ex.opens.length; i++) {
+    const ch = ex.oCh[i];
+    const a = ex.np[ex.opens[i] * 4 + 1];
+    if (!seen[ch] || a > r[ch]) r[ch] = a;
+    seen[ch] = 1;
+  }
+  return r;
+}
+
+// The body between the engine bay and the world: roof line (z, height) of
+// the rest of the car, front to back. The bay itself is open underneath and
+// through the grille, so it does not shadow its own engine.
+const BODY_W = 0.9; // half width, m
+const BODY = {
+  front: [[0.95, 0.98], [0.3, 1.32], [-1.0, 1.3], [-1.7, 1.0], [-2.3, 0.95]],
+  mid: [[2.25, 0.55], [2.0, 0.72], [1.0, 0.95], [0.2, 1.18], [-0.6, 1.15]],
+  rear: [[2.25, 0.55], [2.0, 0.72], [0.9, 0.95], [0.3, 1.3], [-0.5, 1.3], [-1.0, 1.25]],
+};
+function bodyTop(prof, z) {
+  if (z > prof[0][0] || z < prof[prof.length - 1][0]) return 0;
+  for (let i = 1; i < prof.length; i++) {
+    const [z1, y1] = prof[i];
+    if (z >= z1) {
+      const [z0, y0] = prof[i - 1];
+      return y1 + ((y0 - y1) * (z - z1)) / (z0 - z1 || 1);
+    }
+  }
+  return 0;
+}
+
+// Extra path length (m) for sound from a source in the engine bay to reach
+// the listener over the body (car coordinates): the shortest string from one
+// to the other drawn over the roof line, less the straight line.
+const shadowPts = new Float64Array(2 * 42);
+function bodyShadow(layout, sx, sy, sz, lx, ly, lz) {
+  const prof = BODY[layout] ?? BODY.front;
+  const dx = lx - sx, dz = lz - sz;
+  const H = Math.hypot(dx, dz);
+  if (H < 0.5) return 0;
+  // points along the way, in (distance from source, height); the source's own
+  // surroundings (the bay) are left out
+  const P = shadowPts;
+  let n = 0;
+  P[n++] = 0;
+  P[n++] = sy;
+  let any = false;
+  for (let j = 1; j < 40; j++) {
+    const t = j / 40;
+    const h = t * H;
+    if (h < 0.35) continue;
+    const x = sx + dx * t, z = sz + dz * t;
+    if (x > BODY_W || x < -BODY_W) continue;
+    const top = bodyTop(prof, z);
+    if (top <= sy + (ly - sy) * t) continue;
+    P[n++] = h;
+    P[n++] = top;
+    any = true;
+  }
+  if (!any) return 0;
+  P[n++] = H;
+  P[n++] = ly;
+  // upper convex hull, left to right
+  const st = [];
+  for (let i = 0; i < n; i += 2) {
+    while (st.length >= 4) {
+      const ax = st[st.length - 4], ay = st[st.length - 3], bx = st[st.length - 2], by = st[st.length - 1];
+      if ((bx - ax) * (P[i + 1] - ay) - (by - ay) * (P[i] - ax) >= 0) st.length -= 2;
+      else break;
+    }
+    st.push(P[i], P[i + 1]);
+  }
+  let len = 0;
+  for (let i = 2; i < st.length; i += 2) len += Math.hypot(st[i] - st[i - 2], st[i + 1] - st[i - 1]);
+  return Math.max(0, len - Math.hypot(H, ly - sy));
 }
 
 // ---------------------------------------------------------------------------
@@ -4101,6 +4263,8 @@ class EngineProcessor extends AudioWorkletProcessor {
       lisRight = [0, 0, 1]; // facing the road (-x): right ear toward +z
     } else {
       lisPos = cam.pos;
+      // the bay mic hangs over the engine, wherever the engine is
+      if (cam === CAMERAS.bay) lisPos = [cam.pos[0], cam.pos[1], srcs[4][2] - 0.1];
       // face the car centre (or forward in cockpit)
       if (cam.cabin) lisRight = [1, 0, 0];
       else {
@@ -4132,10 +4296,21 @@ class EngineProcessor extends AudioWorkletProcessor {
     ];
     const n = blockLen || 1;
     const layout = sim.cfg.vehicle.layout;
+    const mouthR = sim.mouthR ?? (sim.mouthR = mouthRadii(sim.ex));
+    const shadow = this.shadow ?? (this.shadow = [0, 0]);
     for (let s = 0; s < N_SRC; s++) {
       L.active[s] = active[s] ? 1 : 0;
       const sp = srcs[s];
       const wx = carX + sp[0], wy = sp[1], wz = carZ + sp[2];
+      // the intake, behind the rest of the car (direct, and by way of the
+      // ground); the mechanical source carries the starter and the gearbox,
+      // which come through the body and from under the car
+      shadow[0] = shadow[1] = 0;
+      if (!cabin && s === 3) {
+        const lx = lisPos[0] - carX, lz = lisPos[2] - carZ;
+        shadow[0] = bodyShadow(layout, sp[0], sp[1], sp[2], lx, lisPos[1], lz);
+        shadow[1] = bodyShadow(layout, sp[0], -sp[1], sp[2], lx, lisPos[1], lz);
+      }
       for (let ear = 0; ear < 2; ear++) {
         const sgn = ear === 0 ? -1 : 1;
         const ex = lisPos[0] + lisRight[0] * 0.09 * sgn;
@@ -4157,13 +4332,25 @@ class EngineProcessor extends AudioWorkletProcessor {
             gain *= 0.62;
             fc = Math.min(fc, 5200);
           }
-          // pipe mouths radiate along their axis: brighter on axis (inside,
-          // what counts is the body panels near the pipes, not the beam)
+          // A pipe mouth radiates evenly while it is small against the wave
+          // (ka < 1); above that it beams (Levine & Schwinger): about +6 dB
+          // on its axis, a little down to the side, far down behind it. So a
+          // high shelf from ka ~ 1. (Inside, what counts is the body panels
+          // near the pipes, not the beam.)
+          let shG = 1, shF = 0;
           const ax = axes[s];
           if (ax && !cabin) {
             const cosA = -(ax[0] * dx + ax[1] * dy + ax[2] * dz) / (r || 1); // +1 on axis
-            fc *= 0.35 + 0.65 * (0.5 + 0.5 * cosA);
-            gain *= 0.8 + 0.35 * cosA;
+            shG = Math.pow(10, (6 - 10.5 * (1 - cosA)) / 20);
+            shF = (C_AIR / (TAU * mouthR[s])) * Math.sqrt(shG);
+          } else if (shadow[path] > 0) {
+            // The body in the way: Maekawa's barrier loss, 10 log(1 + 20 N)
+            // with N = 2 δ f / c, as a high shelf; it stops growing where
+            // sound round the sides and under the car takes over.
+            const d = shadow[path];
+            const il = Math.min(15, 10 * Math.log10(1 + (40 * d * 8000) / C_AIR));
+            shG = Math.pow(10, -il / 20);
+            shF = (((Math.pow(10, il / 20) - 1) / 20) * C_AIR * Math.sqrt(shG)) / (2 * d);
           }
           // head shadow
           const dot = (dx * lisRight[0] + dz * lisRight[2]) / (r || 1);
@@ -4224,6 +4411,8 @@ class EngineProcessor extends AudioWorkletProcessor {
           L.al[t] = alpha;
           L.lk[t] = leak;
           L.al2[t] = fc2 ? lpCoef(fc2, fs) : alpha;
+          L.shg[t] = shG;
+          L.ash[t] = shF ? lpCoef(shF, fs) : 0;
           L.hp[t] = fhp ? lpCoef(fhp, fs) : 0;
         }
       }
