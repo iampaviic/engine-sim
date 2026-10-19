@@ -162,10 +162,19 @@ export class Schematic {
     const pipeScale = Math.min(W, H * 1.6) * 0.17;
     const egtGlow = Math.max(0, Math.min(1, (this.egt - 650) / 500));
 
-    // silencer / cat boxes
+    // silencer / cat boxes (a row of identical ones closer than a box is
+    // tall, like a dozen two-stroke cans, is drawn as one with one label)
+    const spans = [];
     for (const b of this.net.boxes ?? []) {
-      const [x0, y0] = this.map(b.x0, b.y - 0.07);
-      const [x1, y1] = this.map(b.x1, b.y + 0.07);
+      const s = spans.find((o) => o.kind === b.kind && o.x0 === b.x0 && o.x1 === b.x1 && b.y - 0.07 <= o.yb && b.y + 0.07 >= o.ya);
+      if (s) {
+        s.ya = Math.min(s.ya, b.y - 0.07);
+        s.yb = Math.max(s.yb, b.y + 0.07);
+      } else spans.push({ kind: b.kind, x0: b.x0, x1: b.x1, ya: b.y - 0.07, yb: b.y + 0.07 });
+    }
+    for (const b of spans) {
+      const [x0, y0] = this.map(b.x0, b.ya);
+      const [x1, y1] = this.map(b.x1, b.yb);
       g.fillStyle = 'rgba(36,33,29,0.9)';
       g.strokeStyle = 'rgba(235,227,208,0.18)';
       g.lineWidth = 1 * dpr;

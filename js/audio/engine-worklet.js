@@ -1412,8 +1412,9 @@ class EngineSim {
 
   onIVC(c, rpm) {
     if (this.twoStroke) {
-      // charge pushed back in by the chamber this cycle, per cylinder
-      this.plug += ((this.plugAcc * this.n) / (1.18 * this.vd) - this.plug) * 0.15;
+      // charge the chambers pushed back since the last cylinder's port
+      // closed: about one cylinder's worth, however many there are
+      this.plug += (this.plugAcc / (1.18 * this.vd) - this.plug) * 0.15;
       this.plugAcc = 0;
     }
     const m = this.cm[c];
