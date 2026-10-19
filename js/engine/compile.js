@@ -528,6 +528,9 @@ function buildChambers(net, spec, lay) {
   const dm = chamberDims(spec);
   const [L1, D1] = dm.header, [L2, Db] = dm.diffuser, [L4, Ds] = dm.baffle;
   const gap = Math.min(0.2, 0.62 / n);
+  // a dozen chambers sound together: coarser cones keep the pipe count (and
+  // the CPU) in reach without changing where each one comes on
+  const many = n > 4;
   for (let c = 0; c < n; c++) {
     const p = lay.pos[c];
     const y = n === 1 ? 0.5 : 0.5 + (c - (n - 1) / 2) * gap;
@@ -535,10 +538,16 @@ function buildChambers(net, spec, lay) {
     const port = net.node(NODE.PORT, { cyls: [c], x: p.x, y: p.portY });
     // header: drops from the port, a slight taper
     const xh = Math.max(p.x + 0.06, 0.2);
-    const jh = net.junction(p.x + 0.03, y);
-    net.pipe(port, jh, { len: L1 * 0.5, dia: mm(D1), temp: 1, nl: 1, hf: 0.04, g: 0.99, pts: elbow(net, port, jh, 'vh'), label: 'primary' });
-    let a = net.junction(xh, y);
-    net.pipe(jh, a, { len: L1 * 0.5, dia: mm(D1 * 1.06), temp: 1, hf: 0.04, g: 0.99, pts: elbow(net, jh, a, 'straight'), label: 'primary' });
+    let a;
+    if (many) {
+      a = net.junction(xh, y);
+      net.pipe(port, a, { len: L1, dia: mm(D1 * 1.03), temp: 1, nl: 1, hf: 0.04, g: 0.99, pts: [[p.x, p.portY], [p.x, y], [xh, y]], label: 'primary' });
+    } else {
+      const jh = net.junction(p.x + 0.03, y);
+      net.pipe(port, jh, { len: L1 * 0.5, dia: mm(D1), temp: 1, nl: 1, hf: 0.04, g: 0.99, pts: elbow(net, port, jh, 'vh'), label: 'primary' });
+      a = net.junction(xh, y);
+      net.pipe(jh, a, { len: L1 * 0.5, dia: mm(D1 * 1.06), temp: 1, hf: 0.04, g: 0.99, pts: elbow(net, jh, a, 'straight'), label: 'primary' });
+    }
     // stepped cones: diameters follow a horn between the ends
     const cone = (len, d0, d1, steps, x1, temp0, temp1, label) => {
       const [x0] = net.pt(a);
@@ -549,9 +558,9 @@ function buildChambers(net, spec, lay) {
         a = b;
       }
     };
-    cone(L2, D1 * 1.1, Db, 8, 0.43, 0.97, 0.85, 'diffuser');
+    cone(L2, D1 * 1.1, Db, many ? 3 : 8, 0.43, 0.97, 0.85, 'diffuser');
     cone(dm.belly, Db, Db, 1, 0.56, 0.82, 0.82, 'belly');
-    cone(L4, Db, Ds, 5, 0.67, 0.8, 0.72, 'baffle');
+    cone(L4, Db, Ds, many ? 2 : 5, 0.67, 0.8, 0.72, 'baffle');
     cone(dm.stinger, Ds, Ds, 1, 0.755, 0.68, 0.68, 'stinger');
     // The stinger is the chamber's bleed: its jet loses its head where it
     // blows into the silencer, which holds pressure in the chamber.

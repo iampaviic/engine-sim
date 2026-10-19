@@ -830,6 +830,63 @@ const MX250 = {
   sound: { exhaust: 1, intake: 1.2, mech: 0.6, valvetrain: 'none', trim: 2.69, starter: 5.65 },
 };
 
+const V12_2T = {
+  id: 'v12-2t',
+  name: 'Two-Stroke V12',
+  tagline: '1.5 L 90° V12 two-stroke · twelve expansion chambers',
+  origin: 'Concept',
+  family: 'V12',
+  kind: 'twostroke',
+  blurb:
+    'Twelve 125 cc Grand Prix cylinders on one crank. Every cylinder fires on every turn, so the V12 lights a charge every 30° and sounds like twenty-four. Each breathes through its own carburettor and reed valve and blows into its own tuned expansion chamber.',
+  listen: 'Hold it in third past 10,000 rpm and hear all twelve chambers come on the pipe together. At idle the ring-ding is twelve times as busy.',
+  cylinders: 12,
+  bore: 54,
+  stroke: 54.5,
+  rod: 110,
+  compression: 14,
+  crankcase: 1.42,
+  // even 30° firing: each bank a two-stroke six, the banks 90° apart
+  firingAngles: [0, 240, 120, 300, 60, 180, 30, 270, 150, 330, 90, 210],
+  firingOrder: [1, 7, 5, 11, 3, 9, 6, 12, 2, 8, 4, 10],
+  banks: [
+    [1, 2, 3, 4, 5, 6],
+    [7, 8, 9, 10, 11, 12],
+  ],
+  // port timings in degrees after top centre; widths are the windows' total (mm)
+  ports: {
+    ex: { open: 81, width: 54 },
+    transfer: { open: 114, width: 68 },
+    powerValve: { open: 92, rpm: [9000, 11000] },
+    reed: 1200,
+    scavenging: 2.4,
+  },
+  intake: { runnerLen: 0.12, runnerDia: 36, plenum: 3, throttleDia: 38, throttleCount: 12, itb: true, airbox: 'open' },
+  exhaust: {
+    chamber: { tune: 10500, header: 35, belly: 96, stinger: 20 },
+    muffler: 'silencer',
+    tailLen: 0.06,
+  },
+  induction: { type: 'na' },
+  ecu: { idle: 2200, limit: 13500, limiter: 'spark', afr: 12.5, burble: 0, launchRpm: 9000, startFlare: 0, octane: 100, knockCal: 0.377 },
+  inertia: 0.07,
+  friction: 0.7,
+  combustion: 0.85,
+  vehicle: {
+    mass: 640,
+    gears: [2.9, 2.2, 1.78, 1.5, 1.3, 1.15],
+    final: 4.2,
+    tire: 0.33,
+    cd: 0.42,
+    area: 1.5,
+    rearBias: 0.6,
+    layout: 'mid',
+    shiftTime: 0.05,
+    mu: 1.4,
+  },
+  sound: { exhaust: 1, intake: 1.2, mech: 0.6, valvetrain: 'none', trim: 1.33, starter: 2.24 },
+};
+
 const I6_SEQ = {
   id: 'i6-seq',
   name: 'Sequential Six',
@@ -1233,7 +1290,7 @@ const W16 = {
   sound: { exhaust: 1, intake: 1, mech: 0.9, valvetrain: 'dohc', trim: 4.481, starter: 0.6 },
 };
 
-export const PRESETS = [V12_65, V12_60, W16, V8_LS, V8_BIGBLOCK, V8_BLOWER, V8_HOTVEE, V8_FLAT, V10_72, F1_V10, F6_GT, V6_TT, I6_TURBO, I6_SEQ, I6_GTA, I5_TURBO, I4_RALLY, I4_VTEC, I4_TOUGE, F4_TURBO, ROTARY, ROTARY_TT, VTWIN, MX250];
+export const PRESETS = [V12_65, V12_60, W16, V8_LS, V8_BIGBLOCK, V8_BLOWER, V8_HOTVEE, V8_FLAT, V10_72, F1_V10, F6_GT, V6_TT, I6_TURBO, I6_SEQ, I6_GTA, I5_TURBO, I4_RALLY, I4_VTEC, I4_TOUGE, F4_TURBO, ROTARY, ROTARY_TT, VTWIN, MX250, V12_2T];
 
 export function presetById(id) {
   return PRESETS.find((p) => p.id === id) ?? PRESETS[0];

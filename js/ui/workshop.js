@@ -600,11 +600,13 @@ export class Workshop {
     const factory = app.factory;
     let g = group('Expansion chamber');
     const ch = spec.exhaust.chamber ?? {};
+    // a band around the factory pipe: 5,600-9,600 rpm for a pipe built for 7,200
+    const fTune = factory.exhaust.chamber?.tune ?? 7200;
     range(
       g,
       'Pipe tuned for',
-      5600,
-      9600,
+      Math.round((fTune * 0.78) / 100) * 100,
+      Math.round((fTune * 1.333) / 100) * 100,
       100,
       ch.tune ?? 7200,
       (v) => `${v.toLocaleString('en-US')} rpm`,
