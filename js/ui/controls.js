@@ -94,6 +94,9 @@ export class Controls {
         case 'KeyD':
           this.onAction('dyno');
           break;
+        case 'KeyH':
+          this.onAction('temp');
+          break;
         case 'KeyB':
           this.onAction('ab', true);
           break;

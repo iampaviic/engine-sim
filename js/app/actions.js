@@ -12,6 +12,7 @@ import { mixGains } from './mixer.js';
 import { abSwitch } from './ab.js';
 import { runDyno, sceneGo, setMode, stopDyno, toggleScenePick } from './modes.js';
 import { onMessage } from './telemetry.js';
+import { sendThermal } from './thermal.js';
 
 // ---------------------------------------------------------------- actions
 const CAM_IDS = CAMERAS.map((c) => c[0]);
@@ -75,6 +76,10 @@ export function action(a, v) {
     case 'builder':
       app.openBuilder({ from: 'current' });
       break;
+    case 'temp':
+      app.toggleEngineTemp();
+      if (workshop.open) workshop.render();
+      break;
     case 'escape':
       settings.hide();
       garage.hide();
@@ -110,12 +115,30 @@ export async function start() {
   app.started = true;
   app.starting = false;
   app.audio.post({ type: 'config', cfg: workletConfig(app.compiled), tune: app.tune });
+  sendThermal();
   app.audio.post({ type: 'camera', camera: app.camera });
   app.audio.post({ type: 'mix', gains: mixGains() });
   if (app.quality !== 'auto') app.audio.post({ type: 'quality', quality: app.quality });
-  app.audio.post({ type: 'ignition', on: true, crank: true, cold: true });
+  app.crank();
   $('intro').hidden = true;
 }
+
+// Key on, then crank: the fuel pump primes the rail for a moment first, as a
+// push-button start does. (A kick-started or carburetted engine has no pump.)
+app.crank = () => {
+  clearTimeout(app.primeT);
+  const c = app.compiled;
+  if (c.starter.type === 'kick' || !c.thermal.injected) {
+    app.audio.post({ type: 'ignition', on: true, crank: true });
+    return;
+  }
+  app.audio.post({ type: 'ignition', on: true });
+  app.priming = true;
+  app.primeT = setTimeout(() => {
+    app.priming = false;
+    app.audio.post({ type: 'ignition', on: true, crank: true });
+  }, 900);
+};
 
 export function startStop() {
   if (!app.started) {
@@ -123,6 +146,9 @@ export function startStop() {
     return;
   }
   const t = app.tel;
-  if (t && (t.running || t.starter)) app.audio.post({ type: 'ignition', on: false });
-  else app.audio.post({ type: 'ignition', on: true, crank: true });
+  if (app.priming || (t && (t.running || t.starter))) {
+    clearTimeout(app.primeT);
+    app.priming = false;
+    app.audio.post({ type: 'ignition', on: false });
+  } else app.crank();
 }

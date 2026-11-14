@@ -5,6 +5,7 @@ import { $, app } from './state.js';
 import { builder, carPanel, controls, mapEd, schem, scope, tach, toast, view3d, workshop } from './ui.js';
 import { screenAwake } from './platform.js';
 import { onScene, setMode } from './modes.js';
+import { saveThermal } from './thermal.js';
 
 // --------------------------------------------------------------- messages
 export function onMessage(m) {
@@ -62,6 +63,10 @@ function nitrousTel(t) {
 
 function onTelemetry(t) {
   app.tel = t;
+  saveThermal();
+  tach.coolant = t.coolant;
+  tach.fan = !!t.fan;
+  if (workshop.open) workshop.onTel(t);
   tach.target = t.rpm;
   const rpmText = t.running || t.starter ? `${Math.round(t.rpm).toLocaleString('en-US')} rpm` : 'engine off';
   if (builder.open) $('bRpm').textContent = rpmText;
@@ -151,6 +156,8 @@ export function updateReadouts(dt) {
     set('roMap', (b >= 0 ? '+' : '') + b.toFixed(2), 'bar');
   } else set('roMap', (t.map / 1e5).toFixed(2), 'bar');
   set('roEgt', Math.round(t.egt - 273), '°C');
+  set('roCool', t.coolant ? Math.round(t.coolant - 273.15) : '—', '°C');
+  set('roOil', t.oil ? Math.round(t.oil - 273.15) : '—', '°C');
   set('roSpl', t.spl > 1e-4 ? Math.round(20 * Math.log10(t.spl / 2e-5)) : '—', 'dB');
   const tm = app.timer;
   if (tm.state === 'running') set('roTime', (performance.now() / 1000 - tm.t0).toFixed(1), 's');

@@ -172,6 +172,19 @@ export class Workshop {
       'The whole engine is simulated once per audio sample. Half rate halves the CPU cost on slow phones and loses the very top of the spectrum.'
     );
 
+    // --- engine temperature
+    g = group('Engine temperature', 'The engine keeps its temperature between visits and cools down while you are away. Cold, it idles fast on thick oil, slaps its pistons and burns slower; after a hot stop the exhaust ticks as it cools and the fan may run on. H toggles cold and warm.');
+    const temp = document.createElement('p');
+    temp.className = 'ws-temp';
+    temp.id = 'wsTemp';
+    g.appendChild(temp);
+    this.onTel(app.tel);
+    const tempBtns = document.createElement('div');
+    tempBtns.className = 'btn-row';
+    g.appendChild(tempBtns);
+    button(tempBtns, 'Cold through', () => app.setEngineTemp('cold'));
+    button(tempBtns, 'Fully warm', () => app.setEngineTemp('warm'));
+
     // --- mixer
     g = group('Mixer', 'Each source is computed separately, so you can pull them apart. Solo plays one alone.');
     this.renderMixer(g);
@@ -182,6 +195,15 @@ export class Workshop {
 
     this.renderHardware(group, seg, range, button);
     b.scrollTop = scroll;
+  }
+
+  // live temperatures in the engine temperature group
+  onTel(t) {
+    const el = this.body.querySelector('#wsTemp');
+    if (!el) return;
+    const c = (k) => Math.round(k - 273.15);
+    const txt = t?.coolant ? `Coolant ${c(t.coolant)} °C · oil ${c(t.oil)} °C${t.fan ? ' · fan running' : ''}` : 'Start the engine to read its temperatures.';
+    if (el.textContent !== txt) el.textContent = txt;
   }
 
   renderAB(g, button) {
