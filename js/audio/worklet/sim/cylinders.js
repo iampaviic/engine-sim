@@ -184,7 +184,7 @@ export class CylinderMethods {
     const tabScale = this.tabScale;
     const vol = this.vol, dvd = this.dvd, off = this.off;
     const cm = this.cm, cU = this.cU, cMb = this.cMb, cV = this.cV, cCA = this.cCA, cP = this.cP;
-    const cP1 = this.cP1, cP2 = this.cP2;
+    const cP1 = this.cP1;
     const cBurn = this.cBurn, cXb = this.cXb, cQ = this.cQ, cSpark = this.cSpark, cDur = this.cDur;
     const cExEnd = this.cExEnd, cInEnd = this.cInEnd, cRunB = this.cRunB, cExB = this.cExB;
     const ex = this.ex, inn = this.inn;
@@ -222,8 +222,13 @@ export class CylinderMethods {
     const Tex = Math.max(450, this.egt * 0.85);
     const sqTex = Math.sqrt(Tex);
     let torque = 0;
-    let vtExc = 0;
+    // mechanical events: valve seating and lash (N·s at the design speed),
+    // piston slap and injector ticks (N·s)
+    let vtExc = 0, slapExc = 0, injExc = 0;
     let combExc = 0;
+    const seatIn = this.seatIn, seatEx = this.seatEx, lashIn = this.lashIn, lashEx = this.lashEx;
+    const slapOn = this.slapK > 0, injJ = this.injJ, cTol = this.cTol;
+    const ivo = this.cfg.ivo;
     for (let c = 0; c < n; c++) {
       let ca = crank + off[c];
       if (ca >= cycle) ca -= cycle;
@@ -238,10 +243,10 @@ export class CylinderMethods {
       if (caPrev !== ca) {
         if (crossed(caPrev, ca, ivc)) {
           this.onIVC(c, rpm);
-          vtExc += 1;
+          vtExc += seatIn * cTol[c];
           if (floatSev > 0) {
             cBi[c] = floatSev * (0.45 + 0.8 * rnd());
-            vtExc += floatSev * 3;
+            vtExc += seatIn * floatSev * 3;
           }
         }
         if (cBurn[c] === 1 && crossed(caPrev, ca, cSpark[c])) {
@@ -251,13 +256,25 @@ export class CylinderMethods {
           cTs[c] = cU[c] / (cm[c] * CV);
           cKi[c] = 0;
         }
-        if (crossed(caPrev, ca, evo)) this.onEVO(c);
+        if (crossed(caPrev, ca, evo)) {
+          this.onEVO(c);
+          vtExc += lashEx * cTol[c];
+        }
         if (crossed(caPrev, ca, evc)) {
-          vtExc += 1;
+          vtExc += seatEx * cTol[c];
           if (floatSev > 0) {
             cBe[c] = floatSev * (0.45 + 0.8 * rnd());
-            vtExc += floatSev * 3;
+            vtExc += seatEx * floatSev * 3;
           }
+        }
+        if (lashIn > 0 && crossed(caPrev, ca, ivo)) vtExc += lashIn * cTol[c];
+        // dead centres are every 180 degrees, top centres at 0 and 360: the
+        // piston slaps across the bore at each, and port injection ends
+        // before the intake valve opens at the top of the exhaust stroke
+        const dc = (ca * 0.005555555555555556) | 0;
+        if (dc !== ((caPrev * 0.005555555555555556) | 0)) {
+          if (slapOn) slapExc += this.slap(c, (dc & 1) === 0);
+          if (dc === 0) injExc += injJ * cTol[c];
         }
       }
 
@@ -504,10 +521,8 @@ export class CylinderMethods {
       cU[c] = U;
       cV[c] = V;
       p = (GM1 * U) / V;
-      // combustion noise excitation: positive jerk of cylinder pressure
-      const jerk = p - 2 * cP1[c] + cP2[c];
-      if (jerk > 0) combExc += jerk;
-      cP2[c] = cP1[c];
+      // combustion noise excitation: the change in cylinder pressure
+      combExc += p - cP1[c];
       cP1[c] = p;
       cP[c] = p + ring;
       torque += (p - (ts ? ccP[c] : P_AMB)) * dvdth;
@@ -519,6 +534,8 @@ export class CylinderMethods {
     }
     this.torqueGas = torque;
     this.vtExcS = vtExc;
+    this.slapExcS = slapExc;
+    this.injExcS = injExc;
     this.combExcS = combExc;
     this.knockSndS = knockSnd;
     return torque;

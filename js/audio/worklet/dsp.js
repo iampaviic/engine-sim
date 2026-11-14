@@ -115,33 +115,37 @@ export function orifice(A, D, rho, Z, p0, sqrtT0, choke) {
   return m < mc ? m : mc;
 }
 
-// Two-pole resonator (band-pass) state packed in arrays.
-export class ResBank {
+// Struck structural modes, heard as sound. A surface radiates with its
+// velocity, so each mode's response to a force falls away towards 0 Hz (a
+// plain two-pole resonator answers like a displacement and passes every low
+// harmonic of whatever strikes it). An impulse of 1 sets mode i ringing at
+// amplitude gains[i]; qs are the quality factors.
+export class Struck {
   constructor(freqs, qs, gains, fs) {
     const n = freqs.length;
     this.n = n;
-    this.b0 = new Float64Array(n);
     this.a1 = new Float64Array(n);
     this.a2 = new Float64Array(n);
     this.y1 = new Float64Array(n);
     this.y2 = new Float64Array(n);
-    this.g = Float64Array.from(gains);
+    this.g = new Float64Array(n);
     for (let i = 0; i < n; i++) {
-      const w = (TAU * freqs[i]) / fs;
+      const w = (TAU * Math.min(freqs[i], fs * 0.45)) / fs;
       const r = Math.exp(-w / (2 * qs[i]));
-      this.a1[i] = -2 * r * Math.cos(w);
-      this.a2[i] = r * r;
-      this.b0[i] = (1 - r * r) * 0.5;
+      this.a1[i] = 2 * r * Math.cos(w);
+      this.a2[i] = -r * r;
+      // the difference of the ringing state swings 1 / cos(w / 2) per unit
+      this.g[i] = gains[i] * Math.cos(w / 2);
     }
   }
   tick(x) {
     let out = 0;
-    const { b0, a1, a2, y1, y2, g } = this;
+    const { a1, a2, y1, y2, g } = this;
     for (let i = 0; i < this.n; i++) {
-      const y = b0[i] * x - a1[i] * y1[i] - a2[i] * y2[i];
+      const y = a1[i] * y1[i] + a2[i] * y2[i] + x;
+      out += (y - y1[i]) * g[i];
       y2[i] = y1[i];
       y1[i] = y;
-      out += y * g[i];
     }
     return out;
   }

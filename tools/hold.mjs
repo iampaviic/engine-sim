@@ -17,13 +17,16 @@ function merge(a, b) {
   return o;
 }
 
-export async function hold(id, rpm, pedal, over = null, secs = 1.5, camera = 'rear') {
+// setup(sim), if given, runs once before the hold starts (to switch parts
+// of the model off, say).
+export async function hold(id, rpm, pedal, over = null, secs = 1.5, camera = 'rear', setup = null) {
   const spec = merge(PRESETS.find((p) => p.id === id), over);
   const { Proc } = await loadWorklet(48000);
   const proc = new Proc();
   proc.port.onmessage({ data: { type: 'config', cfg: workletConfig(compileEngine(spec)) } });
   proc.port.onmessage({ data: { type: 'camera', camera } });
   const sim = proc.sim;
+  if (setup) setup(sim);
   sim.ignition = true;
   sim.running = true;
   sim.pedal = pedal;
@@ -38,7 +41,7 @@ export async function hold(id, rpm, pedal, over = null, secs = 1.5, camera = 're
   let s = 0;
   for (let i = a; i < N; i++) s += L[i] * L[i] + R[i] * R[i];
   const rms = Math.sqrt(s / (2 * (N - a)));
-  return { rms, L: L.subarray(a), R: R.subarray(a), sim };
+  return { rms, L: L.subarray(a), R: R.subarray(a), sim, lis: proc.L };
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
