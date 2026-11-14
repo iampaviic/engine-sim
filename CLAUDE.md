@@ -8,11 +8,11 @@ A physically modelled engine sound simulator: vanilla ES modules, no framework, 
 | --- | --- |
 | `js/audio/engine-worklet.js` | **The sound's entry point**: registers the processor. The code is in `js/audio/worklet/`, below. |
 | `js/audio/worklet/engine-sim.js` | `EngineSim`: the constructor declares all of an engine's state; `render()` is the per-sample loop. |
-| `js/audio/worklet/sim/*.js` | `EngineSim`'s methods by subsystem: `cylinders`, `ecu`, `starter`, `induction`, `nitrous`, `drivetrain`, `aero`, `sources`. |
-| `js/audio/worklet/*.js` | `constants`, `dsp` (RNG, helpers, `ResBank`, `Band4`, `Modes`), `net` (`Net`, the waveguide pipe network), `listener` (`Listener`, `EngineSim.listen()`), `camera` (mic and body geometry), `scenes` (scripted drives), `processor` (`EngineProcessor`), `mixin`. |
+| `js/audio/worklet/sim/*.js` | `EngineSim`'s methods by subsystem: `cylinders`, `ecu`, `starter`, `induction`, `nitrous`, `drivetrain`, `mechanical` (valve, slap, timing, injector, alternator and gear noise), `aero`, `sources`. |
+| `js/audio/worklet/*.js` | `constants`, `dsp` (RNG, helpers, `Struck`, `Band4`, `Modes`), `net` (`Net`, the waveguide pipe network), `listener` (`Listener`, `EngineSim.listen()`), `camera` (mic and body geometry), `scenes` (scripted drives), `processor` (`EngineProcessor`), `mixin`. |
 | `js/audio/worklet-bundle.js` | Joins the worklet's modules into one script for the blob fallback in `audio.js`. |
 | `js/engine/presets.js` | The engine library: `PRESETS` array of human-readable specs. |
-| `js/engine/compile.js` | `compileEngine(spec)` turns a spec into the pipe networks, valve/port tables and firing offsets. `workletConfig()` strips it for `postMessage`. |
+| `js/engine/compile.js` | `compileEngine(spec)` turns a spec into the pipe networks, valve/port tables and firing offsets, and `mechSpec()` into the mechanical-noise parameters (structure modes, impact masses, tooth counts). `workletConfig()` strips it for `postMessage`. |
 | `js/engine/builder.js` | Engine builder designs ⇄ specs, firing-order enumeration, saved builds. |
 | `js/engine/maps.js` | Tuning-map layout (ignition, fuel, boost tables). |
 | `js/engine/analyze-worker.js` | Virtual dyno: imports the worklet in a Web Worker and runs it faster than real time. |
@@ -27,7 +27,7 @@ A physically modelled engine sound simulator: vanilla ES modules, no framework, 
 
 ## Inside the worklet
 
-Bottom-up through `js/audio/worklet/`: `constants.js` and `dsp.js` (helpers, `ResBank`, `Band4`, `Modes`), `net.js` (`Net`, the waveguide pipe network), `listener.js` (`Listener`: per-source delay lines), `engine-sim.js` and `sim/*.js` (`EngineSim`, one engine), `camera.js` (camera and body geometry), `scenes.js`, then `processor.js` (`EngineProcessor`: messages, hot swap, eco mode).
+Bottom-up through `js/audio/worklet/`: `constants.js` and `dsp.js` (helpers, `Struck`, `Band4`, `Modes`), `net.js` (`Net`, the waveguide pipe network), `listener.js` (`Listener`: per-source delay lines), `engine-sim.js` and `sim/*.js` (`EngineSim`, one engine), `camera.js` (camera and body geometry), `scenes.js`, then `processor.js` (`EngineProcessor`: messages, hot swap, eco mode).
 
 `EngineSim` and `EngineProcessor` are each one class written across several files. A part file exports a class used only as a bag of methods (`CylinderMethods`, `SceneMethods`, …), and `mixin()` copies those methods onto the real prototype once at load, so `this.stepTurbo()` is an ordinary method call wherever it is written. All of `EngineSim`'s state is declared in its constructor in `engine-sim.js`, whichever file uses it.
 
@@ -37,9 +37,9 @@ Bottom-up through `js/audio/worklet/`: `constants.js` and `dsp.js` (helpers, `Re
 2. Advance the crank.
 3. `ex.read()` / `inn.read()` [`net.js`] → `stepCylinders()` (thermodynamics, combustion, valve flow coupled implicitly to the pipes; returns gas torque) [`sim/cylinders.js`] → `ex.scatter()` → `stepIntake()` [`sim/induction.js`] → `write()`.
 4. `stepBoost()` (turbo, supercharger) [`sim/induction.js`] → `stepDrivetrain()` (returns the new crank speed) [`sim/drivetrain.js`].
-5. `stepSources()` mixes the 7 source channels [`sim/sources.js`] → `listen()` renders them for the mic position [`listener.js`].
+5. `stepSources()` mixes the 7 source channels [`sim/sources.js`], calling `stepMech()` and `gearSound()` [`sim/mechanical.js`] → `listen()` renders them for the mic position [`listener.js`].
 
-Sound sources (`N_SRC = 7`, the order the mixer's gains use): `0, 1, 2` exhaust L/R/centre, `3` intake (with turbo and nitrous sounds), `4` mechanical (valvetrain ticks, block, knock, gear whine, starter), `5` chassis (road, wind, tyre squeal, bumps), `6` wastegate dump. Per-engine level knobs are `spec.sound` (`exhaust`, `intake`, `mech`, `trim`, …).
+Sound sources (`N_SRC = 7`, the order the mixer's gains use): `0, 1, 2` exhaust L/R/centre, `3` intake (with turbo and nitrous sounds), `4` mechanical (valves, piston slap, combustion and knock through the block, timing drive, injectors, alternator, gear whine, starter), `5` chassis (road, wind, tyre squeal, bumps), `6` wastegate dump. Per-engine level knobs are `spec.sound` (`exhaust`, `intake`, `trim`, …). The mechanical channel has none: its level comes from the engine's dimensions and hardware (`spec.block: 'iron'`, `sound.valvetrain`, `sound.lifters`, `sound.timing`, `sound.injection`, `sound.alternator`; see `mechSpec()`), and it is calibrated in pascals at 1 m against measured engine noise.
 
 Cylinder events: `onIVC()` (charge trapped: combustion variation, knock setup), `onEVO()` (blowdown, afterfire). Two-strokes, rotaries, starters, kick start, nitrous, turbo flutter, aero/wind and scenes each have their own methods. `grep -n '^  [a-zA-Z]*(.*) {$' js/audio/worklet/*.js js/audio/worklet/sim/*.js` lists every method with its file.
 
@@ -81,6 +81,7 @@ npm test                                        # batch on v8-ls and v12-65, the
 node tools/batch.mjs                            # every preset; run after any physics change
 node tools/render.mjs <id> <scenario> out.wav [--camera cockpit]   # rev idle dyno drive boost flyby autobahn
 node tools/hold.mjs <id> <rpm> <pedal> '<jsonOverrides>' out.wav   # steady state, A/B a spec change
+node tools/sources.mjs <id|all> <rpm|idle|limit> <pedal>           # each source alone, dB SPL at 1 m
 python3 tools/psd.py psd.png out.wav:t0:t1:rpm:label [more.wav:...] # spectrum with engine-order markers
 python3 tools/analyze.py out.wav out.png        # spectrogram and waveform
 node tools/exhaust-ir.mjs <id>                  # exhaust network frequency response
@@ -115,7 +116,7 @@ Compare a sound change **before and after on the same scenario**: the spectrum a
 
 Simpler than the rest of the model, so the likeliest wins:
 
-- **Mechanical channel** (`stepSources`): valvetrain ticks and block ring are noise-excited fixed resonator banks (`ResBank`); gear whine is two sines at a fixed 29 teeth; tyre squeal is a wobbling sine.
+- **Mechanical channel** (`sim/mechanical.js`): piston slap is evaluated only at the dead centres (the mid-stroke reversals are missing, which leaves two-strokes too quiet); the two-stroke's idle sets off the knock model; reeds, clutch and primary drive make no sound; tyre squeal is a wobbling sine.
 - **Chassis and road noise:** filtered noise scaled by speed.
 - **Intake radiation:** the airbox is a two-pole low-pass on throttle mass flow, and ITB runner radiation is a fixed blend.
 - **Post chain** (`audio.js`): fixed compressor and limiter settings plus makeup gain shape every engine the same way, and the reverbs are procedural IRs.
