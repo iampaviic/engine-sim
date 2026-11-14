@@ -123,7 +123,7 @@ The page keeps the screen on while following. Everything runs on the phone; noth
 
 ## iOS and Android apps
 
-The same code ships as native apps through [Capacitor](https://capacitorjs.com) 8. The native projects live in `ios/` and `android/`; the app id is `com.iampaviic.firingorder`.
+The same code builds as native apps through [Capacitor](https://capacitorjs.com) 8, for installing on your own devices (they are not published to the stores). The native projects live in `ios/` and `android/`; the app id is `com.iampaviic.firingorder`.
 
 ```sh
 npm install
@@ -134,21 +134,7 @@ npm run ios         # open Xcode (macOS only)
 
 The app needs no network: fonts are bundled and everything is computed on the phone. A small native plugin, `EngineAudio` (Swift and Java, in each app target), sets up the audio session so the engine plays with the iPhone's silent switch on (or alongside other apps' music, as a setting), pauses for calls and when headphones are unplugged, and keeps the screen on while the engine runs. Settings, builds and best times are kept in native storage (Capacitor Preferences) instead of web view storage.
 
-Every push to `main` or `claude/app-shell` runs `.github/workflows/app.yml`: it builds an Android debug APK (downloadable from the run) and compiles the iOS app for the simulator. Icon and launch-screen sources are in `assets/`; regenerate the native sizes with `npx capacitor-assets generate --ios --android`.
-
-## Free and Pro
-
-The apps are free with a one-time **Firing Order Pro** unlock. Free: five engines (Berlinetta V12, Small-Block V8, Tuner Six, Screamer Four, Big Twin), Rev, Drive and Fly-by, the engine view and pressure trace, the basic workshop (listening, silencer, exhaust valve, rev limit, traction control) and the builder with one saved build. Pro adds every engine, the other scenes, following your car, the rest of the workshop, tuning maps, spectrum, p–V, dyno, the 3D engine, A/B compare, the mixer, launch control, nitrous and unlimited builds. Locked engines play for 30 seconds from the garage. The split lives in `js/config.js` (`FREE`).
-
-Purchases go through [RevenueCat](https://www.revenuecat.com) (`@revenuecat/purchases-capacitor`); `js/platform/purchases.js` is the only code that talks to it, and the rest of the app asks `app.isPro()`. The web version has no store and stays unlocked (`WEB_UNLOCKED` in `js/config.js`); Settings → Pro can show the free version. For testing the purchase screens in a browser, open the page with `?store=mock`. App builds without RevenueCat keys offer "Unlock for testing" instead of a purchase.
-
-To connect the stores:
-
-1. **App Store Connect**: create the app (bundle id `com.iampaviic.firingorder`), then In-App Purchases → Non-Consumable, product id `firingorder_pro`, reference name "Firing Order Pro". Set the price, turn on Family Sharing, add a screenshot of the Pro screen for review.
-2. **Play Console**: create the app (package `com.iampaviic.firingorder`), then Monetize → One-time products → product id `firingorder_pro`, name "Firing Order Pro", set the price and activate it.
-3. **RevenueCat**: create a project, add the iOS app (with an App Store Connect in-app purchase key) and the Android app (with Google Play service credentials). Import `firingorder_pro` from both stores, create the entitlement `pro` and attach both products, and add a Lifetime package with both products to the `default` offering.
-4. Copy the public SDK keys (`appl_…` and `goog_…`) into `STORE.revenueCatKeys` in `js/config.js`.
-5. Test with an App Store sandbox account and a Play Console license tester (the Android build has to come from a Play testing track for real purchases).
+Every push to `main` or a `claude/**` branch runs `.github/workflows/app.yml`: it builds an Android debug APK (downloadable from the run) and compiles the iOS app for the simulator. Icon and launch-screen sources are in `assets/`; regenerate the native sizes with `npx capacitor-assets generate --ios --android`.
 
 ## On phones
 
@@ -170,6 +156,7 @@ node tools/batch.mjs                           # every preset: idle, torque, pow
 node tools/loudness.mjs                        # loudness trims
 node tools/knockcal.mjs                        # per-engine knock calibration
 node tools/hold.mjs v12-65 6000 1 '' out.wav   # fixed rpm/throttle on an infinite-inertia dyno
+node tools/check-bundle.mjs                    # the worklet's single-script fallback matches its modules
 ```
 
-Layout: `js/audio/engine-worklet.js` holds the physics and the scene scripts, `js/engine/compile.js` turns an engine spec into a pipe network and valve tables, `js/engine/presets.js` holds the engine library, `js/engine/builder.js` turns builder designs into specs, `js/engine/maps.js` lays out the tuning maps, `js/car/*` reads a real car (ELM327 over Web Bluetooth, GPS and motion, the demo drive), `js/engine/analyze-worker.js` is the virtual dyno, and `js/ui/*` holds the tach, pressure-wave schematic, scope, garage, workshop, map editor, builder and scenes.
+Layout: `js/audio/engine-worklet.js` is the worklet's entry point and `js/audio/worklet/` holds the physics, one module per part: the pipe network (`net.js`), the engine and its sample loop (`engine-sim.js`, with its subsystems in `sim/`), the listener and camera geometry, the scene scripts and the processor. `js/engine/compile.js` turns an engine spec into a pipe network and valve tables, `js/engine/presets.js` holds the engine library, `js/engine/builder.js` turns builder designs into specs, `js/engine/maps.js` lays out the tuning maps, `js/car/*` reads a real car (ELM327 over Web Bluetooth, GPS and motion, the demo drive), `js/engine/analyze-worker.js` is the virtual dyno, `js/main.js` and `js/app/*` are the app itself (state, engine loading, modes, telemetry, wiring), and `js/ui/*` holds the tach, pressure-wave schematic, scope, garage, workshop, map editor, builder and scenes. The modules load straight from source with no build step; a browser that refuses the worklet's URL gets the same modules joined into one script (`js/audio/worklet-bundle.js`).

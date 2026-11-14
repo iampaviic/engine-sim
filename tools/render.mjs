@@ -12,22 +12,36 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
 
 let loadCount = 0;
-export async function loadWorklet(fs = 48000) {
-  const posted = [];
+// The worklet's modules load once per process, so the stand-in base class
+// their processor extends has to be the same one for every load, and so does
+// the list its port posts to.
+const posted = [];
+globalThis.AudioWorkletProcessor = class {
+  constructor() {
+    this.port = {
+      postMessage: (m) => posted.push(m),
+      onmessage: null,
+    };
+  }
+};
+
+// url: load the worklet from somewhere else (check-bundle.mjs passes the
+// single-script bundle, which carries its own copy of everything).
+export async function loadWorklet(fs = 48000, url = null) {
+  posted.length = 0;
   globalThis.sampleRate = fs;
-  globalThis.AudioWorkletProcessor = class {
-    constructor() {
-      this.port = {
-        postMessage: (m) => posted.push(m),
-        onmessage: null,
-      };
-    }
-  };
   let Proc = null;
   globalThis.registerProcessor = (name, cls) => {
     Proc = cls;
   };
-  await import(pathToFileURL(path.join(root, 'js/audio/engine-worklet.js')).href + '?n=' + ++loadCount);
+  // The query re-runs the entry, so it registers the processor again. The
+  // modules behind it load once per process, so restart their random stream:
+  // every render then begins from the same state.
+  await import((url ?? pathToFileURL(path.join(root, 'js/audio/engine-worklet.js')).href) + '?n=' + ++loadCount);
+  if (!url) {
+    const { reseed } = await import(pathToFileURL(path.join(root, 'js/audio/worklet/dsp.js')).href);
+    reseed();
+  }
   return { Proc, posted };
 }
 
@@ -75,7 +89,7 @@ export async function render(presetId, scenarioName, opts = {}) {
   const spec = typeof presetId === 'object' ? presetId : PRESETS.find((p) => p.id === presetId);
   if (!spec) throw new Error('no preset ' + presetId);
   const fs = opts.fs ?? 48000;
-  const { Proc, posted } = await loadWorklet(fs);
+  const { Proc, posted } = await loadWorklet(fs, opts.worklet);
   const proc = new Proc();
   const cfg = workletConfig(compileEngine(spec));
   const send = (m) => proc.port.onmessage({ data: m });

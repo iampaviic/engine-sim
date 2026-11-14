@@ -1,49 +1,55 @@
 # Firing Order: guide for agents
 
-A physically modelled engine sound simulator: vanilla ES modules, no framework, no web build step, with iOS and Android shells through Capacitor. It is a personal project that will not be published to the App Store or Google Play: store compliance, monetisation and release hardening are out of scope. The Free/Pro paywall code still exists, but the web build is fully unlocked, so new features need no gating. Every sound comes from a per-sample physics simulation, with no samples or recordings. `README.md` explains the physics and every feature for users; read its section on a subsystem before changing that subsystem. This file maps where things live and lists the rules the code itself doesn't state.
+A physically modelled engine sound simulator: vanilla ES modules, no framework, no web build step, with iOS and Android shells through Capacitor. It is a personal project that will not be published to the App Store or Google Play: store compliance, monetisation and release hardening are out of scope. Every feature is always available: there is no paywall or gating. Every sound comes from a per-sample physics simulation, with no samples or recordings. `README.md` explains the physics and every feature for users; read its section on a subsystem before changing that subsystem. This file maps where things live and lists the rules the code itself doesn't state.
 
 ## Map
 
 | Path | What it is |
 | --- | --- |
-| `js/audio/engine-worklet.js` | **The sound.** All physics plus the scene scripts, one self-contained file (~4,700 lines). |
+| `js/audio/engine-worklet.js` | **The sound's entry point**: registers the processor. The code is in `js/audio/worklet/`, below. |
+| `js/audio/worklet/engine-sim.js` | `EngineSim`: the constructor declares all of an engine's state; `render()` is the per-sample loop. |
+| `js/audio/worklet/sim/*.js` | `EngineSim`'s methods by subsystem: `cylinders`, `ecu`, `starter`, `induction`, `nitrous`, `drivetrain`, `aero`, `sources`. |
+| `js/audio/worklet/*.js` | `constants`, `dsp` (RNG, helpers, `ResBank`, `Band4`, `Modes`), `net` (`Net`, the waveguide pipe network), `listener` (`Listener`, `EngineSim.listen()`), `camera` (mic and body geometry), `scenes` (scripted drives), `processor` (`EngineProcessor`), `mixin`. |
+| `js/audio/worklet-bundle.js` | Joins the worklet's modules into one script for the blob fallback in `audio.js`. |
 | `js/engine/presets.js` | The engine library: `PRESETS` array of human-readable specs. |
 | `js/engine/compile.js` | `compileEngine(spec)` turns a spec into the pipe networks, valve/port tables and firing offsets. `workletConfig()` strips it for `postMessage`. |
 | `js/engine/builder.js` | Engine builder designs ⇄ specs, firing-order enumeration, saved builds. |
 | `js/engine/maps.js` | Tuning-map layout (ignition, fuel, boost tables). |
 | `js/engine/analyze-worker.js` | Virtual dyno: imports the worklet in a Web Worker and runs it faster than real time. |
 | `js/audio/audio.js` | Web Audio graph: worklet → dry + 2 convolution reverbs (procedural IRs) → compressor → limiter → master. |
-| `js/main.js` | App state (`app`), wiring, worklet messages, telemetry → UI. |
-| `js/ui/*` | `tach`, `schematic` (pressure waves), `scope` (spectrum, p–V, dyno), `view3d` (three.js), `garage`, `workshop`, `maps`, `builder`, `scenes`, `controls`, `carlink`, `paywall`, `settings`. |
+| `js/main.js` | The app's entry point: frame loop, page wiring (`wire()`), boot sequence. |
+| `js/app/*.js` | The app: `state` (`app`, `store`, `$`), `ui` (tach, schematic, scope, panels, toast, tabs), `engine` (load, `app.rebuild`, `app.setTune`, `defaultTune`, `describeMods`), `actions` (`action()`, `start()`), `telemetry` (`onMessage()`, `onTelemetry()`), `modes` (`setMode()`, scenes, dyno run), `mixer`, `ab`, `follow`, `prefs`, `platform` (audio session, wake lock, native shells). |
+| `js/ui/*` | `tach`, `schematic` (pressure waves), `scope` (spectrum, p–V, dyno), `view3d` (three.js), `garage`, `workshop`, `maps`, `builder`, `scenes`, `controls`, `carlink`, `settings`. |
 | `js/car/*` | Follow my car: ELM327 over Web Bluetooth (`elm.js`, `obd.js`), GPS + motion fusion (`gps.js`), demo drive. |
-| `js/platform/*` | Capacitor bridges: native plugins, storage, RevenueCat purchases. |
-| `js/config.js` | Legacy Free/Pro split (`FREE`) and store keys; unused for new work. |
+| `js/platform/*` | Capacitor bridges: native plugins, storage. |
 | `tools/` | Node harness that runs the real worklet offline, plus Python analysis. |
 | `ios/`, `android/` | Native shells. Only touch these for native features (the `EngineAudio` plugin lives there). |
 
 ## Inside the worklet
 
-Top-down in the file: constants and DSP helpers (`ResBank`, `Band4`, `Modes`), `Net` (the waveguide pipe network), `Listener` (per-source delay lines), `EngineSim` (one engine), the camera and body geometry, then `EngineProcessor` (messages, scenes, hot swap, eco mode).
+Bottom-up through `js/audio/worklet/`: `constants.js` and `dsp.js` (helpers, `ResBank`, `Band4`, `Modes`), `net.js` (`Net`, the waveguide pipe network), `listener.js` (`Listener`: per-source delay lines), `engine-sim.js` and `sim/*.js` (`EngineSim`, one engine), `camera.js` (camera and body geometry), `scenes.js`, then `processor.js` (`EngineProcessor`: messages, hot swap, eco mode).
 
-`EngineSim.render()` is the per-sample loop, in this order:
+`EngineSim` and `EngineProcessor` are each one class written across several files. A part file exports a class used only as a bag of methods (`CylinderMethods`, `SceneMethods`, …), and `mixin()` copies those methods onto the real prototype once at load, so `this.stepTurbo()` is an ordinary method call wherever it is written. All of `EngineSim`'s state is declared in its constructor in `engine-sim.js`, whichever file uses it.
 
-1. Every 32 samples: `control()` (ECU, idle, limiter, knock control, boost control, nitrous, vehicle, starter).
+`EngineSim.render()` (`engine-sim.js`) is the per-sample loop, in this order (the file each step lives in is in brackets):
+
+1. Every 32 samples: `control()` (ECU, idle, limiter, knock control, boost control, nitrous, vehicle, starter) [`sim/ecu.js`, calling into `nitrous.js`, `drivetrain.js`, `starter.js`].
 2. Advance the crank.
-3. `ex.read()` / `inn.read()` → `stepCylinders()` (thermodynamics, combustion, valve flow coupled implicitly to the pipes; returns gas torque) → `ex.scatter()` → `stepIntake()` → `write()`.
-4. `stepBoost()` (turbo, supercharger) → `stepDrivetrain()` (returns the new crank speed).
-5. `stepSources()` mixes the 7 source channels → `listen()` renders them for the mic position.
+3. `ex.read()` / `inn.read()` [`net.js`] → `stepCylinders()` (thermodynamics, combustion, valve flow coupled implicitly to the pipes; returns gas torque) [`sim/cylinders.js`] → `ex.scatter()` → `stepIntake()` [`sim/induction.js`] → `write()`.
+4. `stepBoost()` (turbo, supercharger) [`sim/induction.js`] → `stepDrivetrain()` (returns the new crank speed) [`sim/drivetrain.js`].
+5. `stepSources()` mixes the 7 source channels [`sim/sources.js`] → `listen()` renders them for the mic position [`listener.js`].
 
 Sound sources (`N_SRC = 7`, the order the mixer's gains use): `0, 1, 2` exhaust L/R/centre, `3` intake (with turbo and nitrous sounds), `4` mechanical (valvetrain ticks, block, knock, gear whine, starter), `5` chassis (road, wind, tyre squeal, bumps), `6` wastegate dump. Per-engine level knobs are `spec.sound` (`exhaust`, `intake`, `mech`, `trim`, …).
 
-Cylinder events: `onIVC()` (charge trapped: combustion variation, knock setup), `onEVO()` (blowdown, afterfire). Two-strokes, rotaries, starters, kick start, nitrous, turbo flutter, aero/wind and scenes each have their own methods. `grep -n '^  [a-zA-Z]*(.*) {$'` on the file lists them.
+Cylinder events: `onIVC()` (charge trapped: combustion variation, knock setup), `onEVO()` (blowdown, afterfire). Two-strokes, rotaries, starters, kick start, nitrous, turbo flutter, aero/wind and scenes each have their own methods. `grep -n '^  [a-zA-Z]*(.*) {$' js/audio/worklet/*.js js/audio/worklet/sim/*.js` lists every method with its file.
 
 Cameras (mic positions): `rear`, `exhaust`, `side`, `front`, `bay`, `cockpit` (cabin filtering), `flyby`.
 
 ## Message flow
 
-Main → worklet (`app.audio.post`): `config` (compiled engine plus tune; `hot: true` swaps hardware while keeping the running state), `tune`, `input`, `ignition`, `shift`, `mode`, `camera`, `mix`, `dyno`, `flyby`, `scene*`, `follow`, `strobe`, `quality`. Handled in `EngineProcessor.onMessage()`.
+Main → worklet (`app.audio.post`): `config` (compiled engine plus tune; `hot: true` swaps hardware while keeping the running state), `tune`, `input`, `ignition`, `shift`, `mode`, `camera`, `mix`, `dyno`, `flyby`, `scene*`, `follow`, `strobe`, `quality`. Handled in `EngineProcessor.onMessage()` (`worklet/processor.js`).
 
-Worklet → main: `tel` (telemetry, built in `postTelemetry()`), `scope`, snapshots and scene events. Handled in `main.js` `onMessage()` / `onTelemetry()`.
+Worklet → main: `tel` (telemetry, built in `postTelemetry()`), `scope`, snapshots and scene events. Handled in `js/app/telemetry.js` `onMessage()` / `onTelemetry()`.
 
 Two kinds of change reach the engine:
 
@@ -52,11 +58,11 @@ Two kinds of change reach the engine:
 
 ## Recipes
 
-**Add a spec field (new hardware):** read it in `compile.js` (geometry or pipe network) or pass it through to the `EngineSim` constructor via the compiled config. If users can change it, add it to the workshop (`js/ui/workshop.js` `renderHardware`), `describeMods()` in `main.js`, and `specToDesign`/`designToSpec` in `builder.js` if the builder should offer it.
+**Add a spec field (new hardware):** read it in `compile.js` (geometry or pipe network) or pass it through to the `EngineSim` constructor via the compiled config. If users can change it, add it to the workshop (`js/ui/workshop.js` `renderHardware`), `describeMods()` in `js/app/engine.js`, and `specToDesign`/`designToSpec` in `builder.js` if the builder should offer it.
 
-**Add a tune parameter:** `defaultTune()` in `main.js` → `applyTune()` in the worklet → the carry-over key list in `installSim()`. Otherwise it resets on every hot rebuild.
+**Add a tune parameter:** `defaultTune()` in `js/app/engine.js` → `applyTune()` in `worklet/processor.js` → the carry-over key list in `installSim()` there. Otherwise it resets on every hot rebuild.
 
-**Add sim state that must survive a hardware change:** add the key to the `hot` carry-over lists in `installSim()`.
+**Add sim state that must survive a hardware change:** declare it in the `EngineSim` constructor (`worklet/engine-sim.js`) and add the key to the `hot` carry-over lists in `installSim()`.
 
 **Add an engine:** a new spec const in `presets.js`, appended to `PRESETS`. Model it on the closest existing preset (units: mm and crank degrees; cam `[open, close, lift]`). Then calibrate:
 - `node tools/knockcal.mjs <id>`, and copy the suggested value into `ecu.knockCal`.
@@ -71,7 +77,7 @@ Two kinds of change reach the engine:
 You can't hear the output, so judge sound changes by measurement, and render WAVs for the user to listen to.
 
 ```bash
-npm test                                        # batch on v8-ls and v12-65, ~10 s: idle, torque, power, NaN, CPU
+npm test                                        # batch on v8-ls and v12-65, then check-bundle, ~15 s: idle, torque, power, NaN, CPU
 node tools/batch.mjs                            # every preset; run after any physics change
 node tools/render.mjs <id> <scenario> out.wav [--camera cockpit]   # rev idle dyno drive boost flyby autobahn
 node tools/hold.mjs <id> <rpm> <pedal> '<jsonOverrides>' out.wav   # steady state, A/B a spec change
@@ -80,16 +86,22 @@ python3 tools/analyze.py out.wav out.png        # spectrogram and waveform
 node tools/exhaust-ir.mjs <id>                  # exhaust network frequency response
 node tools/debug-cycle.mjs <id> <rpm> <pedal>   # one cylinder's thermodynamic cycle
 node tools/test-car.mjs                         # OBD parser, fake adapter session, GPS fusion
+node tools/check-bundle.mjs                     # the single-script fallback renders the same as the modules
 node tools/serve.mjs                            # http://localhost:8080 for the browser (Playwright + Chromium are preinstalled)
 ```
 
 The Python tools need `pip install numpy scipy matplotlib`. Read the PNGs they produce with the Read tool.
 
+Offline renders are deterministic (the random stream is seeded), so a change that should not alter the sound, such as a refactor, must leave every render **bit-identical**: hash the float output of `render()` for each preset before and after.
+
 Compare a sound change **before and after on the same scenario**: the spectrum at the engine orders that matter (for example order 4 for a cross-plane V8 at 4,000 rpm), RMS level, and `batch` numbers for every preset. A change aimed at one engine must leave the others' `batch` output and loudness unchanged, unless that's intended.
 
 ## Rules the code doesn't state
 
-- **The worklet is self-contained.** No `import`s: `audio.js` falls back to loading it from a blob, and Node and the dyno worker import it directly. Keep constants and helpers inside the file.
+- **The worklet is its own module graph.** Everything under `js/audio/worklet/` may import only from that folder: it runs in the audio thread, in the dyno's Web Worker and in Node, with no DOM and none of the app. It is loaded three ways: `audioWorklet.addModule()` in `audio.js`, `import()` in `analyze-worker.js`, and `import()` from `tools/render.mjs`.
+- **Worklet modules keep a plain import style**, because the blob fallback in `audio.js` (for hosts that refuse the worklet's URL) joins them into one script by text (`worklet-bundle.js`): only `import { a, b } from './x.js';`, `export` only in front of a top-level `const`, `let`, `function` or `class`, no default exports or renames, and no two modules declaring the same top-level name. `node tools/check-bundle.mjs` (in `npm test`) fails if the joined script does not render identically.
+- **Shared worklet state is a single instance.** The seeded random stream (`rnd()` in `dsp.js`) makes offline renders repeatable; never copy it or the constants into another module. `tools/render.mjs` calls `reseed()` before each render, because Node loads the modules once per process.
+- **App modules (`js/app/`) import each other in cycles.** That is safe only while a module's top level just defines things and assigns to `app`. Code that calls into another app module at load time belongs in the boot sequence at the bottom of `main.js`.
 - **The per-sample path is hot.** Inside `render()` and everything it calls, allocate no arrays, objects or closures, and precompute coefficients outside the loop (in `control()` or the constructor). Budget: a V12 at ~15% of a desktop core, the W16 ~20%. Watch `batch`'s `cpu` column. Slow phones fall back to eco (half-rate physics), so code that depends on the sample rate must work at both `fs` and `fs / 2`.
 - **Physics first.** A sound feature should come from a physical mechanism (pressures, flows, structures, radiation) with real-world parameters. Comment the physics and its source in prose, the way the existing code does. Ad-hoc gains are a last resort, and they need a comment saying why.
 - **Watch for NaN.** One NaN silences the engine for good. Clamp divisions, `sqrt` and `pow` near zero flow or pressure, and keep `batch`'s `nan` column at 0.
