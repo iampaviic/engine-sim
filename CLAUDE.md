@@ -9,10 +9,10 @@ A physically modelled engine sound simulator: vanilla ES modules, no framework, 
 | `js/audio/engine-worklet.js` | **The sound's entry point**: registers the processor. The code is in `js/audio/worklet/`, below. |
 | `js/audio/worklet/engine-sim.js` | `EngineSim`: the constructor declares all of an engine's state; `render()` is the per-sample loop. |
 | `js/audio/worklet/sim/*.js` | `EngineSim`'s methods by subsystem: `cylinders`, `ecu`, `starter`, `induction`, `nitrous`, `drivetrain`, `mechanical` (valve, slap, timing, injector, alternator and gear noise), `aero`, `sources`. |
-| `js/audio/worklet/*.js` | `constants`, `dsp` (RNG, helpers, `Struck`, `Band4`, `Modes`), `net` (`Net`, the waveguide pipe network), `listener` (`Listener`, `EngineSim.listen()`), `camera` (mic and body geometry), `scenes` (scripted drives), `processor` (`EngineProcessor`), `mixin`. |
+| `js/audio/worklet/*.js` | `constants`, `dsp` (RNG, helpers, `Struck`, `Band4`, `Modes`), `net` (`Net`, the waveguide pipe network), `inlet` (`Inlet`: airbox and snorkel), `listener` (`Listener`, `EngineSim.listen()`), `camera` (mic and body geometry), `scenes` (scripted drives), `processor` (`EngineProcessor`), `mixin`. |
 | `js/audio/worklet-bundle.js` | Joins the worklet's modules into one script for the blob fallback in `audio.js`. |
 | `js/engine/presets.js` | The engine library: `PRESETS` array of human-readable specs. |
-| `js/engine/compile.js` | `compileEngine(spec)` turns a spec into the pipe networks, valve/port tables and firing offsets, and `mechSpec()` into the mechanical-noise parameters (structure modes, impact masses, tooth counts). `workletConfig()` strips it for `postMessage`. |
+| `js/engine/compile.js` | `compileEngine(spec)` turns a spec into the pipe networks, valve/port tables and firing offsets, `mechSpec()` into the mechanical-noise parameters (structure modes, impact masses, tooth counts) and `inletSpec()` into the airbox and snorkel sizes. `workletConfig()` strips it for `postMessage`. |
 | `js/engine/builder.js` | Engine builder designs ⇄ specs, firing-order enumeration, saved builds. |
 | `js/engine/maps.js` | Tuning-map layout (ignition, fuel, boost tables). |
 | `js/engine/analyze-worker.js` | Virtual dyno: imports the worklet in a Web Worker and runs it faster than real time. |
@@ -27,7 +27,7 @@ A physically modelled engine sound simulator: vanilla ES modules, no framework, 
 
 ## Inside the worklet
 
-Bottom-up through `js/audio/worklet/`: `constants.js` and `dsp.js` (helpers, `Struck`, `Band4`, `Modes`), `net.js` (`Net`, the waveguide pipe network), `listener.js` (`Listener`: per-source delay lines), `engine-sim.js` and `sim/*.js` (`EngineSim`, one engine), `camera.js` (camera and body geometry), `scenes.js`, then `processor.js` (`EngineProcessor`: messages, hot swap, eco mode).
+Bottom-up through `js/audio/worklet/`: `constants.js` and `dsp.js` (helpers, `Struck`, `Band4`, `Modes`), `net.js` (`Net`, the waveguide pipe network), `inlet.js` (`Inlet`, the airbox and snorkel), `listener.js` (`Listener`: per-source delay lines), `engine-sim.js` and `sim/*.js` (`EngineSim`, one engine), `camera.js` (camera and body geometry), `scenes.js`, then `processor.js` (`EngineProcessor`: messages, hot swap, eco mode).
 
 `EngineSim` and `EngineProcessor` are each one class written across several files. A part file exports a class used only as a bag of methods (`CylinderMethods`, `SceneMethods`, …), and `mixin()` copies those methods onto the real prototype once at load, so `this.stepTurbo()` is an ordinary method call wherever it is written. All of `EngineSim`'s state is declared in its constructor in `engine-sim.js`, whichever file uses it.
 
@@ -39,7 +39,7 @@ Bottom-up through `js/audio/worklet/`: `constants.js` and `dsp.js` (helpers, `St
 4. `stepBoost()` (turbo, supercharger) [`sim/induction.js`] → `stepDrivetrain()` (returns the new crank speed) [`sim/drivetrain.js`].
 5. `stepSources()` mixes the 7 source channels [`sim/sources.js`], calling `stepMech()` and `gearSound()` [`sim/mechanical.js`] → `listen()` renders them for the mic position [`listener.js`].
 
-Sound sources (`N_SRC = 7`, the order the mixer's gains use): `0, 1, 2` exhaust L/R/centre, `3` intake (with turbo and nitrous sounds), `4` mechanical (valves, piston slap, combustion and knock through the block, timing drive, injectors, alternator, gear whine, starter), `5` chassis (road, wind, tyre squeal, bumps), `6` wastegate dump. Per-engine level knobs are `spec.sound` (`exhaust`, `intake`, `trim`, …). The mechanical channel has none: its level comes from the engine's dimensions and hardware (`spec.block: 'iron'`, `sound.valvetrain`, `sound.lifters`, `sound.timing`, `sound.injection`, `sound.alternator`; see `mechSpec()`), and it is calibrated in pascals at 1 m against measured engine noise.
+Sound sources (`N_SRC = 7`, the order the mixer's gains use): `0, 1, 2` exhaust L/R/centre, `3` intake (with turbo and nitrous sounds), `4` mechanical (valves, piston slap, combustion and knock through the block, timing drive, injectors, alternator, gear whine, starter), `5` chassis (road, wind, tyre squeal, bumps), `6` wastegate dump. Per-engine level knobs are `spec.sound` (`exhaust`, `trim`, …). The intake has none: `stepSources()` feeds the change in the flow the inlet tract supplies (the throttle's, the bell mouths', or a compressor's) to `Inlet`, whose sizes come from `inletSpec()` and `intake.airbox` (`stock`, `ram`, `open`); the throttle's jet noise, the turbo's voice and a blower's whine go out the same way. The mechanical channel has none either: its level comes from the engine's dimensions and hardware (`spec.block: 'iron'`, `sound.valvetrain`, `sound.lifters`, `sound.timing`, `sound.injection`, `sound.alternator`; see `mechSpec()`), and it is calibrated in pascals at 1 m against measured engine noise.
 
 Cylinder events: `onIVC()` (charge trapped: combustion variation, knock setup), `onEVO()` (blowdown, afterfire). Two-strokes, rotaries, starters, kick start, nitrous, turbo flutter, aero/wind and scenes each have their own methods. `grep -n '^  [a-zA-Z]*(.*) {$' js/audio/worklet/*.js js/audio/worklet/sim/*.js` lists every method with its file.
 
@@ -118,5 +118,5 @@ Simpler than the rest of the model, so the likeliest wins:
 
 - **Mechanical channel** (`sim/mechanical.js`): piston slap is evaluated only at the dead centres (the mid-stroke reversals are missing, which leaves two-strokes too quiet); the two-stroke's idle sets off the knock model; reeds, clutch and primary drive make no sound; tyre squeal is a wobbling sine.
 - **Chassis and road noise:** filtered noise scaled by speed.
-- **Intake radiation:** the airbox is a two-pole low-pass on throttle mass flow, and ITB runner radiation is a fixed blend.
+- **Intake:** the inlet tract is driven one way (its pressure does not act back on the engine's breathing, so there is no intake-tract tuning of the torque curve), and the throttle has no inertia, so a plenum engine's roar is a little bright. On a blower engine the throttle is modelled after the blower. The levels of the turbo's whoosh and flutter, and of the edge-tone whistle, are estimates.
 - **Post chain** (`audio.js`): fixed compressor and limiter settings plus makeup gain shape every engine the same way, and the reverbs are procedural IRs.

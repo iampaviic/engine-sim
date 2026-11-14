@@ -4,6 +4,7 @@
 
 import { AFR_ST, CHOKE_AIR, CV, DYN_WASTEGATE, INV4PI, N_SRC, P_AMB, PI, R, RAD2DEG, T_AMB, TAU } from './constants.js';
 import { Band4, clamp, crossed, lpCoef, Modes } from './dsp.js';
+import { Inlet } from './inlet.js';
 import { Net } from './net.js';
 import { ListenMethods } from './listener.js';
 import { EcuMethods } from './sim/ecu.js';
@@ -153,9 +154,26 @@ export class EngineSim {
     this.pPl = P_AMB;
     this.mPl = (P_AMB * this.Vpl) / (R * T_AMB);
     this.mdTh = 0;
-    this.mdThPrev = 0;
+    // The inlet tract (airbox and snorkel) and what drives it: the flow it
+    // feeds, the throttle's jet noise and edge tone.
+    this.inlet = new Inlet(cfg.inlet, fs);
+    this.inFlow = 0;
+    this.inPrev = 0;
+    this.inMean = 0;
+    this.inMeanA = lpCoef(8, fs);
+    this.jetW = 0;
+    this.jetG = 0;
+    this.jet1 = this.jet2 = 0;
+    this.jetA1 = this.jetA2 = this.jetA3 = 0;
+    this.edgeA = 0;
+    this.edgeF = 0;
+    this.edgePh = 0;
+    this.edgeJit = 0;
+    this.bovSnd = 0;
     this.runnerFlow = 0;
-    this.runnerFlowPrev = 0;
+    this.itb = cfg.itb ? 1 : 0;
+    this.mapA = lpCoef(25, fs); // the manifold pressure rail of individual throttles
+    this.mdLp = 0;
     this.Ath = cfg.throttleArea;
     // air that gets past a closed throttle: less on a small engine
     this.thrLeak = 2e-6 * clamp(cfg.dispLitres, 0.25, 1);
@@ -178,8 +196,6 @@ export class EngineSim {
     this.wt = 0; // turbo shaft speed (rad/s), aggregated over turbos
     this.mc = 0; // compressor mass flow (Greitzer state)
     this.mcPrev = 0;
-    this.mcLp = 0;
-    this.mcHp = 0;
     // turbo voice: surge activity and pulse bursts, band-limited noises for
     // the whoosh and the stalled wheel, the blade tone's wobble and halo
     this.sgAct = 0;
@@ -200,8 +216,6 @@ export class EngineSim {
     this.sgX1 = this.sgX2 = this.sgY1 = this.sgY2 = 0;
     this.bovBand = new Band4(3000, 0.5, fs);
     this.sgK = 32;
-    this.sgLpA = lpCoef(392, fs);
-    this.sgHpA = lpCoef(28, fs);
     this.pBrate = 0;
     this.pBprev = P_AMB;
     this.wg = 0; // wastegate opening 0..1
@@ -258,7 +272,7 @@ export class EngineSim {
     this.turbPs2 = 0;
     // tonal voices: a parallel pair (or a sequential stage of two) gets a
     // second voice, the other turbo spinning a hair slower
-    const voice = () => ({ ph: 0, ph2: 0, jit: 0 });
+    const voice = () => ({ ph2: 0, jit: 0 });
     this.vA2 = voice();
     this.vB = voice();
     this.vB2 = voice();
@@ -268,7 +282,6 @@ export class EngineSim {
     this.wgI = 0;
     this.blades = ind.blades;
     this.bovType = ind.bov;
-    this.tPhase = 0;
     this.tPhase2 = 0;
     this.scPhase = 0;
     this.turbPsm = 0;
@@ -289,6 +302,20 @@ export class EngineSim {
     this.scRatio = ind.ratio;
     this.scDisp = ind.blowerDisp / 1000;
     this.scLobes = ind.lobes;
+    // Pockets that come round per turn of the rotors, their built-in pressure
+    // ratio and the shape of each one's pulse (see stepBlower). A Roots blower
+    // discharges from both rotors in turn, through a helix that smears each
+    // pulse over about half the gap to the next: nearly a pure tone. A
+    // twin-screw has one pocket per lobe of its male rotor and a port that
+    // opens in about a quarter of the gap, so its second harmonic is strong.
+    // (Harmonic k of a pulse smeared over a fraction w of its period is
+    // sinc(k w) / k.)
+    const screw = ind.type === 'twinscrew';
+    this.scPockets = screw ? ind.lobes : 2 * ind.lobes;
+    this.scPi = screw ? 1.5 : 1;
+    this.scH = screw ? [0.9, 0.32, 0.1] : [0.64, 0, 0.07];
+    this.scTq = 0;
+    this.bgPh = 0;
     this.redline = cfg.ecu.limit;
     if (this.isCentri) this.setCentriRatio();
 
@@ -398,8 +425,21 @@ export class EngineSim {
     this.nosClick = 0;
     this.nosRing = 0;
     this.nosSol = new Modes([2350, 3900, 6200], [0.005, 0.0035, 0.0025], [0.9, 0.6, 0.35], fs);
-    this.hsA = lpCoef(5200, fs);
-    this.hsB = lpCoef(900, fs);
+    // The purge jet's hiss: noise between 3 and 12 kHz (see nitrousSound).
+    // hsG scales it to pascals at 1 m per root kg/s; the band's own level is
+    // measured here once, with a throwaway random sequence.
+    this.hsA = lpCoef(Math.min(12000, 0.45 * fs), fs);
+    this.hsB = lpCoef(3000, fs);
+    {
+      let a = 0, b = 0, e = 0, r = 12345;
+      for (let i = 0; i < 4000; i++) {
+        r = (r * 1103515245 + 12345) & 0x7fffffff;
+        a += this.hsA * (r / 0x7fffffff - 0.5 - a);
+        b += this.hsB * (a - b);
+        e += (a - b) * (a - b);
+      }
+      this.hsG = 13.6 / Math.sqrt(e / 4000);
+    }
     this.hs1 = 0;
     this.hs2 = 0;
     this.valveOpen = 0; // exhaust bypass valve 0..1
@@ -453,12 +493,8 @@ export class EngineSim {
     // Sound bits
     this.snd = cfg.sound;
     this.srcBuf = new Float64Array(N_SRC);
-    this.ibLp1 = 0;
-    this.ibLp2 = 0;
     this.ibRes1 = 0;
     this.ibRes2 = 0;
-    this.itbLp = 0;
-    this.hissLp = 0;
     this.roadLp = 0;
     this.windLp1 = 0;
     this.windLp2 = 0;
@@ -535,10 +571,6 @@ export class EngineSim {
     this.lastPost = 0;
     // per-sample constants
     this.thrK = lpCoef(6, fs);
-    this.ibA = lpCoef(cfg.airbox === 'open' ? 5200 : cfg.airbox === 'ram' ? 2600 : 900, fs);
-    this.itbA = lpCoef(6500, fs);
-    this.hissA = lpCoef(700, fs);
-    this.itb = cfg.itb ? 1 : 0;
     this.rasp26 = 26 * cfg.sound.rasp;
     this.exG = INV4PI * cfg.sound.exhaust;
     this.initStarter(cfg);

@@ -48,9 +48,13 @@ export class NitrousMethods {
       const nz = rnd() - 0.5;
       this.hs1 += this.hsA * (nz - this.hs1);
       this.hs2 += this.hsB * (this.hs1 - this.hs2);
-      // (level set against the engine's own loudness trim, so every car's
-      // purge sits the same distance under its full-throttle roar)
-      x = ((this.hs1 - this.hs2) * 60 * Math.sqrt(f)) / this.snd.trim;
+      // A choked jet of nitrous leaves at its speed of sound, about 250 m/s,
+      // and at the bottle's pressure ratio about 1e-3 of its power becomes
+      // sound (IEC 60534-8-3, the highly choked regimes): 31 W of sound per
+      // kg/s, or 32 Pa at 1 m per root kg/s. From a 2 mm nozzle its spectrum
+      // peaks near 25 kHz, and what is audible is the foot below that, a
+      // sixth of the power (a jet's spectrum rises as f^3 to its peak): 13.6.
+      x = (this.hs1 - this.hs2) * this.hsG * Math.sqrt(f);
     }
     const k = this.nosClick;
     this.nosClick = 0;

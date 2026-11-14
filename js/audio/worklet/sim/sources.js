@@ -2,8 +2,10 @@
 // wastegate channels each sample, and captures the scope and pressure-wave
 // snapshots.
 
-import { INV4PI, P_AMB, SRC_BUF, SRC_MASK, TAU } from '../constants.js';
+import { SRC_BUF, SRC_MASK, TAU } from '../constants.js';
 import { crossed, rnd } from '../dsp.js';
+
+const FOURPI = 2 * TAU;
 
 export class SourceMethods {
   // Intake, mechanical and chassis sources; write all sources (Pa at 1 m)
@@ -13,35 +15,40 @@ export class SourceMethods {
     const snd = this.snd;
     const src = this.srcBuf;
 
-    // Snorkel/airbox: d/dt of throttle mass flow through a low-pass airbox;
-    // ITB/velocity stacks radiate the runner mouths directly.
-    let dq = (this.mdTh - this.mdThPrev) * fs;
-    this.mdThPrev = this.mdTh;
-    // throttle hiss: the jet through a nearly closed plate, growing as the
-    // manifold vacuum deepens; the airbox muffles it like everything else
-    const pr = this.pPl / P_AMB;
-    if (pr < 0.9 && this.mdTh > 0) {
+    // Intake. The inlet tract is driven by the change in the flow it feeds:
+    // the throttle's (with individual throttles, the bell mouths'), or on a
+    // boosted engine the compressor's, which hides the engine's own gulps
+    // behind its charge pipes and its wheel.
+    const q = this.boosted ? this.inFlow : this.mdTh;
+    let s = (this.inPrev - q) * fs;
+    this.inPrev = q;
+    this.inMean += this.inMeanA * (q - this.inMean);
+    if (!this.boosted) {
+      // The throttle's jet: broadband noise about the frequency its eddies
+      // are shed at, as loud as the jet power going back upstream (jetUp).
       const nz = rnd() - 0.5;
-      this.hissLp += this.hissA * (nz - this.hissLp);
-      dq += (nz - this.hissLp) * this.mdTh * 120 * (0.9 - pr);
+      const v3 = nz - this.jet2;
+      const v1 = this.jetA1 * this.jet1 + this.jetA2 * v3;
+      const v2 = this.jet2 + this.jetA2 * this.jet1 + this.jetA3 * v3;
+      this.jet1 = 2 * v1 - this.jet1;
+      this.jet2 = 2 * v2 - this.jet2;
+      s += v1 * this.jetG * Math.sqrt(this.jetW);
+      if (this.edgeA > 0) {
+        this.edgeJit += this.wJitA * (rnd() - 0.5 - this.edgeJit);
+        this.edgePh += (this.edgeF * (1 + this.edgeJit * 0.2)) / fs;
+        this.edgePh -= Math.floor(this.edgePh);
+        s += Math.sin(TAU * this.edgePh) * this.edgeA;
+      }
     }
-    const ibA = this.ibA;
-    this.ibLp1 += ibA * (dq - this.ibLp1);
-    this.ibLp2 += ibA * (this.ibLp1 - this.ibLp2);
-    let intake = this.ibLp2 * (1 - this.itb * 0.6);
-    if (this.itb) {
-      const dr = (this.runnerFlow - this.runnerFlowPrev) * fs;
-      this.itbLp += this.itbA * (dr - this.itbLp);
-      intake += this.itbLp * 0.55;
-    }
-    this.runnerFlowPrev = this.runnerFlow;
-    intake = intake * INV4PI * snd.intake + this.turboSnd;
+    // (the compressor's voice is in pascals at 1 m as if in the open)
+    let intake = this.inlet.tick(s + this.turboSnd * FOURPI) + this.bovSnd;
     if (this.nosFlow > 0 || this.purgeFlow > 0 || this.nosClick > 0 || this.nosRing > 0) intake += this.nitrousSound();
 
     // mechanical: the engine's structure and accessories, the gearbox
     let mech = this.stepMech(rpm, omega) * snd.mech;
     this.axleSnd = 0;
     if (this.gear > 0 && this.clutch > 0.5) mech += this.gearSound();
+    if (this.isCentri) mech += this.blowerGear(omega);
     if (this.stActive) mech += this.starterSound();
 
     // chassis: road, wind, tyre squeal

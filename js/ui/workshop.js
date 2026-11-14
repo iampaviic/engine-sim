@@ -379,7 +379,7 @@ export class Workshop {
       ],
       it.airbox ?? 'stock',
       (v) => app.rebuild((s) => (s.intake = { ...(s.intake ?? {}), airbox: v })),
-      'The airbox is a low-pass filter on the induction roar. An open cone lets the whole intake howl through.'
+      'The airbox and its snorkel silence the induction roar above about 60 Hz. Ram air is the same box with a short, wide duct, which silences much less. An open cone has no box at all.'
     );
     if (spec.kind !== 'rotary') {
       seg(

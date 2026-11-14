@@ -1,8 +1,8 @@
 // Induction: throttle and plenum, turbochargers (spool, surge, wastegate,
 // dump valve and their sounds) and superchargers.
 
-import { CHOKE_AIR, INV4PI, P_AMB, R, T_AMB, TAU } from '../constants.js';
-import { clamp, orifice, rnd, speedLine } from '../dsp.js';
+import { CHOKE_AIR, P_AMB, R, T_AMB, TAU } from '../constants.js';
+import { clamp, jetUp, orifice, rnd, speedLine } from '../dsp.js';
 
 export class InductionMethods {
   // Centrifugal blower: pick the pulley ratio that reaches the boost target
@@ -13,7 +13,8 @@ export class InductionMethods {
     this.scRatio = (Ut * 1.3) / (this.tRtip * (this.redline / 9.5493) * 3.2);
   }
 
-  // Intake runner junctions, plenum boundary and throttle flow.
+  // Intake runner junctions, then the throttle: one butterfly feeding a
+  // plenum, or one in each runner.
   stepIntake() {
     const inn = this.inn;
     const inIn = inn.inW, inOut = inn.outW, inY = inn.Y;
@@ -34,9 +35,73 @@ export class InductionMethods {
         inOut[e] = pj - inIn[e];
       }
     }
+    const dt = this.dt;
+    const boosted = this.boosted;
+    const pUp = boosted ? this.pB : P_AMB;
+    const Tup = boosted ? this.TB : T_AMB;
+    // butterfly area vs opening, every sample: a stepped area would buzz
+    const th = this.thr > 0 ? (this.thr < 1 ? this.thr : 1) : 0;
+    this.thrArea = this.Ath * 0.82 * th * Math.sqrt(th * Math.sqrt(th)); // th^1.75
+    this.bypassS += this.bypassStep;
+    const A = this.thrArea + this.bypassS + this.thrLeak;
+    const pls = inn.plenums;
+    if (this.itb) {
+      // Individual throttles: there is no plenum. Each runner ends at its own
+      // butterfly, and beyond that is the bell mouth and the air it breathes
+      // (the airbox, or a boosted engine's charge pipe). The plate is an
+      // orifice between that air and the runner's end, solved against the
+      // runner's wave impedance: shut, it is a closed end the runner's waves
+      // bounce off; wide open, a pressure release like a plenum. With the
+      // plates cracked each runner refills on its own between its cylinder's
+      // gulps, so the flow through every bell mouth pulses even at idle.
+      //   A plate in a pipe is not a hole into a plenum: the jet past it
+      // spreads back out to the full bore and gets most of its pressure back
+      // (Borda-Carnot: the loss is (1/(Cc b) - 1)^2 dynamic heads for an open
+      // fraction b), and wide open it is a thin disc edge-on to the flow,
+      // worth about 0.2 of a head (Idelchik, Handbook of Hydraulic
+      // Resistance, butterfly valves). As an equivalent orifice area:
+      const beta = th * Math.sqrt(th * Math.sqrt(th));
+      const cb = (0.82 + 0.18 * beta) * beta;
+      const Aeq = (this.Ath * cb) / Math.sqrt((1 - cb) * (1 - cb) + 0.2 * cb * cb) + this.bypassS + this.thrLeak;
+      const rhoUp = pUp / (R * Tup), sqT = Math.sqrt(Tup);
+      const pUpG = pUp - P_AMB;
+      const kCh = (CHOKE_AIR * pUp) / sqT;
+      let md = 0, ps = 0, ne = 0, jw = 0;
+      for (let i = 0; i < pls.length; i++) {
+        const nd = pls[i];
+        const st = es[nd], cnt = ec[nd];
+        const Ae = Aeq / cnt;
+        for (let k = 0; k < cnt; k++) {
+          const e = ends[st + k];
+          const Z = 1 / inY[e];
+          const p0 = 2 * inIn[e]; // the end's pressure with no flow through the plate
+          const D = pUpG - p0;
+          let q;
+          if (D >= 0) q = orifice(Ae, D, rhoUp, Z, pUp, sqT, CHOKE_AIR);
+          else {
+            const pe = p0 + P_AMB;
+            q = -orifice(Ae, -D, pe / (R * this.Tpl), Z, pe, Math.sqrt(this.Tpl), CHOKE_AIR);
+          }
+          inOut[e] = inIn[e] + q * Z;
+          if (q > 0) jw += jetUp(q, kCh * Ae);
+          md += q;
+          ps += p0 + q * Z;
+          ne++;
+        }
+      }
+      this.mdTh = md;
+      this.jetW = jw;
+      this.runnerFlow = md;
+      // The manifold pressure the ECU reads comes from a small rail joined to
+      // every runner through restrictors: their average, smoothed.
+      this.pPl += this.mapA * (P_AMB + ps / ne - this.pPl);
+      this.mdLp += this.mapA * (md - this.mdLp);
+      // nitrous fogs into each runner and leaves with the air passing it
+      this.nosX = this.nosFlow > 0 ? this.nosFlow / (this.nosFlow + (this.mdLp > 1e-4 ? this.mdLp : 1e-4)) : 0;
+      return;
+    }
     const pg = this.pPl - P_AMB;
     let qr = 0;
-    const pls = inn.plenums;
     for (let i = 0; i < pls.length; i++) {
       const nd = pls[i];
       const st = es[nd], cnt = ec[nd];
@@ -48,22 +113,14 @@ export class InductionMethods {
     }
     this.runnerFlow = qr;
     // throttle (implicit against plenum compliance)
-    const dt = this.dt;
-    const boosted = this.boosted;
-    const pUp = boosted ? this.pB : P_AMB;
-    const Tup = boosted ? this.TB : T_AMB;
     const kpl = (R * this.Tpl * dt) / this.Vpl;
     const pPred = this.pPl - kpl * qr;
-    // butterfly area vs opening, every sample: a stepped area would buzz
-    const th = this.thr > 0 ? (this.thr < 1 ? this.thr : 1) : 0;
-    this.thrArea = this.Ath * 0.82 * th * Math.sqrt(th * Math.sqrt(th)); // th^1.75
-    this.bypassS += this.bypassStep;
-    const A = this.thrArea + this.bypassS + this.thrLeak;
     const D = pUp - pPred;
     let md;
     if (D >= 0) md = orifice(A, D, pUp / (R * Tup), kpl, pUp, Math.sqrt(Tup), CHOKE_AIR);
     else md = -orifice(A, -D, this.pPl / (R * this.Tpl), kpl, this.pPl, Math.sqrt(this.Tpl), CHOKE_AIR);
     this.mdTh = md;
+    this.jetW = boosted ? 0 : jetUp(md, (CHOKE_AIR * A * pUp) / Math.sqrt(Tup));
     if (this.nosFlow > 0 || this.mNos > 0) {
       // nitrous mixes into the plenum and leaves with the charge
       const x = this.mNos / this.mPl;
@@ -76,10 +133,72 @@ export class InductionMethods {
     this.pPl = (this.mPl * R * this.Tpl) / this.Vpl;
   }
 
+  // Control rate: the inlet's mean flow, and the voice of the throttle's jet.
+  throttleNoise() {
+    const fs = this.fs;
+    const md = this.inMean > 0 ? this.inMean : 0;
+    this.inlet.setFlow(md);
+    if (this.boosted) return;
+    // The jet's speed, from the mean flow and the area open to it (as jetUp).
+    const A = this.thrArea + this.bypassS + this.thrLeak;
+    const x = Math.min(1, md / ((CHOKE_AIR * A * P_AMB) / Math.sqrt(T_AMB)));
+    const M = (0.579 * x) / (1 - 0.421 * x * x);
+    const U = 340 * M;
+    // Hiss. A jet's noise peaks where its eddies are shed, at a Strouhal
+    // number of about 0.2 on its width: 0.2 U / d, with d the width of a
+    // round jet of the open area. Through a cracked throttle that is far
+    // above hearing, and only the foot of the spectrum is audible: below its
+    // peak a jet's power falls as f^3 (Tam et al., The sources of jet noise,
+    // J. Fluid Mech. 615, 2008), so with the peak out of reach the band is
+    // placed at the top of ours and turned down to match.
+    const d = Math.sqrt(A * 1.273);
+    let fc = (0.2 * Math.max(U, 20)) / d;
+    let cut = 1;
+    const top = 0.3 * fs;
+    if (fc > top) {
+      const r = top / fc;
+      cut = r * Math.sqrt(r);
+      fc = top;
+    }
+    if (fc < 300) fc = 300;
+    const g = Math.tan((Math.PI * fc) / fs);
+    const k = 1 / 0.7;
+    this.jetA1 = 1 / (1 + g * (g + k));
+    this.jetA2 = g * this.jetA1;
+    this.jetA3 = g * this.jetA2;
+    // Noise of 0.289 rms through a band of quality 0.7 at fc keeps
+    // pi fc / (0.7 fs) of its power; W watts from a point source are
+    // sqrt(W rho c / 4 pi) = 5.73 sqrt(W) Pa at 1 m, and the tract takes its
+    // input as 4 pi times that.
+    this.jetG = (k * cut * 5.73 * 4 * Math.PI) / (0.289 * Math.sqrt((Math.PI * fc) / (0.7 * fs)));
+    // Whistle. At a small opening and a small pressure drop the sheet of air
+    // through the gap stays laminar and, where it strikes the bore's step or
+    // the plate's far edge about 3 mm on, it locks into an edge tone: Brown's
+    // formula (Proc. Phys. Soc. 49, 1937), f = 0.466 (U - 40)(1/h - 0.07) in
+    // cm and cm/s, first stage. An edge tone is a dipole, so the share of the
+    // jet's power it radiates goes as M^3. The 1e-4 in front is an estimate,
+    // not a measurement: it is what a row of such dipoles gives if about a
+    // tenth of the gap's length sings. The sheet turns turbulent, and the
+    // tone dies, as the Reynolds number on the gap's width passes 1,000 to
+    // 2,500 (Brown's own jets stopped near 1,200). In practice that leaves
+    // the thin gaps of individual throttles at light load, which sizzle; one
+    // big plate's gap is too wide.
+    const w = A / (Math.PI * Math.sqrt(this.Ath * 1.273 / (this.itb ? this.n : 1)) * (this.itb ? this.n : 1));
+    const re = (U * w) / 1.5e-5;
+    const lam = clamp((2500 - re) / 1500, 0, 1) * clamp((U - 8) / 10, 0, 1) * (this.thr < 0.4 ? 1 : 0);
+    if (lam > 0 && md > 0) {
+      const f = 0.466 * (100 * U - 40) * (1 / 0.3 - 0.07);
+      const W = 0.5 * 1e-4 * M * M * M * 0.5 * md * U * U * lam * lam;
+      this.edgeF = f;
+      this.edgeA = f < 0.4 * fs ? 1.414 * 5.73 * Math.sqrt(W) * 4 * Math.PI : 0;
+    } else this.edgeA = 0;
+  }
+
   // Turbocharger / supercharger dynamics and their sounds. Returns the torque
   // the crank spends driving a supercharger.
   stepBoost(omega) {
     this.turboSnd = 0;
+    this.bovSnd = 0;
     if (this.isTurbo || this.isCentri) return this.stepTurbo(omega);
     if (this.isSC) return this.stepBlower(omega);
     return 0;
@@ -173,6 +292,7 @@ export class InductionMethods {
       // centrifugal supercharger: gear-driven impeller
       this.wt = omega * this.scRatio * 3.2;
       scTorque = Pc / Math.max(omega, 30);
+      this.scTq = scTorque;
     }
     const Tc = T_AMB * (1 + (Math.pow(Math.max(PR, 1), 0.2857) - 1) / 0.7);
     this.TB = Tc - 0.72 * (Tc - T_AMB);
@@ -181,14 +301,26 @@ export class InductionMethods {
     // sine: flow unsteadiness wobbles its tone by a few tenths of a percent,
     // each exhaust pulse that kicks the turbine swells it, and turbulence
     // round the blades smears it into a narrow band of noise.
+    //   Nor is any wheel cut perfectly. Its blades differ a little in pitch
+    // and angle, so the pressure pattern turning with it repeats once per
+    // turn, not once per blade: from a fixed point the blade-pass tone rises
+    // and falls with the shaft, and that puts sidebands one and two shaft
+    // orders either side of it, about 16 and 22 dB down (the rotor-locked
+    // "multiple pure tones" of compressor noise; Raitor and Neise, Sound
+    // generation in centrifugal compressors, J. Sound Vib. 314, 2008). They
+    // are what makes a turbo's whistle a reedy chord and not a test tone.
+    //   The level follows measured in-duct spectra: 120-130 dB at blade-pass
+    // in the inlet pipe of a car's turbo at speed (Teng and Homco, SAE
+    // 2009-01-2053), which is 85-90 dB at 1 m off an open inlet.
     const fShaft = this.wt / TAU;
     this.wJit += this.wJitA * (rnd() - 0.5 - this.wJit);
     const jit = 1 + this.wJit * 0.3;
     const fB = fShaft * this.blades * jit;
-    this.tPhase += fB / fs;
-    this.tPhase -= Math.floor(this.tPhase);
     this.tPhase2 += (fShaft * jit) / fs;
     this.tPhase2 -= Math.floor(this.tPhase2);
+    const shaft = TAU * this.tPhase2;
+    const sh1 = Math.sin(shaft), sh2 = Math.sin(2 * shaft);
+    const uneven = 1 + 0.3 * Math.cos(shaft) + 0.15 * sh2;
     if (++this.sgK >= 32) {
       this.sgK = 0;
       this.setBand(clamp(fB, 200, 0.4 * fs), 40);
@@ -202,8 +334,8 @@ export class InductionMethods {
     this.sgY1 = halo;
     // A small wheel's blade pass goes ultrasonic at full spool: fade it out
     // before Nyquist instead of letting it fold back down as a false whistle.
-    const whistle = (Math.sin(TAU * this.tPhase) * 0.85 + halo * 2.5) * this.bladeFade(fB);
-    const whine = Math.sin(TAU * this.tPhase2) + 0.3 * Math.sin(2 * TAU * this.tPhase2);
+    const whistle = (Math.sin(this.blades * shaft) * uneven * 0.85 + halo * 2.5) * this.bladeFade(fB);
+    const whine = sh1 + 0.3 * sh2;
     const Utn = Ut / 400;
     // Each turbo sings with its share of the flow. Twins never run at quite
     // the same speed (one bank breathes a little differently), so the pair
@@ -215,7 +347,7 @@ export class InductionMethods {
       // the dump valve's jet: broadband, but centred a few kHz up like any jet
       // (Lighthill: its loudness falls away fast as the pressure behind it bleeds off)
       const dpb = Math.max(0, this.pB - P_AMB);
-      snd += this.bovBand.tick(rnd() - 0.5) * mb * Math.sqrt(dpb) * (dpb / 1e5) * 0.5;
+      this.bovSnd = this.bovBand.tick(rnd() - 0.5) * mb * Math.sqrt(dpb) * (dpb / 1e5) * 0.5;
     }
     const Utn2 = (this.wt2 * this.tRtip) / 400;
     if (this.nB && Utn2 > 0.02) {
@@ -260,11 +392,32 @@ export class InductionMethods {
     this.dBuf[this.dI] = yd;
     this.dI = (this.dI + 1) & 1023;
     snd += yd;
-    // the inlet radiates the flow's own pulsation as a soft thump
-    this.mcLp += this.sgLpA * (dmc - this.mcLp);
-    this.mcHp += this.sgHpA * (this.mcLp - this.mcHp);
-    this.turboSnd = snd + (this.mcLp - this.mcHp) * INV4PI * 0.6;
+    this.turboSnd = snd;
+    // What the inlet tract breathes is the compressor's flow: its surges, and
+    // what little of the engine's own pulsing gets back through the charge
+    // pipes and the wheel.
+    this.inFlow = this.mc + mc2;
     return scTorque;
+  }
+
+  // A centrifugal blower's impeller turns ten times faster than its pulley,
+  // through a pair of straight-cut step-up gears in its own case (61 teeth
+  // driving 19). Their mesh is the whine these blowers are known for: about
+  // 1.5 kHz at idle and beyond 10 kHz at the limit. It is the transmission
+  // error of the loaded mesh shaking a small casing, as the gearbox's is
+  // (mechSpec in compile.js), wobbling with each turn of the big gear.
+  blowerGear(omega) {
+    const fIn = (omega * this.scRatio) / TAU;
+    this.bgPh += fIn / this.fs;
+    this.bgPh -= Math.floor(this.bgPh);
+    const fm = fIn * 61;
+    if (fm < 20 || fm > 0.42 * this.fs) return 0;
+    const th = TAU * 61 * this.bgPh;
+    const s = Math.sin(th), c = Math.cos(th);
+    // (it grows with the torque it carries, about 60 N·m at the crank flat out)
+    const load = 0.35 + 0.65 * clamp(this.scTq / 30, 0, 1.5);
+    const fade = fm < 0.3 * this.fs ? 1 : (0.42 * this.fs - fm) / (0.12 * this.fs);
+    return ((s + s * c + 0.25 * s * (3 - 4 * s * s)) * this.mech.blowerRad * fm * (1 + 0.15 * Math.sin(TAU * this.bgPh)) * load * fade) / (fm * fm + 250000);
   }
 
   // Band-pass (constant peak gain) at f with quality q.
@@ -284,12 +437,12 @@ export class InductionMethods {
     v.jit += this.wJitA * (rnd() - 0.5 - v.jit);
     const fj = f * (1 + v.jit * 0.3);
     const fb = fj * this.blades;
-    v.ph += fb / fs;
-    v.ph -= Math.floor(v.ph);
     v.ph2 += fj / fs;
     v.ph2 -= Math.floor(v.ph2);
     const ph2 = TAU * v.ph2;
-    return Math.sin(TAU * v.ph) * 8.5 * this.bladeFade(fb) + (Math.sin(ph2) + 0.3 * Math.sin(2 * ph2)) * 0.5;
+    const s1 = Math.sin(ph2), s2 = Math.sin(2 * ph2);
+    // (its own uneven blades: see stepTurbo)
+    return Math.sin(this.blades * ph2) * (1 + 0.3 * Math.cos(ph2) + 0.15 * s2) * 8.5 * this.bladeFade(fb) + (s1 + 0.3 * s2) * 0.5;
   }
 
   // Level for a blade tone at f. The filter element and the duct's bends
@@ -321,12 +474,26 @@ export class InductionMethods {
     const Tc = T_AMB * (1 + (Math.pow(Math.max(PR, 1), 0.2857) - 1) / eta);
     this.TB = Tc - 0.65 * (Tc - T_AMB);
     this.Tpl = this.TB - this.nosCool;
-    // rotor whine at the lobe-passing frequency
-    this.scPhase += ((wb / TAU) * this.scLobes) / fs;
+    // Rotor whine. The rotors seal against each other and the case by
+    // clearances, and gas leaks back through them from the pressure side to
+    // the inlet: the 12% per unit of pressure ratio that the delivery above
+    // loses. Each pocket coming round makes and breaks those seal lines, so
+    // the leak (and with it the flow the inlet draws) pulses once per pocket
+    // at about half its mean. The inlet tract carries that out as the whine.
+    //   A Roots blower has no compression inside: the leak is driven by the
+    // boost, and with the bypass open at cruise it all but stops. A twin-screw
+    // squeezes each pocket by its built-in ratio (about 1.5) before the port
+    // opens, boost or no boost, so it whines at idle too.
+    const drive = (PR > this.scPi ? PR : this.scPi) - 1;
+    const leak = (P_AMB / (R * T_AMB)) * ((this.scDisp * wb) / TAU) * 0.12 * drive;
+    this.scPhase += ((wb / TAU) * this.scPockets) / fs;
     this.scPhase -= Math.floor(this.scPhase);
     const ph = TAU * this.scPhase;
-    const wv = Math.sin(ph) + 0.45 * Math.sin(2 * ph + 0.3) + 0.2 * Math.sin(3 * ph + 1.1);
-    this.turboSnd = wv * (wb / 1000) * (0.25 + 1.5 * Math.max(0, PR - 1) + 0.6 * msc) * 0.18;
+    const h = this.scH;
+    const c1 = Math.cos(ph), s1 = Math.sin(ph);
+    const c2 = 2 * c1 * c1 - 1;
+    // (the harmonics' phases are those of a pulse that opens fast and dies away)
+    this.inFlow = msc - 0.5 * leak * (h[0] * c1 + h[1] * (c2 * 0.8 - 2 * s1 * c1 * 0.6) + h[2] * (4 * c1 * c1 * c1 - 3 * c1));
     return P / Math.max(omega, 30);
   }
 }

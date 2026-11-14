@@ -115,6 +115,29 @@ export function orifice(A, D, rho, Z, p0, sqrtT0, choke) {
   return m < mc ? m : mc;
 }
 
+// Sound power (W) a throttle's jet sends back upstream, out towards the
+// intake's mouth, for a mass flow md through a plate that would choke at
+// mdChoke.
+//   The jet's mechanical power is md U^2 / 2, and the share of it that turns
+// into sound is 1e-4 FL^2 M^3.6, with FL about 0.7 for a butterfly (IEC
+// 60534-8-3, the control-valve noise standard, regime I). The sound is made
+// just past the gap: half of it faces back upstream, and has to cross the
+// gap against the flow, which passes (1 - M) / (1 + M) of it. A choked plate
+// (an idling engine's) keeps nearly all its hiss inside the manifold; not
+// quite all, because a real gap never chokes evenly (the flow stays subsonic
+// round the shaft's ends and along the walls), which is put here as a mean
+// Mach number of 0.95 at most.
+//   M comes from the flow: md / mdChoke = 1.728 M / (1 + 0.2 M^2)^3, inverted
+// to within a few percent by the expression below.
+export function jetUp(md, mdChoke) {
+  if (!(md > 0) || !(mdChoke > 0)) return 0;
+  const x = md < mdChoke ? md / mdChoke : 1;
+  const M = (0.579 * x) / (1 - 0.421 * x * x);
+  const U = 340 * M;
+  const Mt = M < 0.95 ? M : 0.95;
+  return (0.5e-4 * M * M * M * Math.sqrt(M) * md * U * U * 0.25 * (1 - Mt)) / (1 + Mt);
+}
+
 // Struck structural modes, heard as sound. A surface radiates with its
 // velocity, so each mode's response to a force falls away towards 0 Hz (a
 // plain two-pole resonator answers like a displacement and passes every low
