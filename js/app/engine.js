@@ -9,6 +9,7 @@ import { buildSpecs } from '../engine/builder.js';
 import { $, app, store } from './state.js';
 import { mapEd, schem, scope, tach, toast, view3d, workshop } from './ui.js';
 import { setMode, stopDyno } from './modes.js';
+import { saveThermal, sendThermal } from './thermal.js';
 
 // Factory engines plus the builds saved in this browser.
 export function allEngines() {
@@ -84,6 +85,7 @@ function updateEngineUI() {
 
 export function loadEngine(id, { autostart = false, keepOff = false } = {}) {
   const wasRunning = app.tel?.running && !keepOff;
+  saveThermal(true);
   if (mapEd.open) mapEd.hide();
   app.factory = engineById(id);
   // an unsaved builder draft or a deleted build falls back to a real engine
@@ -103,8 +105,9 @@ export function loadEngine(id, { autostart = false, keepOff = false } = {}) {
   updateEngineUI();
   if (app.started) {
     app.audio.post({ type: 'config', cfg: workletConfig(app.compiled), tune: app.tune });
+    sendThermal();
     app.audio.post({ type: 'camera', camera: app.mode === 'flyby' ? 'flyby' : app.camera });
-    if (autostart || wasRunning) setTimeout(() => app.audio.post({ type: 'ignition', on: true, crank: true, cold: true }), 350);
+    if (autostart || wasRunning) setTimeout(() => app.crank(), 350);
   }
   if (workshop.open) workshop.render();
 }
@@ -193,6 +196,8 @@ app.dynoHold = (rpm) => {
 // engine running through the swap.
 app.loadSpec = (spec, { hot = false, quiet = false, remember = false } = {}) => {
   const keep = app.tune;
+  const swap = hot && !!(app.tel?.running || app.tel?.starter);
+  if (!swap) saveThermal(true);
   app.presetId = spec.id;
   app.factory = spec;
   app.spec = clone(spec);
@@ -206,7 +211,10 @@ app.loadSpec = (spec, { hot = false, quiet = false, remember = false } = {}) => 
   app.abCompiled = null;
   if (remember) store.set('engine', spec.id);
   updateEngineUI();
-  if (app.started) app.audio.post({ type: 'config', cfg: workletConfig(app.compiled), tune: app.tune, hot: hot && !!(app.tel?.running || app.tel?.starter) });
+  if (app.started) {
+    app.audio.post({ type: 'config', cfg: workletConfig(app.compiled), tune: app.tune, hot: swap });
+    if (!swap) sendThermal();
+  }
   if (!quiet) toast(spec.name);
   if (workshop.open) workshop.render();
 };

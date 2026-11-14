@@ -1071,6 +1071,96 @@ function inletSpec(spec, displacement) {
 }
 
 // ---------------------------------------------------------------------------
+// Engine temperature: seven lumped masses and the paths heat takes between
+// them and out to the air, sized from the engine. The worklet integrates them
+// (worklet/sim/thermal.js, which says what each mass is); the app uses the
+// same numbers to cool a stored engine down by the time it was left.
+//
+// Masses. The dressed engine weighs what mechSpec says. Half of it is the
+// block and head round the water jacket (grey iron 460 J/kg K, aluminium
+// 900), with 1 + 2.2 L^0.9 litres of coolant (50% glycol, 3.64 kJ/L K): a
+// 2 L four holds about 5 L, a 6.2 L V8 about 12. A third of that coolant and
+// its metal is in the head, where the temperature sender sits. The oil (2 +
+// 1.1 L^0.9 litres at 1.74 kJ/L K; a two-stroke has only its gearbox's 0.8 L)
+// counts with the crank, rods and pistons, a fifth of the engine in steel.
+// The metal round the chambers and exhaust ports is a twentieth of the
+// engine, the intake manifold a twenty-fifth, the exhaust manifold
+// and down pipe a sixteenth in steel; the fuel rail and its fuel hold
+// 400 J/K for a 2 L engine and soak up from the manifold in a few minutes.
+//
+// Heat. A spark-ignition engine sends roughly a quarter to a third of its
+// fuel's energy into the coolant, the larger share at light load (Heywood,
+// "Internal Combustion Engine Fundamentals", ch. 12). At full load that
+// heat crosses the chamber walls at about 60 K, which sets the walls'
+// conductance; the radiator is sized to carry it at 70 K above the air with
+// 10 m/s through its core, and like any finned core it passes heat as the
+// air speed to the power 0.7. The surfaces lose heat to still air at about
+// 9 W/m^2 K (natural convection and radiation, a little hemmed in under the
+// bonnet), more in the draught of driving. These give a 2 L engine about
+// two hours to cool from 90 °C to within a third of the way to ambient
+// (half-cold after an afternoon, cold overnight), twenty-odd minutes to warm
+// up at idle and a few minutes driving. The pump, the oil's contact with
+// the block, the intake manifold's flange, the exhaust manifold's flange
+// on the head (6 W/K for a 2 L engine) and the exhaust's glow on the intake
+// side are estimates.
+// ---------------------------------------------------------------------------
+function thermalSpec(spec, dispLitres, displacement) {
+  const iron = spec.block === 'iron';
+  const twoStroke = spec.kind === 'twostroke';
+  const l9 = Math.pow(dispLitres, 0.9);
+  const mass = (15 + 45 * l9) * (iron ? 1.25 : 1);
+  const surf = Math.pow(mass / 100, 2 / 3);
+  const coolL = 1 + 2.2 * l9;
+  const cCool = coolL * 3640 + 0.5 * mass * (iron ? 460 : 900);
+  const HEAD = 1 / 3;
+  // the heat the cooling system is built for: full-load fuel power at the
+  // rev limit (90% volumetric efficiency, at the boost the engine makes)
+  const ind = spec.induction ?? {};
+  const pr = (ind.type ?? 'na') !== 'na' ? 1 + (ind.boost ?? 0.8) : 1;
+  const limit = spec.ecu?.limit ?? 6500;
+  const idle = spec.ecu?.idle ?? 800;
+  const airMax = 1.18 * displacement * (limit / 120) * 0.9 * pr;
+  const qCool = 0.25 * (airMax / 12.5) * 43.5e6;
+  const cH = HEAD * cCool, cB = (1 - HEAD) * cCool;
+  const gRad = qCool / 70;
+  return {
+    cW: 0.05 * mass * 900,
+    cH,
+    cB,
+    cO: (twoStroke ? 0.8 : 2 + 1.1 * l9) * 1740 + 0.2 * mass * 470,
+    cM: 0.04 * mass * 900,
+    cX: 0.06 * mass * 500,
+    cR: 400 * surf,
+    gWH: qCool / 60,
+    // the water pump moves a quarter of the coolant a second at 3,000 rpm;
+    // stopped, the head and block mix only by thermosiphon (~10 minutes)
+    gPump: 0.25 * coolL * 3640,
+    gSiphon: (cH * cB) / (cH + cB) / 600,
+    gBO: 100 * l9,
+    gHM: 2.5 * surf,
+    gXM: 0.6 * surf,
+    gRM: 2 * surf,
+    gXH: 6 * surf,
+    gRad,
+    uDesign: 10,
+    uNat: 0.15,
+    // an electric fan drives 3 m/s through the core; its noise, about
+    // 0.06 Pa at 1 m for a 2 L car's (70 dB), grows with the fan the
+    // radiator needs (estimates)
+    fanU: 3,
+    fanPa: 0.06 * Math.sqrt(gRad / 1800),
+    aEng: 1.0 * surf,
+    aSump: 0.12 * surf,
+    aMan: 0.15 * surf,
+    aX: 0.35 * surf,
+    exMax: airMax * 1.08,
+    // intake air at idle, which the charge heating is scaled from
+    airIdle: 1.18 * displacement * (idle / 120) * (twoStroke ? 0.06 : 0.13),
+    injected: (spec.sound?.injection ?? (twoStroke ? 'none' : 'port')) !== 'none',
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Mechanical noise: the sound of the engine's own parts hitting each other,
 // radiated by its structure. Everything here is worked out from the engine's
 // dimensions, so a big pushrod V8 and a small twin-cam four differ the way
@@ -1159,6 +1249,12 @@ function mechSpec(spec, g, dispLitres, twoStroke) {
   const lifters = snd.lifters ?? (vt === 'ohv' ? 'hydraulic' : 'solid');
   const lashMass = vt === 'none' || lifters === 'hydraulic' ? 0 : vt === 'ohv' ? 0.25 : vt === 'pneumatic' ? 0.02 : 0.035;
   const lash = (count) => lashMass * (vt === 'ohv' ? 1 : count ?? 2) * 0.4;
+  // A hydraulic lifter left on an open valve bleeds down at rest; until the
+  // oil refills it, it has lash like a solid lifter's and more of it, so the
+  // train meets the valve partway up the cam's flank at about three times
+  // the ramp's velocity (an estimate): the start-up tick.
+  const hydMass = vt === 'none' || lifters !== 'hydraulic' ? 0 : vt === 'ohv' ? 0.25 : 0.035;
+  const hydLash = hydMass * (vt === 'ohv' ? 1 : v.exCount ?? 2) * 0.4 * 3;
 
   // --- piston slap
   // At each dead centre the connecting rod swings through vertical and the
@@ -1177,7 +1273,13 @@ function mechSpec(spec, g, dispLitres, twoStroke) {
   // the time the piston spent crossing, t = (6 m c / F')^(1/3), which is why
   // a warm engine does not slap at idle (a slow, soft landing that the
   // block's modes barely notice) and does at speed and load.
-  let slap = { k: 0, area: 0, inertia: 0, lambda: 0, cross: 0 };
+  // Cold, the clearance is larger: an aluminium piston (21e-6 /K) shrinks
+  // faster than an iron bore (11e-6) or an iron liner held in an aluminium
+  // block (17e-6, an estimate), and a two-stroke's plated aluminium bore
+  // keeps pace with it. The worklet takes the skirt and bore at the block's
+  // temperature: a 103 mm bore in iron gains 0.07 mm from 90 °C to 25 °C,
+  // more than doubling its warm clearance.
+  let slap = { k: 0, area: 0, inertia: 0, lambda: 0, cross: 0, clearance: 0, dcdT: 0 };
   if (!rotary) {
     const r = mm(spec.stroke) / 2;
     const l = mm(spec.rod ?? spec.stroke * 1.65);
@@ -1185,7 +1287,8 @@ function mechSpec(spec, g, dispLitres, twoStroke) {
     const wLim = (limit * Math.PI) / 30;
     const mP = Math.max(0.05, Math.min(0.5 * Math.pow(B / 0.086, 3), (1.5e6 * B * B) / (r * wLim * wLim * (1 + lambda))));
     const c = (twoStroke ? 1e-3 : 6e-4) * B;
-    slap = { k: 0.4 * mP * 1.651 * Math.cbrt((c * c) / mP), area: g.pistonArea, inertia: 1.35 * mP * r, lambda, cross: 6 * mP * c };
+    const aBore = twoStroke ? 21e-6 : iron ? 11e-6 : 17e-6;
+    slap = { k: 0.4 * mP * 1.651 * Math.cbrt((c * c) / mP), area: g.pistonArea, inertia: 1.35 * mP * r, lambda, cross: 6 * mP * c, clearance: c, dcdT: B * (21e-6 - aBore) };
   }
 
   // --- timing drive
@@ -1276,6 +1379,7 @@ function mechSpec(spec, g, dispLitres, twoStroke) {
     seatEx: seat(v.exCount, v.exDia),
     lashIn: lash(v.inCount),
     lashEx: lash(v.exCount),
+    hydLash,
     designRpm: limit,
     slap,
     timing: tim,
@@ -1403,6 +1507,7 @@ export function compileEngine(spec) {
     nitrous: nitrousSpec(spec, dispLitres),
     mech: mechSpec(spec, g, dispLitres, twoStroke),
     inlet: inletSpec(spec, displacement),
+    thermal: thermalSpec(spec, dispLitres, displacement),
     combustion: spec.combustion ?? 0.8,
     burnScale: spec.burnScale ?? 1,
     stroke: mm(spec.stroke ?? 70),

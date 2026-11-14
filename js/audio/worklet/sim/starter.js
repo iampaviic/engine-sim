@@ -1,7 +1,7 @@
 // Starting: the electric starter motor and its sounds, and the kick start.
 
 import { TAU } from '../constants.js';
-import { clamp, ftanh, gauss, lpCoef, Modes, rnd } from '../dsp.js';
+import { Band4, clamp, ftanh, gauss, lpCoef, Modes, rnd } from '../dsp.js';
 
 export class StarterMethods {
   // -------------------------------------------------------------------------
@@ -90,6 +90,17 @@ export class StarterMethods {
     this.cLeak = new Float64Array(this.n).fill(1);
     this.cLeakVar = Float64Array.from({ length: this.n }, () => clamp(0.6 * gauss(), -0.9, 1.5));
 
+    // Fuel pump: an in-tank turbine pump, its motor at about 7,000 rpm
+    // with 8 commutator bars (a buzz near 930 Hz) driving a 30-vane
+    // impeller (a whine near 3.5 kHz), with the rush of the fuel through it.
+    // About 0.005 Pa at 1 m outside the tank (48 dB; an estimate).
+    this.pumpT = 0; // priming time left
+    this.pumpW = 0; // motor speed, 0..1
+    this.pumpP = 0; // rail pressure, 0..1
+    this.pmPh1 = 0;
+    this.pmPh2 = 0;
+    this.pmBand = new Band4(2200, 0.7, this.fs);
+
     this.kick = st.type === 'kick';
     this.kicking = false;
     if (this.kick) {
@@ -111,9 +122,9 @@ export class StarterMethods {
 
   // Key to START: the solenoid clicks in, and ~40 ms later the pinion is in
   // mesh and the main contacts close.
-  crankStart(cold) {
-    this.coldT = cold ? 1 : 0;
+  crankStart() {
     if (this.starter) return;
+    const s = this.th;
     this.starter = true;
     this.starterT = 0;
     this.stHold = 0;
@@ -124,19 +135,59 @@ export class StarterMethods {
       this.kickN = 0;
       this.kickWait = 0.3;
     } else {
-      // a cold battery sags further under the cranking current
-      this.stV = this.st.volts * (cold ? 0.98 : 1);
-      this.stR = this.st.ohms * (cold ? 1.06 : 1);
+      // A cold battery sags further under the cranking current: a lead-acid
+      // cell's resistance rises about 0.3% for each kelvin it cools (an
+      // estimate). The battery sits under the bonnet, a third of the way
+      // from the air's temperature to the engine's.
+      const bt = this.ambT + 0.3 * (s.h - this.ambT);
+      const bc = Math.max(0, (this.ambT + 0.3 * (363.15 - this.ambT) - bt) / 19.5);
+      this.stV = this.st.volts * (1 - 0.02 * bc);
+      this.stR = this.st.ohms * (1 + 0.06 * bc);
       this.stKickC += 0.6;
     }
     if (!this.running) {
       // The ECU fires only once it has seen the cam and crank signals (a
       // dry-sump race engine is spun up for oil pressure first; a magneto
-      // sparks at once), and a cold port wall soaks up the first squirts.
+      // sparks at once), and a port wall below about 60 °C soaks up the
+      // first squirts as a film, more of them the colder it is.
       this.crankRevs = 0;
       this.syncRevs = this.kick ? 0.05 : (this.st.type === 'external' ? 7 : 1.1) + 1.3 * rnd();
-      this.filmLeft = cold ? Math.round(this.n * (0.3 + 0.4 * rnd())) + 1 : 0;
+      const wet = Math.min(2, (333.15 - s.h) / 35);
+      this.filmLeft = wet > 0 ? Math.round(this.n * (0.3 + 0.4 * rnd()) * wet) + 1 : 0;
     }
+  }
+
+  // Ignition on: the fuel pump primes the rail for two seconds (it runs on
+  // while the engine turns), and after a hot soak the rail holds vapour.
+  keyOn() {
+    if (this.kick || this.twoStroke) return;
+    this.pumpT = 2;
+    this.keyOnVapour();
+  }
+
+  pumpControl(dtc) {
+    if (this.pumpT > 0) this.pumpT -= dtc;
+    const on = this.ignition && (this.pumpT > 0 || this.omega > 10) && !this.kick && !this.twoStroke;
+    // the motor spins up in a tenth of a second; as the rail's pressure
+    // comes up the load slows it by a tenth
+    this.pumpP += ((on ? 1 : 0) - this.pumpP) * Math.min(1, dtc / 0.4);
+    const wT = on ? 1 - 0.1 * this.pumpP : 0;
+    this.pumpW += (wT - this.pumpW) * Math.min(1, dtc / (on ? 0.08 : 0.25));
+    if (!on && this.pumpW < 1e-3) this.pumpW = 0;
+  }
+
+  // Fuel pump sound, Pa at 1 m.
+  pumpSound() {
+    const w = this.pumpW;
+    const fs = this.fs;
+    this.pmPh1 += (933 * w) / fs;
+    this.pmPh1 -= Math.floor(this.pmPh1);
+    this.pmPh2 += (3500 * w * (1 + 0.004 * (this.trnd() - 0.5))) / fs;
+    this.pmPh2 -= Math.floor(this.pmPh2);
+    const buzz = Math.sin(TAU * this.pmPh1) + 0.4 * Math.sin(2 * TAU * this.pmPh1 + 0.7);
+    const whine = Math.sin(TAU * this.pmPh2);
+    const rush = this.pmBand.tick(this.trnd() - 0.5) * 20;
+    return (0.0021 * buzz + 0.0042 * whine + 0.0028 * rush * this.pumpP) * w * w;
   }
 
   // Kick start: one stroke of the lever turns the crank ~2.5 times, then the

@@ -1,5 +1,5 @@
 // Classic ivory-faced tachometer with a spring-damped needle, redline band,
-// shift lights and a gear/speed read-out.
+// shift lights, a gear/speed read-out and a small coolant gauge.
 
 const START = (135 * Math.PI) / 180; // lower-left
 const SWEEP = (270 * Math.PI) / 180;
@@ -28,6 +28,8 @@ export class Tach {
     this.blink = 0;
     this.running = false;
     this.fonts = false;
+    this.coolant = null; // K, from the temperature sender
+    this.fan = false;
   }
 
   configure({ limit, idle, label, camSwitch }) {
@@ -155,6 +157,53 @@ export class Tach {
     this.face = off;
   }
 
+  // Coolant gauge in the face's open bottom, C to H (40 to 130 °C): the
+  // pointer is blue while the engine is cold (below 50 °C), red past 110 °C,
+  // and FAN lights while the radiator fan runs.
+  drawCoolant(g, cx, cy, fr) {
+    if (this.coolant == null) return;
+    const T = this.coolant - 273.15;
+    const y = cy + fr * 0.88, w = fr * 0.44, x0 = cx - w / 2;
+    g.strokeStyle = '#8a7f6c';
+    g.lineWidth = Math.max(1, fr * 0.013);
+    g.beginPath();
+    g.moveTo(x0, y);
+    g.lineTo(x0 + w, y);
+    for (let i = 0; i <= 4; i++) {
+      const x = x0 + (w * i) / 4;
+      g.moveTo(x, y);
+      g.lineTo(x, y - fr * (i === 0 || i === 4 ? 0.035 : 0.02));
+    }
+    g.stroke();
+    // the normal band, 80 to 105 °C
+    g.strokeStyle = '#6f8f6a';
+    g.lineWidth = Math.max(1.5, fr * 0.022);
+    g.beginPath();
+    g.moveTo(x0 + (w * 40) / 90, y + fr * 0.02);
+    g.lineTo(x0 + (w * 65) / 90, y + fr * 0.02);
+    g.stroke();
+    g.font = `700 ${Math.round(fr * 0.06)}px "Barlow Semi Condensed", "Arial Narrow", sans-serif`;
+    g.fillStyle = '#5b5346';
+    g.textAlign = 'right';
+    g.fillText('C', x0 - fr * 0.02, y - fr * 0.005);
+    g.textAlign = 'left';
+    g.fillText('H', x0 + w + fr * 0.02, y - fr * 0.005);
+    if (this.fan) {
+      g.fillStyle = '#1f6fb2';
+      g.fillText('FAN', x0 + w + fr * 0.085, y - fr * 0.005);
+    }
+    const f = Math.max(0, Math.min(1, (T - 40) / 90));
+    const px = x0 + w * f;
+    g.fillStyle = T < 50 ? '#1f6fb2' : T > 110 ? '#d62f27' : '#17140f';
+    g.beginPath();
+    g.moveTo(px, y - fr * 0.012);
+    g.lineTo(px - fr * 0.03, y - fr * 0.07);
+    g.lineTo(px + fr * 0.03, y - fr * 0.07);
+    g.closePath();
+    g.fill();
+    g.textAlign = 'center';
+  }
+
   update(dt) {
     // second-order needle: quick with a hint of overshoot
     const k = 900, c = 48;
@@ -223,6 +272,7 @@ export class Tach {
       g.fillText(warn[0], cx, y + fr * 0.002);
     }
     this.knock *= 0.92;
+    this.drawCoolant(g, cx, cy, fr);
 
     // needle
     const a = this.angleFor(this.pos);

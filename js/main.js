@@ -7,6 +7,7 @@
 //   actions.js    what each control does; start and stop
 //   telemetry.js  worklet messages -> screen
 //   modes.js      rev, drive, flyby, scenes, dyno run
+//   thermal.js    the engine's temperatures between visits
 //   mixer.js, ab.js, follow.js, prefs.js, platform.js
 //
 // These modules import each other freely, cycles included. That is safe as
@@ -29,6 +30,7 @@ import { abSwitch } from './app/ab.js';
 import { drawFlyby, sceneGo, setMode, toggleScenePick } from './app/modes.js';
 import { action, start, startStop } from './app/actions.js';
 import { updateReadouts } from './app/telemetry.js';
+import { saveThermal } from './app/thermal.js';
 
 // ------------------------------------------------------------------- loop
 let lastT = performance.now();
@@ -187,9 +189,12 @@ function wire() {
     },
     { passive: false }
   );
+  // keep the engine's temperatures for next time
+  window.addEventListener('pagehide', () => saveThermal(true));
   document.addEventListener('visibilitychange', () => {
     if (!app.started) return;
     if (document.hidden) {
+      saveThermal(true);
       app.audio.suspend();
       screenAwake(false);
     } else resumeSound();

@@ -31,6 +31,7 @@ export class MechanicalMethods {
     this.seatEx = m.seatEx;
     this.lashIn = m.lashIn;
     this.lashEx = m.lashEx;
+    this.hydJ = m.hydLash; // a bled-down hydraulic lifter's tick (sim/thermal.js)
     this.vtRpmK = 1 / m.designRpm;
     this.slapK = m.slap.k;
     this.slapA = m.slap.area;
