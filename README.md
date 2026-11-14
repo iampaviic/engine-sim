@@ -51,6 +51,7 @@ Each engine's character comes out of its geometry: firing order, crank and bank 
 | Hot-Vee V8 | 4.0 L cross-plane V8, twin turbos inside the vee |
 | Turbo Five | 2.5 L inline-5 turbo, fires 1-2-4-5-3 |
 | Two-Stroke Single | 250 cc motocross two-stroke: reed valve, power valve, expansion chamber, kick start |
+| Two-Stroke V12 | 1.5 L concept: twelve 125 cc race cylinders firing every 30°, a reed valve, power valve and expansion chamber each |
 | Sequential Six | 3.0 L inline-6 as it left the factory: one turbo low down, both above 4,000 rpm |
 | Group A Six | 2.6 L short-stroke inline-6, parallel twin turbos, six throttles, 8,000 rpm, all-wheel drive |
 | Takumi V6 | 3.8 L 60° V6, a turbo per bank, dual-clutch all-wheel-drive coupe |
