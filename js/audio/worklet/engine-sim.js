@@ -155,7 +155,9 @@ export class EngineSim {
     this.mdTh = 0;
     this.mdThPrev = 0;
     this.runnerFlow = 0;
-    this.runnerFlowPrev = 0;
+    this.itb = cfg.itb ? 1 : 0;
+    this.mapA = lpCoef(25, fs); // the manifold pressure rail of individual throttles
+    this.mdLp = 0;
     this.Ath = cfg.throttleArea;
     // air that gets past a closed throttle: less on a small engine
     this.thrLeak = 2e-6 * clamp(cfg.dispLitres, 0.25, 1);
@@ -457,7 +459,6 @@ export class EngineSim {
     this.ibLp2 = 0;
     this.ibRes1 = 0;
     this.ibRes2 = 0;
-    this.itbLp = 0;
     this.hissLp = 0;
     this.roadLp = 0;
     this.windLp1 = 0;
@@ -536,9 +537,7 @@ export class EngineSim {
     // per-sample constants
     this.thrK = lpCoef(6, fs);
     this.ibA = lpCoef(cfg.airbox === 'open' ? 5200 : cfg.airbox === 'ram' ? 2600 : 900, fs);
-    this.itbA = lpCoef(6500, fs);
     this.hissA = lpCoef(700, fs);
-    this.itb = cfg.itb ? 1 : 0;
     this.rasp26 = 26 * cfg.sound.rasp;
     this.exG = INV4PI * cfg.sound.exhaust;
     this.initStarter(cfg);

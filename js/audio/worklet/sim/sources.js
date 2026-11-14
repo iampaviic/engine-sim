@@ -13,8 +13,8 @@ export class SourceMethods {
     const snd = this.snd;
     const src = this.srcBuf;
 
-    // Snorkel/airbox: d/dt of throttle mass flow through a low-pass airbox;
-    // ITB/velocity stacks radiate the runner mouths directly.
+    // Snorkel/airbox: d/dt of throttle mass flow (with individual throttles,
+    // the flow through the bell mouths) through a low-pass airbox.
     let dq = (this.mdTh - this.mdThPrev) * fs;
     this.mdThPrev = this.mdTh;
     // throttle hiss: the jet through a nearly closed plate, growing as the
@@ -28,13 +28,7 @@ export class SourceMethods {
     const ibA = this.ibA;
     this.ibLp1 += ibA * (dq - this.ibLp1);
     this.ibLp2 += ibA * (this.ibLp1 - this.ibLp2);
-    let intake = this.ibLp2 * (1 - this.itb * 0.6);
-    if (this.itb) {
-      const dr = (this.runnerFlow - this.runnerFlowPrev) * fs;
-      this.itbLp += this.itbA * (dr - this.itbLp);
-      intake += this.itbLp * 0.55;
-    }
-    this.runnerFlowPrev = this.runnerFlow;
+    let intake = this.ibLp2;
     intake = intake * INV4PI * snd.intake + this.turboSnd;
     if (this.nosFlow > 0 || this.purgeFlow > 0 || this.nosClick > 0 || this.nosRing > 0) intake += this.nitrousSound();
 

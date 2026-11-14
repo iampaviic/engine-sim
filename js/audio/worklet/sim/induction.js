@@ -13,7 +13,8 @@ export class InductionMethods {
     this.scRatio = (Ut * 1.3) / (this.tRtip * (this.redline / 9.5493) * 3.2);
   }
 
-  // Intake runner junctions, plenum boundary and throttle flow.
+  // Intake runner junctions, then the throttle: one butterfly feeding a
+  // plenum, or one in each runner.
   stepIntake() {
     const inn = this.inn;
     const inIn = inn.inW, inOut = inn.outW, inY = inn.Y;
@@ -34,9 +35,70 @@ export class InductionMethods {
         inOut[e] = pj - inIn[e];
       }
     }
+    const dt = this.dt;
+    const boosted = this.boosted;
+    const pUp = boosted ? this.pB : P_AMB;
+    const Tup = boosted ? this.TB : T_AMB;
+    // butterfly area vs opening, every sample: a stepped area would buzz
+    const th = this.thr > 0 ? (this.thr < 1 ? this.thr : 1) : 0;
+    this.thrArea = this.Ath * 0.82 * th * Math.sqrt(th * Math.sqrt(th)); // th^1.75
+    this.bypassS += this.bypassStep;
+    const A = this.thrArea + this.bypassS + this.thrLeak;
+    const pls = inn.plenums;
+    if (this.itb) {
+      // Individual throttles: there is no plenum. Each runner ends at its own
+      // butterfly, and beyond that is the bell mouth and the air it breathes
+      // (the airbox, or a boosted engine's charge pipe). The plate is an
+      // orifice between that air and the runner's end, solved against the
+      // runner's wave impedance: shut, it is a closed end the runner's waves
+      // bounce off; wide open, a pressure release like a plenum. With the
+      // plates cracked each runner refills on its own between its cylinder's
+      // gulps, so the flow through every bell mouth pulses even at idle.
+      //   A plate in a pipe is not a hole into a plenum: the jet past it
+      // spreads back out to the full bore and gets most of its pressure back
+      // (Borda-Carnot: the loss is (1/(Cc b) - 1)^2 dynamic heads for an open
+      // fraction b), and wide open it is a thin disc edge-on to the flow,
+      // worth about 0.2 of a head (Idelchik, Handbook of Hydraulic
+      // Resistance, butterfly valves). As an equivalent orifice area:
+      const beta = th * Math.sqrt(th * Math.sqrt(th));
+      const cb = (0.82 + 0.18 * beta) * beta;
+      const Aeq = (this.Ath * cb) / Math.sqrt((1 - cb) * (1 - cb) + 0.2 * cb * cb) + this.bypassS + this.thrLeak;
+      const rhoUp = pUp / (R * Tup), sqT = Math.sqrt(Tup);
+      const pUpG = pUp - P_AMB;
+      let md = 0, ps = 0, ne = 0;
+      for (let i = 0; i < pls.length; i++) {
+        const nd = pls[i];
+        const st = es[nd], cnt = ec[nd];
+        const Ae = Aeq / cnt;
+        for (let k = 0; k < cnt; k++) {
+          const e = ends[st + k];
+          const Z = 1 / inY[e];
+          const p0 = 2 * inIn[e]; // the end's pressure with no flow through the plate
+          const D = pUpG - p0;
+          let q;
+          if (D >= 0) q = orifice(Ae, D, rhoUp, Z, pUp, sqT, CHOKE_AIR);
+          else {
+            const pe = p0 + P_AMB;
+            q = -orifice(Ae, -D, pe / (R * this.Tpl), Z, pe, Math.sqrt(this.Tpl), CHOKE_AIR);
+          }
+          inOut[e] = inIn[e] + q * Z;
+          md += q;
+          ps += p0 + q * Z;
+          ne++;
+        }
+      }
+      this.mdTh = md;
+      this.runnerFlow = md;
+      // The manifold pressure the ECU reads comes from a small rail joined to
+      // every runner through restrictors: their average, smoothed.
+      this.pPl += this.mapA * (P_AMB + ps / ne - this.pPl);
+      this.mdLp += this.mapA * (md - this.mdLp);
+      // nitrous fogs into each runner and leaves with the air passing it
+      this.nosX = this.nosFlow > 0 ? this.nosFlow / (this.nosFlow + (this.mdLp > 1e-4 ? this.mdLp : 1e-4)) : 0;
+      return;
+    }
     const pg = this.pPl - P_AMB;
     let qr = 0;
-    const pls = inn.plenums;
     for (let i = 0; i < pls.length; i++) {
       const nd = pls[i];
       const st = es[nd], cnt = ec[nd];
@@ -48,17 +110,8 @@ export class InductionMethods {
     }
     this.runnerFlow = qr;
     // throttle (implicit against plenum compliance)
-    const dt = this.dt;
-    const boosted = this.boosted;
-    const pUp = boosted ? this.pB : P_AMB;
-    const Tup = boosted ? this.TB : T_AMB;
     const kpl = (R * this.Tpl * dt) / this.Vpl;
     const pPred = this.pPl - kpl * qr;
-    // butterfly area vs opening, every sample: a stepped area would buzz
-    const th = this.thr > 0 ? (this.thr < 1 ? this.thr : 1) : 0;
-    this.thrArea = this.Ath * 0.82 * th * Math.sqrt(th * Math.sqrt(th)); // th^1.75
-    this.bypassS += this.bypassStep;
-    const A = this.thrArea + this.bypassS + this.thrLeak;
     const D = pUp - pPred;
     let md;
     if (D >= 0) md = orifice(A, D, pUp / (R * Tup), kpl, pUp, Math.sqrt(Tup), CHOKE_AIR);
