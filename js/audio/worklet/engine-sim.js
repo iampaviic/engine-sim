@@ -4,6 +4,7 @@
 
 import { AFR_ST, CHOKE_AIR, CV, DYN_WASTEGATE, INV4PI, N_SRC, P_AMB, PI, R, RAD2DEG, T_AMB, TAU } from './constants.js';
 import { Band4, clamp, crossed, lpCoef, Modes } from './dsp.js';
+import { Inlet } from './inlet.js';
 import { Net } from './net.js';
 import { ListenMethods } from './listener.js';
 import { EcuMethods } from './sim/ecu.js';
@@ -153,7 +154,22 @@ export class EngineSim {
     this.pPl = P_AMB;
     this.mPl = (P_AMB * this.Vpl) / (R * T_AMB);
     this.mdTh = 0;
-    this.mdThPrev = 0;
+    // The inlet tract (airbox and snorkel) and what drives it: the flow it
+    // feeds, the throttle's jet noise and edge tone.
+    this.inlet = new Inlet(cfg.inlet, fs);
+    this.inFlow = 0;
+    this.inPrev = 0;
+    this.inMean = 0;
+    this.inMeanA = lpCoef(8, fs);
+    this.jetW = 0;
+    this.jetG = 0;
+    this.jet1 = this.jet2 = 0;
+    this.jetA1 = this.jetA2 = this.jetA3 = 0;
+    this.edgeA = 0;
+    this.edgeF = 0;
+    this.edgePh = 0;
+    this.edgeJit = 0;
+    this.bovSnd = 0;
     this.runnerFlow = 0;
     this.itb = cfg.itb ? 1 : 0;
     this.mapA = lpCoef(25, fs); // the manifold pressure rail of individual throttles
@@ -180,8 +196,6 @@ export class EngineSim {
     this.wt = 0; // turbo shaft speed (rad/s), aggregated over turbos
     this.mc = 0; // compressor mass flow (Greitzer state)
     this.mcPrev = 0;
-    this.mcLp = 0;
-    this.mcHp = 0;
     // turbo voice: surge activity and pulse bursts, band-limited noises for
     // the whoosh and the stalled wheel, the blade tone's wobble and halo
     this.sgAct = 0;
@@ -202,8 +216,6 @@ export class EngineSim {
     this.sgX1 = this.sgX2 = this.sgY1 = this.sgY2 = 0;
     this.bovBand = new Band4(3000, 0.5, fs);
     this.sgK = 32;
-    this.sgLpA = lpCoef(392, fs);
-    this.sgHpA = lpCoef(28, fs);
     this.pBrate = 0;
     this.pBprev = P_AMB;
     this.wg = 0; // wastegate opening 0..1
@@ -455,11 +467,8 @@ export class EngineSim {
     // Sound bits
     this.snd = cfg.sound;
     this.srcBuf = new Float64Array(N_SRC);
-    this.ibLp1 = 0;
-    this.ibLp2 = 0;
     this.ibRes1 = 0;
     this.ibRes2 = 0;
-    this.hissLp = 0;
     this.roadLp = 0;
     this.windLp1 = 0;
     this.windLp2 = 0;
@@ -536,8 +545,6 @@ export class EngineSim {
     this.lastPost = 0;
     // per-sample constants
     this.thrK = lpCoef(6, fs);
-    this.ibA = lpCoef(cfg.airbox === 'open' ? 5200 : cfg.airbox === 'ram' ? 2600 : 900, fs);
-    this.hissA = lpCoef(700, fs);
     this.rasp26 = 26 * cfg.sound.rasp;
     this.exG = INV4PI * cfg.sound.exhaust;
     this.initStarter(cfg);

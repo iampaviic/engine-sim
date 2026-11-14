@@ -1025,6 +1025,52 @@ export function nitrousSpec(spec, litres) {
 }
 
 // ---------------------------------------------------------------------------
+// Inlet tract: the airbox and snorkel, sized from the air the engine uses
+//
+// Every size here follows from the free air drawn at the rev limit,
+// Q = displacement x rev limit / 2 (x pressure ratio when boosted):
+//
+//   stock  An airbox of four times the displacement (the intake designer's
+//          usual three to five; 3-20 L), its snorkel 0.3 m long and sized
+//          for 40 m/s at Q, a pleated paper element losing 1.5 kPa at Q.
+//          A 2 L four gets an 8 L box and a 60 mm snorkel, tuned near 50 Hz.
+//   ram    The same box fed by a short, wide forward-facing duct (0.15 m,
+//          20 m/s) through a freer element (1 kPa): tuned near 110 Hz, and
+//          a much smaller step in area, so it silences far less.
+//   open   No box. A cone of oiled gauze (0.4 kPa) on a 0.3 m pipe of the
+//          throttle's bore. On individual throttles it is socks on the bell
+//          mouths, and on a compressor it sits on the compressor's own inlet
+//          pipe: both radiate directly.
+//
+// The worklet's Inlet (worklet/inlet.js) turns these into its two pipes.
+// ---------------------------------------------------------------------------
+function inletSpec(spec, displacement) {
+  const it = spec.intake ?? {};
+  const ind = spec.induction ?? {};
+  const kind = it.airbox ?? 'stock';
+  const boosted = (ind.type ?? 'na') !== 'na';
+  const Q = (displacement * (spec.ecu?.limit ?? 6500)) / 120 * (1 + (boosted ? ind.boost ?? 0 : 0));
+  const mdot = 1.184 * Q;
+  const thrArea = (Math.PI * Math.pow(mm(it.throttleDia ?? 80), 2)) / 4 * (it.throttleCount ?? 1);
+  if (kind === 'open') {
+    return { box: false, direct: !!it.itb || boosted, lb: 0.3, sb: thrArea, ls: 0, ss: thrArea, filt: 400 / mdot, flow: mdot };
+  }
+  const V = Math.min(0.02, Math.max(0.003, 4 * displacement));
+  const lb = Math.cbrt(4 * V); // a box twice as long as it is wide and deep
+  const ram = kind === 'ram';
+  return {
+    box: true,
+    direct: false,
+    lb,
+    sb: V / lb,
+    ls: ram ? 0.15 : 0.3,
+    ss: Math.max(6e-4, Q / (ram ? 20 : 40)),
+    filt: (ram ? 1000 : 1500) / mdot,
+    flow: mdot,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Mechanical noise: the sound of the engine's own parts hitting each other,
 // radiated by its structure. Everything here is worked out from the engine's
 // dimensions, so a big pushrod V8 and a small twin-cam four differ the way
@@ -1353,6 +1399,7 @@ export function compileEngine(spec) {
     starter: starterSpec(spec, dispLitres, compressionTorque(g, cylOffset, twoStroke ? exLo.close : inLo.close, exLo.open), (displacement / (4 * Math.PI)) * 1.52e5 * (spec.friction ?? 1)),
     nitrous: nitrousSpec(spec, dispLitres),
     mech: mechSpec(spec, g, dispLitres, twoStroke),
+    inlet: inletSpec(spec, displacement),
     combustion: spec.combustion ?? 0.8,
     burnScale: spec.burnScale ?? 1,
     stroke: mm(spec.stroke ?? 70),
@@ -1376,7 +1423,6 @@ export function compileEngine(spec) {
     },
     sound: {
       exhaust: snd.exhaust ?? 1,
-      intake: snd.intake ?? 1,
       mech: snd.mech ?? 1,
       valvetrain: snd.valvetrain ?? 'dohc',
       rasp: snd.rasp ?? 1,

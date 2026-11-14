@@ -201,6 +201,7 @@ export class EcuMethods {
     // idle air moves in control-rate steps; ramp it so the flow through the
     // throttle (heard at the intake) has no 1.5 kHz staircase in it
     this.bypassStep = (this.bypass - this.bypassS) / 32;
+    this.throttleNoise();
 
     // Boost control
     if (this.isTurbo || this.isCentri) {
