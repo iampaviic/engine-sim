@@ -34,7 +34,7 @@ export function setMode(m) {
     app.audio.post({ type: 'mode', mode: m });
     app.audio.post({ type: 'camera', camera: app.camera });
     $('flybyStrip').hidden = true;
-    if (m === 'drive') toast('First gear. Floor it');
+    if (m === 'drive') toast(app.gearbox === 'manual' ? 'Neutral. Clutch in, then shift up for first' : 'First gear. Floor it');
   }
   app.timer = { state: 'idle', t0: 0, result: app.timer.result };
 }

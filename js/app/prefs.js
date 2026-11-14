@@ -1,9 +1,10 @@
 // Preferences the user sets: camera, environment, quality, volume, units,
-// sharing the speaker with other apps, keeping the screen awake.
+// the gearbox, sharing the speaker with other apps, keeping the screen awake.
 
 import { sprint, units } from '../ui/units.js';
 import { call, EngineAudio } from '../platform/native.js';
 import { $, app, store } from './state.js';
+import { toast } from './ui.js';
 import { applyAudioSessionType, screenAwake } from './platform.js';
 
 app.setCamera = (c) => {
@@ -31,6 +32,26 @@ app.setVolume = (v) => {
   $('vol').value = v;
   app.audio.setVolume(v);
 };
+
+// The gearbox, the same for every engine: 'auto' (it shifts, its clutch),
+// 'paddles' (you shift, its clutch) or 'manual' (you shift, your clutch).
+app.gearbox = store.get('gearbox', 'auto');
+app.setGearbox = (g) => {
+  app.gearbox = g;
+  store.set('gearbox', g);
+  app.setTune({ autoShift: g === 'auto', manual: g === 'manual' });
+  syncGearboxUI();
+  if (g === 'manual' && app.started && app.mode === 'drive') {
+    const t = app.tel;
+    if (!t?.gear) toast('Neutral. Clutch in, then shift up for first');
+  }
+};
+// the third pedal shows only with a manual gearbox
+export function syncGearboxUI() {
+  const man = app.gearbox === 'manual';
+  document.body.classList.toggle('manual', man);
+  $('clutch').hidden = !man;
+}
 
 // ---------------------------------------------------------------- settings
 app.setUnits = (u) => {

@@ -2682,3 +2682,125 @@ button {
     width: 110px;
   }
 }
+
+/* ------------------------------------------------------- manual gearbox */
+/* The clutch, a third pedal: the left thumb works it as a left foot would,
+   and the right thumb moves between brake and throttle, as a right foot
+   does. Shown only with the manual gearbox. */
+.pedal.clutch .pedal-fill {
+  background: linear-gradient(to top, rgba(120, 168, 230, 0.75), rgba(120, 168, 230, 0.3));
+}
+.key-clutch {
+  display: none;
+}
+body.manual .key-clutch {
+  display: inline;
+}
+body.manual .deck {
+  grid-template-columns: 110px minmax(0, 1fr) 96px 150px;
+}
+body.manual .deck .clutch {
+  grid-column: 1;
+  grid-row: 1;
+}
+body.manual .deck .deck-mid {
+  grid-column: 2;
+  grid-row: 1;
+}
+body.manual .deck .brake {
+  grid-column: 3;
+  grid-row: 1;
+}
+body.manual .deck .gas {
+  grid-column: 4;
+  grid-row: 1;
+}
+/* phones, portrait: narrower pedals; the throttle pedal blips */
+@media (max-width: 760px) and (min-height: 521px), (max-width: 760px) and (orientation: portrait) {
+  body.manual .deck {
+    grid-template-columns: 52px minmax(0, 1fr) 44px 70px;
+  }
+  body.manual .deck-mid > .deck-row:nth-child(2) {
+    gap: 10px;
+  }
+  body.manual #blipBtn {
+    display: none;
+  }
+}
+@media (max-width: 380px) and (orientation: portrait) {
+  body.manual .deck {
+    grid-template-columns: 46px minmax(0, 1fr) 40px 60px;
+    gap: 7px;
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+}
+@media (max-width: 340px) and (orientation: portrait) {
+  body.manual .deck {
+    gap: 6px;
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+  body.manual .paddle {
+    width: 38px;
+    height: 38px;
+  }
+  body.manual .start {
+    width: 56px;
+    height: 56px;
+  }
+  body.manual .deck-mid > .deck-row:nth-child(2) {
+    gap: 8px;
+  }
+}
+/* phones, landscape: clutch at the left thumb, brake and throttle at the right */
+@media (max-height: 520px) and (orientation: landscape) {
+  body.manual .app {
+    grid-template-columns: 88px minmax(0, 1fr) 58px 96px;
+  }
+  body.manual .deck .clutch {
+    grid-column: 1;
+    grid-row: 2;
+    margin: 6px 0 10px 10px;
+  }
+  body.manual .deck .brake {
+    grid-column: 3;
+    grid-row: 2;
+    margin: 6px 0 10px 0;
+  }
+  body.manual .deck .gas {
+    grid-column: 4;
+    grid-row: 2;
+    margin: 6px 10px 10px 0;
+  }
+  body.manual #blipBtn {
+    display: none;
+  }
+  /* the controls' pill sits over the middle column, clear of the pedals */
+  body.manual .deck-mid {
+    left: calc(50% - 33px);
+  }
+}
+/* the smallest phones */
+@media (max-width: 340px) and (orientation: portrait) {
+  body.manual .modes button {
+    padding: 4px 7px;
+    font-size: 9.5px;
+    letter-spacing: 0.06em;
+  }
+}
+@media (max-height: 520px) and (orientation: landscape) and (max-width: 700px) {
+  body.manual .deck-mid {
+    flex-wrap: wrap;
+    justify-content: center;
+    width: calc(100vw - 88px - 154px - 12px);
+    border-radius: 18px;
+    padding: 4px 6px;
+    gap: 4px;
+  }
+  body.manual .deck-mid > .deck-row {
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 4px 6px;
+  }
+}

@@ -57,6 +57,7 @@ export function tickToast(dt) {
 export const controls = new Controls({
   gas: $('gas'),
   brake: $('brake'),
+  clutch: $('clutch'),
   gasVal: $('gasVal'),
   onAction: (a, v) => action(a, v),
 });

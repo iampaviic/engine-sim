@@ -23,7 +23,7 @@ import { $, app, store } from './app/state.js';
 import { carPanel, controls, garage, schem, scope, selectTab, settings, syncTabs, tach, tickToast, toast, view3d, workshop } from './app/ui.js';
 import { loadEngine } from './app/engine.js';
 import './app/follow.js';
-import { syncUnitsUI } from './app/prefs.js';
+import { syncGearboxUI, syncUnitsUI } from './app/prefs.js';
 import { initNative, resumeSound, screenAwake } from './app/platform.js';
 import './app/mixer.js';
 import { abSwitch } from './app/ab.js';
@@ -40,10 +40,12 @@ function frame(now) {
   controls.update(dt);
   if (app.started) {
     const p = +controls.pedal.toFixed(3), b = +controls.brake.toFixed(3);
-    if (p !== app.sentPedal || b !== app.sentBrake) {
-      app.audio.post({ type: 'input', pedal: p, brake: b });
+    const c = app.gearbox === 'manual' ? +controls.clutch.toFixed(3) : 0;
+    if (p !== app.sentPedal || b !== app.sentBrake || c !== app.sentClutch) {
+      app.audio.post({ type: 'input', pedal: p, brake: b, clutch: c });
       app.sentPedal = p;
       app.sentBrake = b;
+      app.sentClutch = c;
     }
   }
   tach.update(dt);
@@ -202,6 +204,7 @@ function wire() {
   scope.mode = store.get('tab', 'wave');
   syncTabs();
   syncUnitsUI();
+  syncGearboxUI();
   holdToRev($('wsRev'));
   holdToRev($('mRev'));
   $('flybyStrip').addEventListener('click', () => {

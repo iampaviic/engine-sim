@@ -769,12 +769,15 @@ export class Workshop {
       g,
       'Gearbox',
       [
-        [true, 'Automatic'],
-        [false, 'Manual paddles'],
+        ['auto', 'Automatic'],
+        ['paddles', 'Paddles'],
+        ['manual', 'Manual'],
       ],
-      tune.autoShift,
-      (v) => app.setTune({ autoShift: v }),
-      'With manual paddles nothing stops you from shifting down too early: the wheels drag the engine past redline.'
+      app.gearbox,
+      (v) => app.setGearbox(v),
+      app.gearbox === 'manual'
+        ? 'Your clutch (Shift, the left pedal, or the left stick pulled back) and your gears. Let the clutch out at idle and the engine stalls; without the clutch a gear comes out only off the load and goes in only with the revs matched, or it grinds.'
+        : 'Paddles: you choose the gears and the clutch works itself. Nothing stops you from shifting down too early: the wheels drag the engine past redline.'
     );
   }
 
