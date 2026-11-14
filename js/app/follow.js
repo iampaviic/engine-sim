@@ -36,13 +36,11 @@ app.follow = new CarFollow(
 );
 Object.defineProperty(app, 'following', { get: () => app.follow.on });
 app.openCar = () => {
-  if (!app.requirePro('Following your car is part of Pro')) return;
   workshop.hide();
   $('scenePick').hidden = true;
   carPanel.show();
 };
 app.startFollow = (kind) => {
-  if (!app.requirePro('Following your car is part of Pro')) return;
   // Bluetooth and motion permissions have to be asked for inside the tap,
   // so the source starts first; the sound starts alongside
   const p = app.follow.start(kind);

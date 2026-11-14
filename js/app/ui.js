@@ -15,8 +15,6 @@ import { MapEditor } from '../ui/maps.js';
 import { CarPanel } from '../ui/carlink.js';
 import { Settings } from '../ui/settings.js';
 import { loadBuilds, saveBuilds } from '../engine/builder.js';
-import { Paywall } from '../ui/paywall.js';
-import { FREE } from '../config.js';
 import { $, app, store } from './state.js';
 import { allEngines, engineById, loadEngine } from './engine.js';
 import { action } from './actions.js';
@@ -69,8 +67,7 @@ export const garage = new Garage({
   filters: $('garageFilters'),
   close: $('garageClose'),
   getEngines: allEngines,
-  isLocked: (id) => app.isLockedEngine(id),
-  onPick: (id) => (app.isLockedEngine(id) ? app.previewEngine(id) : loadEngine(id, { autostart: true })),
+  onPick: (id) => loadEngine(id, { autostart: true }),
   onBuild: () => app.openBuilder({ from: 'new' }),
   onEdit: (id) => {
     const s = engineById(id);
@@ -86,7 +83,6 @@ export const garage = new Garage({
   },
 });
 
-export const paywall = new Paywall({ root: $('paywall'), app });
 export const workshop = new Workshop({ root: $('workshop'), body: $('wsBody'), close: $('wsClose'), reset: $('wsReset'), app });
 export const settings = new Settings({ root: $('settings'), body: $('setBody'), close: $('setClose'), app });
 export const builder = new Builder({ root: $('builder'), app, presets: PRESETS });
@@ -103,10 +99,6 @@ app.openBuilder = (opts) => {
     toast('The builder makes four-strokes and rotaries. Tune this one in the workshop.');
     return;
   }
-  if ((opts?.from ?? 'current') === 'current' && !opts?.design && app.isLockedEngine(app.presetId)) {
-    app.requirePro(`Building on ${app.factory.name} is part of Pro`);
-    return;
-  }
   workshop.hide();
   garage.hide();
   builder.show(opts);
@@ -118,9 +110,7 @@ app.openBuilder = (opts) => {
 // tabs only pick the instrument. Matches the phone layout in style.css.
 export const phoneMQ = matchMedia('(max-width: 760px) and (min-height: 521px), (max-width: 760px) and (orientation: portrait)');
 app.view = store.get('view', 'engine');
-const TAB_NAMES = { spec: 'The spectrum', pv: 'The p–V diagram', dyno: 'The dyno', '3d': 'The 3D engine' };
 export function selectTab(mode) {
-  if (!FREE.tabs.has(mode) && !app.requirePro(`${TAB_NAMES[mode] ?? 'This instrument'} is part of Pro`)) return;
   if (mode === 'engine') app.view = 'engine';
   else {
     app.view = 'scope';

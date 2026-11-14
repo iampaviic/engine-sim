@@ -3,7 +3,7 @@
 
 import { AppPlugin, call, EngineAudio, isNative, platform, StatusBar } from '../platform/native.js';
 import { $, app } from './state.js';
-import { builder, carPanel, garage, mapEd, paywall, settings, toast, workshop } from './ui.js';
+import { builder, carPanel, garage, mapEd, settings, toast, workshop } from './ui.js';
 import { setMode } from './modes.js';
 
 // --------------------------------------------------------------- platform
@@ -64,8 +64,7 @@ function armTapResume(msg = 'Tap anywhere to bring the sound back') {
 
 // Android back button: close the top-most sheet, leave a scene, then exit.
 function handleBack() {
-  if (paywall.open) paywall.hide();
-  else if (!$('slip').hidden) $('slipClose').click();
+  if (!$('slip').hidden) $('slipClose').click();
   else if (settings.open) settings.hide();
   else if (builder.open) builder.hide();
   else if (mapEd.open) mapEd.hide();

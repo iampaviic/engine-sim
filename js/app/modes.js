@@ -3,8 +3,6 @@
 
 import { SCENES, timeSlip, vmaxSlip } from '../ui/scenes.js';
 import { speedText } from '../ui/units.js';
-import { pro } from '../platform/purchases.js';
-import { FREE } from '../config.js';
 import { $, app, store } from './state.js';
 import { carPanel, mapEd, scope, selectTab, toast } from './ui.js';
 import { describeMods } from './engine.js';
@@ -13,7 +11,6 @@ import { start } from './actions.js';
 // ------------------------------------------------------------------ modes
 export function setMode(m) {
   if (!app.started) return;
-  if (SCENES[m] && !FREE.scenes.has(m) && !app.requirePro(`${SCENES[m].title} is part of Pro`)) return;
   if (app.dynoActive) stopDyno();
   if (app.dynoHolding && mapEd.open) mapEd.hide();
   app.dynoHolding = false;
@@ -98,8 +95,7 @@ export function toggleScenePick(force) {
     for (const [id, def] of Object.entries(SCENES)) {
       const b = document.createElement('button');
       b.setAttribute('role', 'menuitem');
-      const lock = !pro.active && !FREE.scenes.has(id) ? ' <i class="pro-tag">PRO</i>' : '';
-      b.innerHTML = `<b>${def.title}${lock}</b><span>${def.sub}</span><kbd>${def.key}</kbd>`;
+      b.innerHTML = `<b>${def.title}</b><span>${def.sub}</span><kbd>${def.key}</kbd>`;
       b.addEventListener('click', () => {
         p.hidden = true;
         if (!app.started) start().then(() => setTimeout(() => setMode(id), 600));
@@ -110,8 +106,7 @@ export function toggleScenePick(force) {
     const b = document.createElement('button');
     b.setAttribute('role', 'menuitem');
     b.className = 'pick-car';
-    const lock = !pro.active ? ' <i class="pro-tag">PRO</i>' : '';
-    b.innerHTML = `<b>Follow my car${lock}</b><span>Your own car drives this engine: its revs, pedal and speed from an OBD adapter, or its speed from GPS. Or try the demo drive.</span><kbd>8</kbd>`;
+    b.innerHTML = `<b>Follow my car</b><span>Your own car drives this engine: its revs, pedal and speed from an OBD adapter, or its speed from GPS. Or try the demo drive.</span><kbd>8</kbd>`;
     b.addEventListener('click', () => app.openCar());
     p.appendChild(b);
   }
@@ -168,7 +163,6 @@ function showSlip(id, title, slip) {
 }
 
 export function runDyno() {
-  if (!app.requirePro('The dyno is part of Pro')) return;
   if (!app.started) {
     start().then(() => setTimeout(runDyno, 1500));
     return;

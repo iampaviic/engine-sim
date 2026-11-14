@@ -7,7 +7,7 @@
 //   actions.js    what each control does; start and stop
 //   telemetry.js  worklet messages -> screen
 //   modes.js      rev, drive, flyby, scenes, dyno run
-//   mixer.js, ab.js, follow.js, prefs.js, platform.js, pro.js
+//   mixer.js, ab.js, follow.js, prefs.js, platform.js
 //
 // These modules import each other freely, cycles included. That is safe as
 // long as a module's top level only defines things and assigns to `app`;
@@ -18,10 +18,8 @@ import { ENVIRONMENTS } from './audio/audio.js';
 import { CAMERAS } from './ui/workshop.js';
 import { drawFollowHud } from './ui/carlink.js';
 import { drawSceneHud } from './ui/scenes.js';
-import { onProChange } from './platform/purchases.js';
 import { $, app, store } from './app/state.js';
-import { carPanel, controls, garage, paywall, schem, scope, selectTab, settings, syncTabs, tach, tickToast, toast, view3d, workshop } from './app/ui.js';
-import { syncPro, updatePreviewBar } from './app/pro.js';
+import { carPanel, controls, garage, schem, scope, selectTab, settings, syncTabs, tach, tickToast, toast, view3d, workshop } from './app/ui.js';
 import { loadEngine } from './app/engine.js';
 import './app/follow.js';
 import { syncUnitsUI } from './app/prefs.js';
@@ -53,7 +51,6 @@ function frame(now) {
     if (view3d && !$('view3d').hidden) view3d.draw(schem.crankAt(now / 1000));
   } else scope.draw(app.audio.analyser, app.tel);
   updateReadouts(dt);
-  updatePreviewBar(now);
   if (app.scene) drawSceneHud($('flybyStrip'), app.scene, app.tel, app.scene.cache);
   else if (app.following && !$('flybyStrip').hidden) drawFollowHud($('flybyStrip'), app.follow, app.tel, app.factory.name);
   else drawFlyby();
@@ -99,7 +96,6 @@ function wire() {
   const ab = $('abBtn');
   let abT = 0, unlatched = false;
   ab.addEventListener('pointerdown', (e) => {
-    if (!app.requirePro('A/B compare is part of Pro')) return;
     ab.setPointerCapture(e.pointerId);
     if (app.abLatched) {
       app.abLatched = false;
@@ -132,7 +128,6 @@ function wire() {
   $('blipBtn').addEventListener('click', () => controls.blip());
   const lb = $('launchBtn');
   lb.addEventListener('pointerdown', (e) => {
-    if (!app.requirePro('Launch control is part of Pro')) return;
     lb.setPointerCapture(e.pointerId);
     controls.setLaunch(true);
   });
@@ -207,9 +202,6 @@ function wire() {
   $('flybyStrip').addEventListener('click', () => {
     if (app.following) carPanel.show();
   });
-  onProChange(syncPro);
-  syncPro();
-  $('previewUnlock').addEventListener('click', () => paywall.show({ reason: `${app.factory.name} is one of the Pro engines` }));
   $('settingsBtn').addEventListener('click', () => settings.show());
   $('wsSettings').addEventListener('click', () => settings.show());
   initNative();
@@ -219,6 +211,5 @@ function wire() {
 }
 
 wire();
-if (app.isLockedEngine(app.presetId)) app.presetId = 'v12-65';
 loadEngine(app.presetId);
 requestAnimationFrame(frame);

@@ -6,7 +6,7 @@ import { ENVIRONMENTS } from '../audio/audio.js';
 import { CAMERAS } from '../ui/workshop.js';
 import { call, EngineAudio, isNative } from '../platform/native.js';
 import { $, app } from './state.js';
-import { builder, carPanel, controls, garage, mapEd, paywall, settings, toast, workshop } from './ui.js';
+import { builder, carPanel, garage, mapEd, settings, toast, workshop } from './ui.js';
 import { applyAudioSessionType } from './platform.js';
 import { mixGains } from './mixer.js';
 import { abSwitch } from './ab.js';
@@ -29,16 +29,11 @@ export function action(a, v) {
       toggleScenePick();
       break;
     case 'launch':
-      if (v && !app.requirePro('Launch control is part of Pro')) break;
       if (app.started) app.audio.post({ type: 'input', launch: v });
       $('launchBtn').classList.toggle('held', !!v);
       if (v && app.mode !== 'drive' && app.started) setMode('drive');
       break;
     case 'nos':
-      if (v && !app.requirePro('Nitrous is part of Pro')) {
-        controls.nosHeld = false;
-        break;
-      }
       if (app.started) app.audio.post({ type: 'input', nos: !!v });
       $('nosBtn').classList.toggle('held', !!v);
       break;
@@ -75,14 +70,12 @@ export function action(a, v) {
       app.dynoActive ? stopDyno() : runDyno();
       break;
     case 'ab':
-      if (v && !app.requirePro('A/B compare is part of Pro')) break;
       abSwitch(!!v);
       break;
     case 'builder':
       app.openBuilder({ from: 'current' });
       break;
     case 'escape':
-      paywall.hide();
       settings.hide();
       garage.hide();
       workshop.hide();

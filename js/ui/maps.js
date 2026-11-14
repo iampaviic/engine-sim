@@ -241,12 +241,6 @@ export class MapEditor {
     this.$('mRev').hidden = on;
     const app = this.app;
     if (on) {
-      if (!app.requirePro('The dyno is part of Pro')) {
-        this.$('mDyno').checked = false;
-        this.$('mThrWrap').hidden = true;
-        this.$('mRev').hidden = false;
-        return;
-      }
       app.dynoHold(this.holdRpm());
       app.holdGas(+this.$('mThr').value);
     } else {

@@ -85,10 +85,6 @@ function updateEngineUI() {
 export function loadEngine(id, { autostart = false, keepOff = false } = {}) {
   const wasRunning = app.tel?.running && !keepOff;
   if (mapEd.open) mapEd.hide();
-  if (app.preview && id !== app.preview.id) {
-    app.preview = null;
-    $('previewBar').hidden = true;
-  }
   app.factory = engineById(id);
   // an unsaved builder draft or a deleted build falls back to a real engine
   app.presetId = app.factory.id ?? id;
@@ -103,7 +99,7 @@ export function loadEngine(id, { autostart = false, keepOff = false } = {}) {
   app.dynoPts = [];
   scope.dyno = [];
   scope.dynoPrev = null;
-  if (!app.isLockedEngine(app.presetId)) store.set('engine', app.presetId);
+  store.set('engine', app.presetId);
   updateEngineUI();
   if (app.started) {
     app.audio.post({ type: 'config', cfg: workletConfig(app.compiled), tune: app.tune });
@@ -167,7 +163,6 @@ function restoreMaps() {
   if (m && mapsFit(m, app.spec, app.compiled, app.tune)) app.tune.maps = m;
 }
 app.openMaps = () => {
-  if (!app.requirePro('Tuning maps are part of Pro')) return;
   workshop.hide();
   mapEd.show();
 };

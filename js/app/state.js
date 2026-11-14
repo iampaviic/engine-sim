@@ -5,11 +5,9 @@ import { AudioEngine, ENVIRONMENTS } from '../audio/audio.js';
 import { defaultSpeedUnit, units } from '../ui/units.js';
 import { isNative } from '../platform/native.js';
 import { getItem, setItem, ready as storageReady } from '../platform/storage.js';
-import { initPurchases } from '../platform/purchases.js';
 
 // app storage on phones is read asynchronously, once, before anything uses it
 await storageReady;
-initPurchases();
 
 export const $ = (id) => document.getElementById(id);
 export const store = {
