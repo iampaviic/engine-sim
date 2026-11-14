@@ -2,6 +2,7 @@
 //   node tools/batch.mjs [id ...]
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import { render, writeWav } from './render.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -9,6 +10,15 @@ const { PRESETS } = await import(pathToFileURL(path.join(root, 'js/engine/preset
 const ids = process.argv.slice(2).filter((a) => !a.startsWith('--'));
 const outDir = process.env.OUT || '/tmp';
 const list = ids.length ? PRESETS.filter((p) => ids.includes(p.id)) : PRESETS;
+
+// One process per preset. The worklet's modules load once per process, so
+// engines rendered one after another would share the JIT's type feedback and
+// each cpu figure would depend on which engines ran before it.
+if (list.length > 1) {
+  let failed = 0;
+  for (const p of list) failed |= spawnSync(process.execPath, [fileURLToPath(import.meta.url), p.id], { stdio: 'inherit' }).status;
+  process.exit(failed ? 1 : 0);
+}
 
 for (const p of list) {
   const r = await render(p.id, 'rev');

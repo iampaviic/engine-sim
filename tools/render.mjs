@@ -12,19 +12,24 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
 
 let loadCount = 0;
+// The worklet's modules load once per process, so the stand-in base class
+// their processor extends has to be the same one for every load, and so does
+// the list its port posts to.
+const posted = [];
+globalThis.AudioWorkletProcessor = class {
+  constructor() {
+    this.port = {
+      postMessage: (m) => posted.push(m),
+      onmessage: null,
+    };
+  }
+};
+
 // url: load the worklet from somewhere else (check-bundle.mjs passes the
 // single-script bundle, which carries its own copy of everything).
 export async function loadWorklet(fs = 48000, url = null) {
-  const posted = [];
+  posted.length = 0;
   globalThis.sampleRate = fs;
-  globalThis.AudioWorkletProcessor = class {
-    constructor() {
-      this.port = {
-        postMessage: (m) => posted.push(m),
-        onmessage: null,
-      };
-    }
-  };
   let Proc = null;
   globalThis.registerProcessor = (name, cls) => {
     Proc = cls;
