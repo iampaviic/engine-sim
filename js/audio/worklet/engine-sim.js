@@ -303,6 +303,20 @@ export class EngineSim {
     this.scRatio = ind.ratio;
     this.scDisp = ind.blowerDisp / 1000;
     this.scLobes = ind.lobes;
+    // Pockets that come round per turn of the rotors, their built-in pressure
+    // ratio and the shape of each one's pulse (see stepBlower). A Roots blower
+    // discharges from both rotors in turn, through a helix that smears each
+    // pulse over about half the gap to the next: nearly a pure tone. A
+    // twin-screw has one pocket per lobe of its male rotor and a port that
+    // opens in about a quarter of the gap, so its second harmonic is strong.
+    // (Harmonic k of a pulse smeared over a fraction w of its period is
+    // sinc(k w) / k.)
+    const screw = ind.type === 'twinscrew';
+    this.scPockets = screw ? ind.lobes : 2 * ind.lobes;
+    this.scPi = screw ? 1.5 : 1;
+    this.scH = screw ? [0.9, 0.32, 0.1] : [0.64, 0, 0.07];
+    this.scTq = 0;
+    this.bgPh = 0;
     this.redline = cfg.ecu.limit;
     if (this.isCentri) this.setCentriRatio();
 

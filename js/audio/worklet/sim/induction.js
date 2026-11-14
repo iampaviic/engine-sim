@@ -292,6 +292,7 @@ export class InductionMethods {
       // centrifugal supercharger: gear-driven impeller
       this.wt = omega * this.scRatio * 3.2;
       scTorque = Pc / Math.max(omega, 30);
+      this.scTq = scTorque;
     }
     const Tc = T_AMB * (1 + (Math.pow(Math.max(PR, 1), 0.2857) - 1) / 0.7);
     this.TB = Tc - 0.72 * (Tc - T_AMB);
@@ -387,6 +388,26 @@ export class InductionMethods {
     return scTorque;
   }
 
+  // A centrifugal blower's impeller turns ten times faster than its pulley,
+  // through a pair of straight-cut step-up gears in its own case (61 teeth
+  // driving 19). Their mesh is the whine these blowers are known for: about
+  // 1.5 kHz at idle and beyond 10 kHz at the limit. It is the transmission
+  // error of the loaded mesh shaking a small casing, as the gearbox's is
+  // (mechSpec in compile.js), wobbling with each turn of the big gear.
+  blowerGear(omega) {
+    const fIn = (omega * this.scRatio) / TAU;
+    this.bgPh += fIn / this.fs;
+    this.bgPh -= Math.floor(this.bgPh);
+    const fm = fIn * 61;
+    if (fm < 20 || fm > 0.42 * this.fs) return 0;
+    const th = TAU * 61 * this.bgPh;
+    const s = Math.sin(th), c = Math.cos(th);
+    // (it grows with the torque it carries, about 60 N·m at the crank flat out)
+    const load = 0.35 + 0.65 * clamp(this.scTq / 30, 0, 1.5);
+    const fade = fm < 0.3 * this.fs ? 1 : (0.42 * this.fs - fm) / (0.12 * this.fs);
+    return ((s + s * c + 0.25 * s * (3 - 4 * s * s)) * this.mech.blowerRad * fm * (1 + 0.15 * Math.sin(TAU * this.bgPh)) * load * fade) / (fm * fm + 250000);
+  }
+
   // Band-pass (constant peak gain) at f with quality q.
   setBand(f, q) {
     const w = (TAU * f) / this.fs;
@@ -441,13 +462,26 @@ export class InductionMethods {
     const Tc = T_AMB * (1 + (Math.pow(Math.max(PR, 1), 0.2857) - 1) / eta);
     this.TB = Tc - 0.65 * (Tc - T_AMB);
     this.Tpl = this.TB - this.nosCool;
-    // rotor whine at the lobe-passing frequency
-    this.scPhase += ((wb / TAU) * this.scLobes) / fs;
+    // Rotor whine. The rotors seal against each other and the case by
+    // clearances, and gas leaks back through them from the pressure side to
+    // the inlet: the 12% per unit of pressure ratio that the delivery above
+    // loses. Each pocket coming round makes and breaks those seal lines, so
+    // the leak (and with it the flow the inlet draws) pulses once per pocket
+    // at about half its mean. The inlet tract carries that out as the whine.
+    //   A Roots blower has no compression inside: the leak is driven by the
+    // boost, and with the bypass open at cruise it all but stops. A twin-screw
+    // squeezes each pocket by its built-in ratio (about 1.5) before the port
+    // opens, boost or no boost, so it whines at idle too.
+    const drive = (PR > this.scPi ? PR : this.scPi) - 1;
+    const leak = (P_AMB / (R * T_AMB)) * ((this.scDisp * wb) / TAU) * 0.12 * drive;
+    this.scPhase += ((wb / TAU) * this.scPockets) / fs;
     this.scPhase -= Math.floor(this.scPhase);
     const ph = TAU * this.scPhase;
-    const wv = Math.sin(ph) + 0.45 * Math.sin(2 * ph + 0.3) + 0.2 * Math.sin(3 * ph + 1.1);
-    this.turboSnd = wv * (wb / 1000) * (0.25 + 1.5 * Math.max(0, PR - 1) + 0.6 * msc) * 0.18;
-    this.inFlow = msc;
+    const h = this.scH;
+    const c1 = Math.cos(ph), s1 = Math.sin(ph);
+    const c2 = 2 * c1 * c1 - 1;
+    // (the harmonics' phases are those of a pulse that opens fast and dies away)
+    this.inFlow = msc - 0.5 * leak * (h[0] * c1 + h[1] * (c2 * 0.8 - 2 * s1 * c1 * 0.6) + h[2] * (4 * c1 * c1 * c1 - 3 * c1));
     return P / Math.max(omega, 30);
   }
 }

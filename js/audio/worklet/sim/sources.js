@@ -48,6 +48,7 @@ export class SourceMethods {
     let mech = this.stepMech(rpm, omega) * snd.mech;
     this.axleSnd = 0;
     if (this.gear > 0 && this.clutch > 0.5) mech += this.gearSound();
+    if (this.isCentri) mech += this.blowerGear(omega);
     if (this.stActive) mech += this.starterSound();
 
     // chassis: road, wind, tyre squeal

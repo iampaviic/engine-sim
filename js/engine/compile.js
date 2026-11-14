@@ -1282,6 +1282,9 @@ function mechSpec(spec, g, dispLitres, twoStroke) {
     injector,
     alternator,
     gears,
+    // a centrifugal blower's straight-cut step-up gears, in a casing a
+    // quarter the gearbox's mass and a sixth its area: Pa·Hz at 1 m
+    blowerRad: casing(8e-6) * 4 * Math.sqrt(1 / 6),
   };
 }
 
