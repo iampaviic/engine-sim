@@ -425,8 +425,21 @@ export class EngineSim {
     this.nosClick = 0;
     this.nosRing = 0;
     this.nosSol = new Modes([2350, 3900, 6200], [0.005, 0.0035, 0.0025], [0.9, 0.6, 0.35], fs);
-    this.hsA = lpCoef(5200, fs);
-    this.hsB = lpCoef(900, fs);
+    // The purge jet's hiss: noise between 3 and 12 kHz (see nitrousSound).
+    // hsG scales it to pascals at 1 m per root kg/s; the band's own level is
+    // measured here once, with a throwaway random sequence.
+    this.hsA = lpCoef(Math.min(12000, 0.45 * fs), fs);
+    this.hsB = lpCoef(3000, fs);
+    {
+      let a = 0, b = 0, e = 0, r = 12345;
+      for (let i = 0; i < 4000; i++) {
+        r = (r * 1103515245 + 12345) & 0x7fffffff;
+        a += this.hsA * (r / 0x7fffffff - 0.5 - a);
+        b += this.hsB * (a - b);
+        e += (a - b) * (a - b);
+      }
+      this.hsG = 13.6 / Math.sqrt(e / 4000);
+    }
     this.hs1 = 0;
     this.hs2 = 0;
     this.valveOpen = 0; // exhaust bypass valve 0..1
