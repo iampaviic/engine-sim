@@ -83,7 +83,15 @@ export class EcuMethods {
       this.idleI = 0;
       this.sinceStart = 0;
     }
-    if (this.running && (rpm < 120 || !this.ignition)) this.running = false;
+    if (this.running && (rpm < 120 || !this.ignition)) {
+      // stalled: stopped with the key still on (and the speed it ran at is
+      // gone, so it counts as running again only once it truly runs again)
+      if (this.ignition) {
+        this.evStall++;
+        this.rpmAvg = rpm;
+      }
+      this.running = false;
+    }
 
     // Engine temperature, and what it changes (sim/thermal.js)
     this.thermalControl(dtc, rpm);

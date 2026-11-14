@@ -16,6 +16,7 @@ import { DrivetrainMethods } from './sim/drivetrain.js';
 import { MechanicalMethods } from './sim/mechanical.js';
 import { AeroMethods } from './sim/aero.js';
 import { ThermalMethods } from './sim/thermal.js';
+import { GearboxMethods } from './sim/gearbox.js';
 import { SourceMethods } from './sim/sources.js';
 import { mixin } from './mixin.js';
 
@@ -489,6 +490,24 @@ export class EngineSim {
     this.dynoLoad = 0;
     this.dynoI = 0;
     this.dyno = null;
+    // Manual gearbox (sim/gearbox.js): the driver works the clutch and the
+    // lever, unless a scene, the flyby or a followed car is driving
+    this.manual = false;
+    this.manualOn = false;
+    this.scripted = false; // a scene drives the car
+    this.wIn = 0; // the gearbox input shaft while no gear is engaged, rad/s
+    this.msPhase = 0; // a shift: 0 none, 1 coming out, 2 synchronising, 3 grinding
+    this.msFrom = 0;
+    this.msTo = 0;
+    this.msT = 0;
+    this.msFree = 0; // how long the sleeve has been free to slide off its dogs
+    this.nLo = 0; // in neutral, the gears either side of the lever
+    this.nHi = 1;
+    // events since the last telemetry: stalls, refused gears, and the
+    // largest speed difference a gear ground at (rpm)
+    this.evStall = 0;
+    this.evRefused = 0;
+    this.evGrind = 0;
 
     // Sound bits
     this.snd = cfg.sound;
@@ -576,6 +595,7 @@ export class EngineSim {
     this.boosted = this.isTurbo || this.isSC || this.isCentri;
     this.initMech(cfg);
     this.initThermal(cfg);
+    this.initGearbox(cfg);
     const vh = cfg.vehicle;
     this.axleLoad = vh.mass * 9.81 * (vh.drive === 'awd' ? 1 : vh.rearBias);
     this.loadTransfer = vh.drive === 'awd' ? 0 : vh.mass * 0.2;
@@ -667,4 +687,4 @@ export class EngineSim {
 // methods, copied onto the prototype once, here. After that they are
 // ordinary methods, so a call from the per-sample loop costs what it would
 // if the whole class were written in this file.
-mixin(EngineSim, EcuMethods, CylinderMethods, StarterMethods, InductionMethods, NitrousMethods, DrivetrainMethods, MechanicalMethods, ThermalMethods, AeroMethods, SourceMethods, ListenMethods);
+mixin(EngineSim, EcuMethods, CylinderMethods, StarterMethods, InductionMethods, NitrousMethods, DrivetrainMethods, GearboxMethods, MechanicalMethods, ThermalMethods, AeroMethods, SourceMethods, ListenMethods);

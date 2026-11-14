@@ -73,10 +73,11 @@ export class EngineProcessor extends AudioWorkletProcessor {
         if (this.sim.follow) this.sim.setFollow({ stop: true });
         this.followOn = false;
         this.sim.mode = m.mode;
+        this.sim.scripted = false;
         if (m.mode !== 'drive' && m.mode !== 'flyby') {
           this.sim.gear = 0;
           this.sim.v = 0;
-        } else if (this.sim.gear === 0) this.sim.gear = 1;
+        } else if (this.sim.gear === 0 && !this.sim.manual) this.sim.gear = 1;
         if (m.mode !== 'flyby') this.flyby = null;
         this.scene = null;
         this.clearRoad();
@@ -161,6 +162,7 @@ export class EngineProcessor extends AudioWorkletProcessor {
     if (t.valve != null) sim.valveMode = t.valve;
     if (t.launchRpm != null) sim.launchRpm = t.launchRpm;
     if (t.autoShift != null) sim.autoShift = !!t.autoShift;
+    if (t.manual != null) sim.manual = !!t.manual;
     if (t.bov != null) sim.bovType = t.bov;
     if (t.tc != null) sim.tc = !!t.tc;
     if (t.spark != null) sim.sparkAdj = t.spark;
@@ -187,6 +189,7 @@ export class EngineProcessor extends AudioWorkletProcessor {
       sim.mode = old.mode;
       sim.valveMode = old.valveMode;
       sim.autoShift = old.autoShift;
+      sim.manual = old.manual;
       sim.strobeOn = old.strobeOn;
       sim.tc = old.tc;
       sim.strobeStep = old.strobeStep;
@@ -201,7 +204,7 @@ export class EngineProcessor extends AudioWorkletProcessor {
     if (tune) this.applyTune(sim, tune);
     if (hot && old) {
       // Same car, new hardware: carry the running state across.
-      for (const k of ['omega', 'ignition', 'running', 'gear', 'v', 'ww', 'pos', 'clutch', 'pedal', 'thr', 'thrCmd', 'brake', 'idleI', 'egt', 'egtInst', 'pipeWall', 'launch', 'dyno', 'dynoI', 'dynoLoad', 'mode', 'flare', 'accel', 'follow', 'followV', 'followA'])
+      for (const k of ['omega', 'ignition', 'running', 'gear', 'v', 'ww', 'pos', 'clutch', 'pedal', 'thr', 'thrCmd', 'brake', 'idleI', 'egt', 'egtInst', 'pipeWall', 'launch', 'dyno', 'dynoI', 'dynoLoad', 'mode', 'flare', 'accel', 'follow', 'followV', 'followA', 'clutchPedal', 'scripted', 'nLo', 'nHi'])
         sim[k] = old[k];
       // same car: same temperatures, same lifters, the same fan still turning
       Object.assign(sim.th, old.th);
@@ -414,7 +417,18 @@ export class EngineProcessor extends AudioWorkletProcessor {
       oil: s.th.o,
       fan: s.th.fan,
       th: s.th,
+      // the manual gearbox: the clutch pedal, and since the last message the
+      // stalls, the refused gears and the largest speed difference a gear
+      // ground at (rpm)
+      manual: s.manualOn,
+      clutchPedal: s.clutchPedal,
+      stall: s.evStall,
+      refused: s.evRefused,
+      grind: s.evGrind,
     };
+    s.evStall = 0;
+    s.evRefused = 0;
+    s.evGrind = 0;
     s.afEvents = 0;
     s.afIntensity = 0;
     s.knockMax = 0;

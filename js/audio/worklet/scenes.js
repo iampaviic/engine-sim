@@ -16,6 +16,7 @@ export class SceneMethods {
     s.gear = g;
     s.clutch = 1;
     s.shift = null;
+    s.scripted = true;
     s.ww = w / G;
     s.v = s.ww * v.tire;
     s.omega = w;
@@ -37,6 +38,7 @@ export class SceneMethods {
     const v = s.veh;
     s.mode = 'drive';
     s.autoShift = true;
+    s.scripted = true;
     s.shift = null;
     s.brake = 0;
     s.launch = false;

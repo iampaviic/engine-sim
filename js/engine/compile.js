@@ -1359,6 +1359,34 @@ function mechSpec(spec, g, dispLitres, twoStroke) {
     transaxle,
   };
 
+  // --- shifting a manual gearbox
+  // Each gear is locked to its shaft by a sliding sleeve whose internal
+  // teeth slide over the dog teeth on the gear (about 36 of them, 45 mm out);
+  // a synchroniser's cone, behind a blocker ring, first brings the two to
+  // one speed (Naunheimer et al., "Automotive Transmissions", 2nd ed. 2011,
+  // ch. 8; Lovas et al., Proc. IMechE D 220, 2006, on the phases of a
+  // synchromesh engagement). The driver pushes the sleeve with about 400 N
+  // (80 N at the knob through the linkage, an estimate).
+  // - The teeth can slide in only while the speed difference turns them by
+  //   less than half a tooth pitch in the time the sleeve takes to cross the
+  //   1 mm chamfer at about 0.15 m/s: (pi / z) x 0.15 / 0.001 rad/s across
+  //   the synchroniser, about 125 rpm.
+  // - Under load the dogs hold the sleeve: their faces are cut back about
+  //   3 degrees so torque pulls them together, and their friction (0.1)
+  //   adds to it. The push frees them only below F R / (mu + tan 3 deg),
+  //   about 120 N·m on the gear: the reason a gear will not come out
+  //   without the clutch until the throttle is eased.
+  const dogZ = 36;
+  const dogR = 0.045;
+  const push = 400;
+  const shift = {
+    dogZ,
+    dogR,
+    push,
+    window: ((Math.PI / dogZ) * 0.15) / 0.001,
+    hold: (push * dogR) / (0.1 + Math.tan((3 * Math.PI) / 180)),
+  };
+
   return {
     blockF: [780, 1350, 2150, 3300].map((f) => f * kBlock),
     blockQ,
@@ -1386,6 +1414,7 @@ function mechSpec(spec, g, dispLitres, twoStroke) {
     injector,
     alternator,
     gears,
+    shift,
     // a centrifugal blower's straight-cut step-up gears, in a casing a
     // quarter the gearbox's mass and a sixth its area: Pa·Hz at 1 m
     blowerRad: casing(8e-6) * 4 * Math.sqrt(1 / 6),
@@ -1528,6 +1557,13 @@ export function compileEngine(spec) {
       mu: veh.mu ?? 1.2,
       straightCut: !!veh.straightCut,
       shiftTime: veh.shiftTime ?? 0.12,
+      // A manual gearbox's synchronisers are sized to bring the input side
+      // (clutch disc, input shaft and the gears on it: the 0.04 kg m^2 the
+      // drivetrain carries) from one gear's speed to the next in about a
+      // quarter of a second on the hardest shift, first to second at the rev
+      // limit, with the clutch pressed (Naunheimer et al. give 0.15 to 0.4 s
+      // synchronising times). N·m at the input shaft.
+      synchro: (0.04 * ((ecu.limit ?? 6500) * Math.PI) / 30) * Math.max(0.2, 1 - (veh.gears ?? [3.2, 2.1])[1] / (veh.gears ?? [3.2, 2.1])[0]) / 0.25,
     },
     sound: {
       exhaust: snd.exhaust ?? 1,
