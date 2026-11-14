@@ -50,10 +50,14 @@ export class SourceMethods {
     if (this.gear > 0 && this.clutch > 0.5) mech += this.gearSound();
     if (this.isCentri) mech += this.blowerGear(omega);
     if (this.stActive) mech += this.starterSound();
+    // the exhaust ticking as it cools, the radiator fan
+    if (this.tkOn > 0 || this.fanW > 0) mech += this.thermalSound();
 
     // chassis: road, wind, tyre squeal
     // (a mic riding on the car hears the wind on its own, in aero())
     let chassis = this.axleSnd;
+    // the fuel pump, in the tank under the rear seat
+    if (this.pumpW > 0) chassis += this.pumpSound();
     if (this.v > 0.3) {
       const vv = this.v;
       const nz = rnd() - 0.5;

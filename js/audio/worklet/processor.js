@@ -206,7 +206,7 @@ export class EngineProcessor extends AudioWorkletProcessor {
       // same car: same temperatures, same lifters, the same fan still turning
       Object.assign(sim.th, old.th);
       sim.ambT = old.ambT;
-      for (const k of ['vapour', 'heldSet']) sim[k] = old[k];
+      for (const k of ['vapour', 'fanW', 'tkPrev', 'pumpT', 'pumpW', 'pumpP', 'heldSet']) sim[k] = old[k];
       for (let c = 0; c < sim.n; c++) sim.cHeld[c] = old.cHeld[c % old.n];
       sim.thermalEffects();
       // a start in progress carries on with the new hardware

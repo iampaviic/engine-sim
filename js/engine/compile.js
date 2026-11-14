@@ -1144,8 +1144,11 @@ function thermalSpec(spec, dispLitres, displacement) {
     gRad,
     uDesign: 10,
     uNat: 0.15,
-    // an electric fan drives 3 m/s through the core (an estimate)
+    // an electric fan drives 3 m/s through the core; its noise, about
+    // 0.06 Pa at 1 m for a 2 L car's (70 dB), grows with the fan the
+    // radiator needs (estimates)
     fanU: 3,
+    fanPa: 0.06 * Math.sqrt(gRad / 1800),
     aEng: 1.0 * surf,
     aSump: 0.12 * surf,
     aMan: 0.15 * surf,

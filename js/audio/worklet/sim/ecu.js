@@ -58,6 +58,7 @@ export class EcuMethods {
       if (!this.ignition || this.stHold > 0.1 || this.starterT > (this.kick ? 9 : 6)) this.starter = false;
     }
     if (this.kick) this.kickControl(dtc);
+    this.pumpControl(dtc);
     // the pinion meshes and the main contacts close ~40 ms after the key
     const eng = this.starter && this.starterT > 0.04 && !this.kick;
     if (eng !== this.stEng) {

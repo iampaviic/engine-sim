@@ -170,7 +170,8 @@ export class CameraMethods {
       sim.ex.opens.some((_, i) => sim.ex.oCh[i] === 2),
       true,
       true,
-      sim.mode === 'drive' || sim.mode === 'flyby' || sim.mode === 'scene' || !!sim.follow,
+      // (the road's channel, which also carries the fuel pump)
+      true,
       sim.ex.opens.some((_, i) => sim.ex.oCh[i] === 6),
     ];
     const n = blockLen || 1;

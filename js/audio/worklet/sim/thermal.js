@@ -1,6 +1,6 @@
 // Engine temperature, at control rate, and what it changes: seven lumped
 // masses heated by the fuel's heat and the engine's friction, cooled by the
-// radiator and the air.
+// radiator and the air, and the sounds an engine makes as it cools.
 //
 //   w  the hot metal round the combustion chambers and exhaust ports
 //   h  the head's coolant and the head round it (the temperature sender)
@@ -16,10 +16,10 @@
 // stable for a step of any length, so the same step serves the worklet
 // (every 32 samples)
 // and the app, which cools a stored engine down by the hours it was left
-// (soakThermal). Nothing here is in the per-sample path.
+// (soakThermal). Nothing here is in the per-sample path except the sounds.
 
-import { LHV, T_AMB } from '../constants.js';
-import { clamp } from '../dsp.js';
+import { LHV, T_AMB, TAU } from '../constants.js';
+import { Band4, clamp, lpCoef, Struck } from '../dsp.js';
 
 // The fully warm engine: the state every offline tool runs at, and the one
 // the rest of the model was calibrated at. Every temperature effect below is
@@ -231,6 +231,56 @@ export class ThermalMethods {
     this.cBleed = new Float64Array(this.n);
     this.heldSet = false;
 
+    // Exhaust ticking. As the pipe cools it shrinks (steel, 12e-6 /K) and
+    // its joints, hangers and heat shields hold on by friction until the
+    // stress lets go in a slip: stick-slip, a tick each time, more often
+    // the faster it cools. Six joints, three of them heat shields (thin
+    // panels ringing at 1-6 kHz with little damping: the "ping"), three
+    // flanges and hangers on the pipe itself (a duller tick). Each slip is
+    // an impulse into its structure, calibrated so a shield pings at about
+    // 0.1 Pa at 1 m (74 dB) and the pipe ticks at about 0.06 (estimates; the
+    // radiation is mechSpec's p = rho c v sqrt(S / 2 pi)).
+    this.tkS = new Struck([1450, 2650, 4100, 5900], [180, 200, 220, 240], [0.4, 0.3, 0.2, 0.1].map((g) => g * 1745), fs);
+    this.tkP = new Struck([720, 1300, 2300], [18, 22, 26], [0.5, 0.3, 0.2].map((g) => g * 74), fs);
+    this.tkJ = new Float64Array(6); // stress since the last slip
+    this.tkLim = new Float64Array(6); // where each lets go next
+    this.tkK = Float64Array.from([1.3, 0.8, 1.1, 0.7, 1.5, 0.9]); // slips per kelvin
+    this.tRs = 0x6a09e667; // the thermal sounds' own random stream
+    for (let j = 0; j < 6; j++) this.tkLim[j] = 0.6 + 0.8 * this.trnd();
+    this.tkXs = 0;
+    this.tkXp = 0;
+    this.tkOn = 0;
+    this.tkPrev = this.th.x;
+    // Radiator fan: seven blades at 2,400 rpm at full speed; broadband noise
+    // from the blades' wakes and a tone at the blade pass, the noise power
+    // rising as the fifth power of speed (the fan laws). It spins up in about
+    // a second and coasts down over several.
+    this.fanW = 0;
+    this.fanPh = 0;
+    this.fanBand = new Band4(900, 0.6, fs);
+    this.fanLoA = lpCoef(350, fs);
+    this.fanLo = 0;
+    this.fanBpf = (7 * 2400) / 60;
+    // level of the band-limited noise for unit input, measured once
+    {
+      const b = new Band4(900, 0.6, fs);
+      let e = 0, r = 7;
+      for (let i = 0; i < 6000; i++) {
+        r = (r * 1103515245 + 12345) & 0x7fffffff;
+        const y = b.tick(r / 0x7fffffff - 0.5);
+        if (i > 1000) e += y * y;
+      }
+      this.fanG = (p.fanPa * 0.9) / Math.sqrt(e / 5000);
+    }
+  }
+
+  trnd() {
+    let s = this.tRs;
+    s ^= s << 13;
+    s ^= s >>> 17;
+    s ^= s << 5;
+    this.tRs = s;
+    return (s >>> 0) * 2.3283064365386963e-10;
   }
 
   // A stored or forced state from the app: { state } (from a save, already
@@ -240,6 +290,7 @@ export class ThermalMethods {
     if (m.ambient) this.ambT = m.ambient;
     if (m.preset) setThermalState(p, this.th, this.ambT, m.preset === 'cold');
     else if (m.state) Object.assign(this.th, m.state);
+    this.tkPrev = this.th.x;
     if (!this.running && this.omega < 1) {
       // the gas left in a cold pipe is as cold as the pipe
       const t = clamp(this.th.x, this.ambT, 500);
@@ -266,7 +317,7 @@ export class ThermalMethods {
     q.exFlow = 1.07 * this.thAirS;
     q.egt = this.egt;
     q.v = this.v;
-    q.pump = this.ignition && this.omega > 10;
+    q.pump = this.pumpW > 0.5;
     q.tin = this.boosted ? this.TB : this.Tpl;
     // the charge picks up a quarter of the walls' excess at idle flow, less
     // as the flow grows (heat transfer ~ flow^0.8)
@@ -293,6 +344,28 @@ export class ThermalMethods {
       if (this.ignition) this.vapour *= Math.exp(-dtc / 4);
       if (this.vapour < 0.005) this.vapour = 0;
     }
+
+    // exhaust ticking: stress builds with each kelvin the pipe moves
+    const dx = s.x - this.tkPrev;
+    this.tkPrev = s.x;
+    const ad = dx < 0 ? -dx : dx;
+    if (ad > 1e-6) {
+      for (let j = 0; j < 6; j++) {
+        this.tkJ[j] += ad * this.tkK[j];
+        if (this.tkJ[j] >= this.tkLim[j]) {
+          const k = this.tkLim[j];
+          this.tkJ[j] -= k;
+          this.tkLim[j] = 0.6 + 0.8 * this.trnd();
+          if (j < 3) this.tkXs += 5.8e-5 * k * (0.6 + 0.8 * this.trnd());
+          else this.tkXp += 8e-4 * k * (0.6 + 0.8 * this.trnd());
+          this.tkOn = (0.4 * this.fs) | 0;
+        }
+      }
+    }
+    // the fan spins up in about a second and coasts down over four
+    const fT = s.fan ? 1 : 0;
+    this.fanW += (fT - this.fanW) * Math.min(1, dtc / (fT > this.fanW ? 0.8 : 4));
+    if (this.fanW < 1e-4 && !s.fan) this.fanW = 0;
   }
 
   // What the temperatures change, each neutral at the warm state.
@@ -340,5 +413,27 @@ export class ThermalMethods {
   keyOnVapour() {
     if (!this.thP.injected || this.running) return;
     this.vapour = 0.6 * clamp((this.th.r - 343.15) / 20, 0, 1);
+  }
+
+  // The cooling engine's sounds, Pa at 1 m: exhaust ticks and the fan.
+  thermalSound() {
+    let out = 0;
+    if (this.tkOn > 0) {
+      out += this.tkS.tick(this.tkXs) + this.tkP.tick(this.tkXp);
+      this.tkXs = this.tkXp = 0;
+      this.tkOn--;
+    }
+    const fw = this.fanW;
+    if (fw > 0) {
+      const nz = this.trnd() - 0.5;
+      const bb = this.fanBand.tick(nz);
+      this.fanLo += this.fanLoA * (nz - this.fanLo);
+      // blade pass, wavering a little with the blades' wakes
+      this.fanPh += (this.fanBpf * fw * (1 + 0.01 * (this.trnd() - 0.5))) / this.fs;
+      this.fanPh -= Math.floor(this.fanPh);
+      const lvl = fw * fw * Math.sqrt(fw);
+      out += (bb * this.fanG + this.fanLo * this.fanG * 0.5) * lvl + Math.sin(TAU * this.fanPh) * this.thP.fanPa * 0.5 * lvl;
+    }
+    return out;
   }
 }
