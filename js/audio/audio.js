@@ -2,6 +2,8 @@
 // limiter -> master volume -> speakers. Reverb impulse responses are
 // generated procedurally for each environment.
 
+import { bundleWorklet } from './worklet-bundle.js';
+
 const WORKLET_URL = new URL('./engine-worklet.js', import.meta.url);
 
 export const ENVIRONMENTS = {
@@ -37,8 +39,9 @@ export class AudioEngine {
     try {
       await ctx.audioWorklet.addModule(WORKLET_URL.href);
     } catch (err) {
-      // Some hosts refuse module URLs; retry from a blob.
-      const src = await (await fetch(WORKLET_URL.href)).text();
+      // Some hosts refuse module URLs; retry from a blob. A blob cannot
+      // resolve the worklet's relative imports, so join its modules first.
+      const src = await bundleWorklet(WORKLET_URL.href, async (url) => (await fetch(url)).text());
       const blob = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
       await ctx.audioWorklet.addModule(blob);
     }

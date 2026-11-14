@@ -8,7 +8,7 @@
     "serve": "node tools/serve.mjs",
     "render": "node tools/render.mjs",
     "batch": "node tools/batch.mjs",
-    "test": "node tools/batch.mjs v8-ls v12-65",
+    "test": "node tools/batch.mjs v8-ls v12-65 && node tools/check-bundle.mjs",
     "build:web": "node tools/build-web.mjs",
     "sync": "node tools/build-web.mjs && cap sync",
     "android": "node tools/build-web.mjs && cap sync android && cap open android",
