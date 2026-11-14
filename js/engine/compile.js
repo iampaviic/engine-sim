@@ -1376,15 +1376,31 @@ function mechSpec(spec, g, dispLitres, twoStroke) {
   //   adds to it. The push frees them only below F R / (mu + tan 3 deg),
   //   about 120 N·m on the gear: the reason a gear will not come out
   //   without the clutch until the throttle is eased.
+  // - When the sleeve does reach the dogs at speed, its teeth hammer over
+  //   them: one blow per dog tooth passing, the gear grinding. Bouncing
+  //   between blows, the sleeve hits about every other tooth, and the blows
+  //   average out to the driver's push; none is harder than the sleeve's
+  //   own mass (0.25 kg) meeting a tooth at the slip speed. About a third of
+  //   each blow reaches the casing through the fork and the bearings (an
+  //   estimate), whose modes ring it: the same 6 kg, 0.2 m^2 of aluminium as
+  //   for the whine above, with its first modes from about 1.1 kHz and Q
+  //   near 12 (estimates for a casting bolted to the engine and full of oil).
   const dogZ = 36;
   const dogR = 0.045;
   const push = 400;
+  const caseRad = (RHO_C / 6) * Math.sqrt(0.2 / (2 * Math.PI));
+  const caseShape = [1, 0.8, 0.55, 0.35];
+  const caseSum = caseShape.reduce((a, b) => a + b, 0);
   const shift = {
     dogZ,
     dogR,
     push,
+    sleeve: 0.25,
     window: ((Math.PI / dogZ) * 0.15) / 0.001,
     hold: (push * dogR) / (0.1 + Math.tan((3 * Math.PI) / 180)),
+    caseF: [1100, 1850, 2900, 4300],
+    caseQ: [12, 12, 14, 14],
+    caseG: caseShape.map((x) => ((x / caseSum) * caseRad) / 3),
   };
 
   return {

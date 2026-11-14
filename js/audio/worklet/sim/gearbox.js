@@ -1,10 +1,11 @@
 // The manual gearbox: the driver's clutch, the synchronisers, a gear that
-// will not go in, and the input shaft that spins on its own while no gear is
-// engaged. The automatic gearbox (sim/drivetrain.js) never comes here. The
-// sizes (dog teeth, synchroniser torque) are worked out in compile.js
-// (mechSpec's shift, and the vehicle's synchro).
+// will not go in and grinds, and the input shaft that spins on its own while
+// no gear is engaged. The automatic gearbox (sim/drivetrain.js) never comes
+// here. The sizes (dog teeth, synchroniser torque, the casing's modes) are
+// worked out in compile.js (mechSpec's shift, and the vehicle's synchro).
 
-import { ftanh } from '../dsp.js';
+import { TAU } from '../constants.js';
+import { ftanh, Struck } from '../dsp.js';
 
 // The clutch's grip against pedal travel (0 up, 1 floored). The first few
 // per cent is free play; from there the release bearing lifts the diaphragm
@@ -32,7 +33,12 @@ const T_OUT = 0.04;
 
 export class GearboxMethods {
   initGearbox(cfg) {
-    this.gbx = cfg.mech.shift;
+    const s = cfg.mech.shift;
+    this.gbx = s;
+    this.caseBank = new Struck(s.caseF, s.caseQ, s.caseG, this.fs);
+    this.grPh = 0;
+    this.grRing = 0; // samples the casing rings on after the last blow
+    this.grHold = Math.round(0.05 * this.fs);
   }
 
   // The driver takes over the gearbox, or hands it back: no shift is left
@@ -160,5 +166,34 @@ export class GearboxMethods {
     const w = this.wIn + ((load - ts - DRAG_IN * this.wIn) / J_IN) * dt;
     this.wIn = w > 0 ? w : 0;
     return load;
+  }
+
+  // Per sample, Pa at 1 m: the gear grinding. The sleeve's teeth hammer
+  // over the gear's dogs, one passing per dog tooth; it hits about every
+  // other one, each blow averaging out the driver's push but never harder
+  // than the sleeve's mass meeting a tooth at the slip speed (with a
+  // restitution of 0.5); the casing's modes ring with each. Drawn from the
+  // mechanical sounds' own random stream.
+  grindSound() {
+    let x = 0;
+    if (this.msPhase === 3) {
+      const v = this.veh;
+      const s = this.gbx;
+      const r = v.gears[this.msTo - 1];
+      const d = (this.wIn - this.ww * r * v.final) / r;
+      const ad = d < 0 ? -d : d;
+      const f = (ad * s.dogZ) / TAU;
+      this.grPh += f * this.dt;
+      if (this.grPh >= 1) {
+        this.grPh -= Math.floor(this.grPh);
+        if (this.mrnd() < 0.5) {
+          const jAvg = s.push / (0.5 * f);
+          const jMax = 1.5 * s.sleeve * ad * s.dogR;
+          x = (jAvg < jMax ? jAvg : jMax) * (0.6 + 0.8 * this.mrnd());
+        }
+      }
+      this.grRing = this.grHold;
+    } else this.grRing--;
+    return this.caseBank.tick(x);
   }
 }

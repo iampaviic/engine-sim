@@ -48,6 +48,7 @@ export class SourceMethods {
     let mech = this.stepMech(rpm, omega) * snd.mech;
     this.axleSnd = 0;
     if (this.gear > 0 && this.clutch > 0.5) mech += this.gearSound();
+    if (this.msPhase === 3 || this.grRing > 0) mech += this.grindSound();
     if (this.isCentri) mech += this.blowerGear(omega);
     if (this.stActive) mech += this.starterSound();
     // the exhaust ticking as it cools, the radiator fan
