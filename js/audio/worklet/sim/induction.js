@@ -301,14 +301,26 @@ export class InductionMethods {
     // sine: flow unsteadiness wobbles its tone by a few tenths of a percent,
     // each exhaust pulse that kicks the turbine swells it, and turbulence
     // round the blades smears it into a narrow band of noise.
+    //   Nor is any wheel cut perfectly. Its blades differ a little in pitch
+    // and angle, so the pressure pattern turning with it repeats once per
+    // turn, not once per blade: from a fixed point the blade-pass tone rises
+    // and falls with the shaft, and that puts sidebands one and two shaft
+    // orders either side of it, about 16 and 22 dB down (the rotor-locked
+    // "multiple pure tones" of compressor noise; Raitor and Neise, Sound
+    // generation in centrifugal compressors, J. Sound Vib. 314, 2008). They
+    // are what makes a turbo's whistle a reedy chord and not a test tone.
+    //   The level follows measured in-duct spectra: 120-130 dB at blade-pass
+    // in the inlet pipe of a car's turbo at speed (Teng and Homco, SAE
+    // 2009-01-2053), which is 85-90 dB at 1 m off an open inlet.
     const fShaft = this.wt / TAU;
     this.wJit += this.wJitA * (rnd() - 0.5 - this.wJit);
     const jit = 1 + this.wJit * 0.3;
     const fB = fShaft * this.blades * jit;
-    this.tPhase += fB / fs;
-    this.tPhase -= Math.floor(this.tPhase);
     this.tPhase2 += (fShaft * jit) / fs;
     this.tPhase2 -= Math.floor(this.tPhase2);
+    const shaft = TAU * this.tPhase2;
+    const sh1 = Math.sin(shaft), sh2 = Math.sin(2 * shaft);
+    const uneven = 1 + 0.3 * Math.cos(shaft) + 0.15 * sh2;
     if (++this.sgK >= 32) {
       this.sgK = 0;
       this.setBand(clamp(fB, 200, 0.4 * fs), 40);
@@ -322,8 +334,8 @@ export class InductionMethods {
     this.sgY1 = halo;
     // A small wheel's blade pass goes ultrasonic at full spool: fade it out
     // before Nyquist instead of letting it fold back down as a false whistle.
-    const whistle = (Math.sin(TAU * this.tPhase) * 0.85 + halo * 2.5) * this.bladeFade(fB);
-    const whine = Math.sin(TAU * this.tPhase2) + 0.3 * Math.sin(2 * TAU * this.tPhase2);
+    const whistle = (Math.sin(this.blades * shaft) * uneven * 0.85 + halo * 2.5) * this.bladeFade(fB);
+    const whine = sh1 + 0.3 * sh2;
     const Utn = Ut / 400;
     // Each turbo sings with its share of the flow. Twins never run at quite
     // the same speed (one bank breathes a little differently), so the pair
@@ -425,12 +437,12 @@ export class InductionMethods {
     v.jit += this.wJitA * (rnd() - 0.5 - v.jit);
     const fj = f * (1 + v.jit * 0.3);
     const fb = fj * this.blades;
-    v.ph += fb / fs;
-    v.ph -= Math.floor(v.ph);
     v.ph2 += fj / fs;
     v.ph2 -= Math.floor(v.ph2);
     const ph2 = TAU * v.ph2;
-    return Math.sin(TAU * v.ph) * 8.5 * this.bladeFade(fb) + (Math.sin(ph2) + 0.3 * Math.sin(2 * ph2)) * 0.5;
+    const s1 = Math.sin(ph2), s2 = Math.sin(2 * ph2);
+    // (its own uneven blades: see stepTurbo)
+    return Math.sin(this.blades * ph2) * (1 + 0.3 * Math.cos(ph2) + 0.15 * s2) * 8.5 * this.bladeFade(fb) + (s1 + 0.3 * s2) * 0.5;
   }
 
   // Level for a blade tone at f. The filter element and the duct's bends

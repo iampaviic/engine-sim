@@ -272,7 +272,7 @@ export class EngineSim {
     this.turbPs2 = 0;
     // tonal voices: a parallel pair (or a sequential stage of two) gets a
     // second voice, the other turbo spinning a hair slower
-    const voice = () => ({ ph: 0, ph2: 0, jit: 0 });
+    const voice = () => ({ ph2: 0, jit: 0 });
     this.vA2 = voice();
     this.vB = voice();
     this.vB2 = voice();
@@ -282,7 +282,6 @@ export class EngineSim {
     this.wgI = 0;
     this.blades = ind.blades;
     this.bovType = ind.bov;
-    this.tPhase = 0;
     this.tPhase2 = 0;
     this.scPhase = 0;
     this.turbPsm = 0;
