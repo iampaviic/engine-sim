@@ -1,0 +1,313 @@
+// Engine temperature, at control rate, and what it changes: six lumped
+// masses heated by the fuel's heat and the engine's friction, cooled by the
+// radiator and the air.
+//
+//   w  the hot metal round the combustion chambers and exhaust ports
+//   h  the head's coolant and the head round it (the temperature sender)
+//   b  the rest of the coolant and the block
+//   o  the oil, with the crank, rods, pistons and sump
+//   m  the intake manifold
+//   x  the exhaust manifold and down pipe
+//
+// The masses and conductances come from the engine's size (compile.js,
+// thermalSpec, where they are explained). Each mass in turn relaxes towards
+// the temperature its neighbours and its heat input hold it at, which stays
+// stable for a step of any length, so the same step serves the worklet
+// (every 32 samples)
+// and the app, which cools a stored engine down by the hours it was left
+// (soakThermal). Nothing here is in the per-sample path.
+
+import { LHV, T_AMB } from '../constants.js';
+import { clamp } from '../dsp.js';
+
+// The fully warm engine: the state every offline tool runs at, and the one
+// the rest of the model was calibrated at. Every temperature effect below is
+// measured from it, so at this state the engine behaves as it did before it
+// had a temperature.
+export const T_WARM = 363.15; // coolant, 90 °C
+export const T_OIL_WARM = 368.15; // oil, 95 °C
+
+// Wax thermostat: starts to open at 88 °C, fully open by 92 °C.
+const THERMO_OPEN = 361.15;
+const THERMO_FULL = 365.15;
+// Radiator fan: on at 100 °C, off again at 96 °C.
+const FAN_ON = 373.15;
+const FAN_OFF = 369.15;
+
+// Kinematic viscosity (cSt) of a 5W-30 oil at T kelvin, by Walther's
+// equation (ASTM D341) through its data-sheet points, 64 cSt at 40 °C and
+// 10.8 at 100 °C: about 125 cSt at 25 °C, 550 at 0 °C, 2,900 at -20 °C.
+export function oilVisc(T) {
+  const t = T > 233 ? T : 233;
+  return Math.pow(10, Math.pow(10, 7.867 - 3.049 * Math.log10(t))) - 0.7;
+}
+const VISC_WARM = oilVisc(T_OIL_WARM);
+
+// A mass at T with heat capacity C (J/K), joined by conductances summing to
+// G (W/K) to neighbours whose conductance-weighted temperatures sum to GT,
+// heated by Q (W), after dt seconds.
+function relax(T, C, G, GT, Q, dt) {
+  if (!(G > 0)) return T + (Q * dt) / C;
+  const Te = (GT + Q) / G;
+  return Te + (T - Te) * Math.exp((-G * dt) / C);
+}
+
+// The warm manifold: held between the head and the air under the bonnet,
+// with the exhaust's glow on it.
+function manifoldRef(p, amb) {
+  const gMA = p.aMan * 9;
+  const x = exhaustRef(amb);
+  return (p.gHM * T_WARM + gMA * amb + p.gXM * x) / (p.gHM + gMA + p.gXM);
+}
+// The exhaust manifold at a warm idle, about 200 °C.
+function exhaustRef(amb) {
+  return amb + 0.6 * (650 - amb);
+}
+
+// A fresh state object, fully warm (the default) or cold through at amb.
+export function newThermal(p, amb = T_AMB, cold = false) {
+  const s = { w: 0, h: 0, b: 0, o: 0, m: 0, x: 0, th: 0, fan: false, after: 0, bleed: 0, runT: 0 };
+  return setThermalState(p, s, amb, cold);
+}
+export function setThermalState(p, s, amb, cold) {
+  if (cold) {
+    s.w = s.h = s.b = s.o = s.m = s.x = amb;
+    s.th = 0;
+    // a night's rest: the lifters held open by their cams have bled down
+    s.bleed = 1;
+  } else {
+    s.h = s.b = T_WARM;
+    s.w = T_WARM + 4;
+    s.o = T_OIL_WARM;
+    s.m = manifoldRef(p, amb);
+    s.x = exhaustRef(amb);
+    s.th = 0.5;
+    s.bleed = 0;
+  }
+  s.fan = false;
+  s.after = 0;
+  s.runT = 99;
+  return s;
+}
+
+// One step of dt seconds. q holds what the engine is doing: run (the crank
+// turns the pumps), rpm, fuelW (fuel power, W), load (0..1), fricW
+// (friction power, W), air (kg/s drawn in), eps (the share of the wall's
+// excess temperature the charge picks up), tin (K, air arriving at the
+// ports), exFlow (kg/s), egt (K), v (road speed, m/s), amb (K).
+export function thermalStep(p, s, q, dt) {
+  const a = q.amb;
+  const run = q.run;
+  // Air through the radiator core: ram air through the grille (about a
+  // quarter of the road speed), the fan, a little natural draught.
+  const ram = 0.25 * q.v;
+  const fanU = s.fan ? p.fanU : 0;
+  const u = Math.sqrt(ram * ram + fanU * fanU) + p.uNat;
+  const rad = p.gRad * Math.pow(u / p.uDesign, 0.7);
+  // Surfaces: 9 W/m^2 K in still air, more in the draught under the bonnet
+  // (a fifth of the road speed, or the fan's) and under the car.
+  const ub = Math.sqrt(0.04 * q.v * q.v + (s.fan ? 4 : 0));
+  const hb = 9 + 6 * Math.sqrt(ub);
+  const hu = 9 + 6 * Math.sqrt(0.5 * q.v);
+  // The thermostat's wax melts over a few kelvin and follows in ~15 s; shut,
+  // a bypass still lets 3% through.
+  const thT = s.h <= THERMO_OPEN ? 0 : s.h >= THERMO_FULL ? 1 : (s.h - THERMO_OPEN) / (THERMO_FULL - THERMO_OPEN);
+  s.th += (thT - s.th) * (1 - Math.exp(-dt / 15));
+  const open = 0.03 + 0.97 * s.th;
+
+  // Heat in: a third of the fuel's energy at light load, a quarter at full
+  // (Heywood), into the chamber walls, a twentieth of it through the pistons
+  // into the oil; friction half into the oil (bearings, cams), half into
+  // the bores and so the block.
+  const qGas = q.fuelW * (0.33 - 0.08 * q.load);
+  const qFr = q.fricW;
+  // The charge picks up heat from the ports and the manifold on its way in.
+  const qCh = q.air * 1005 * q.eps * (0.5 * (s.m + s.h) - q.tin);
+
+  const gWH = run ? p.gWH : p.gWH / 6; // forced flow, or a still jacket
+  const gHB = run ? p.gPump * Math.max(0.15, q.rpm / 3000) : p.gSiphon;
+  // the oil sprayed and splashed on the block's walls, more of it the faster
+  // the oil pump turns (heat transfer ~ flow^0.8); stopped, drained to the sump
+  const gBO = run ? p.gBO * Math.pow(Math.max(0.4, q.rpm / 3000), 0.8) : p.gBO / 3;
+  // stopped, only a trickle of thermosiphon moves coolant through the
+  // radiator (a few percent of the pump's flow, an estimate)
+  const gR = open * rad * (run ? 1 : 0.03);
+  s.w = relax(s.w, p.cW, gWH, gWH * s.h, 0.95 * qGas, dt);
+  s.h = relax(s.h, p.cH, gWH + gHB + p.gHM + gR, gWH * s.w + gHB * s.b + p.gHM * s.m + gR * a, -0.5 * qCh, dt);
+  const gBA = p.aEng * hb;
+  s.b = relax(s.b, p.cB, gHB + gBO + gBA, gHB * s.h + gBO * s.o + gBA * a, 0.5 * qFr, dt);
+  const gOA = p.aSump * hu;
+  s.o = relax(s.o, p.cO, gBO + gOA, gBO * s.b + gOA * a, 0.5 * qFr + 0.05 * qGas, dt);
+  const gMA = p.aMan * hb;
+  s.m = relax(s.m, p.cM, p.gHM + gMA + p.gXM, p.gHM * s.h + gMA * a + p.gXM * s.x, -0.5 * qCh, dt);
+  // The exhaust: heated by the gas (pulsing pipe flow, 20 to 250 W/m^2 K
+  // with the flow), cooled by the air and by its own glow (emissivity 0.85,
+  // which dominates once it is hot).
+  const gGX = run ? p.aX * (20 + 230 * Math.pow(q.exFlow / p.exMax, 0.8)) : 0;
+  const gXA = p.aX * (hu + 4.8e-8 * (s.x * s.x + a * a) * (s.x + a));
+  s.x = relax(s.x, p.cX, gGX + gXA + p.gXM, gGX * q.egt + gXA * a + p.gXM * s.m, 0, dt);
+
+  // The fan runs on the sender's temperature, and for ten minutes after
+  // the engine stops it may come on again to clear the heat soak.
+  if (run) s.after = 600;
+  else if (s.after > 0) s.after -= dt;
+  if ((run || s.after > 0) && s.h > FAN_ON) s.fan = true;
+  else if (s.h < FAN_OFF || (!run && s.after <= 0)) s.fan = false;
+
+  // Hydraulic lifters: a lifter held open by its cam bleeds down over an
+  // hour or two at rest; running, the oil pressure refills it in a few
+  // seconds, once the pump has filled the galleries (~1 s). (Estimates.)
+  if (run) {
+    s.runT += dt;
+    if (s.runT > 1) s.bleed *= Math.exp(-dt / 3);
+  } else {
+    s.runT = 0;
+    s.bleed += (1 - s.bleed) * (1 - Math.exp(-dt / 5400));
+  }
+}
+
+// Cool a stopped engine down by secs seconds: the app's catch-up for the
+// time it was not running.
+const SOAK_IN = { run: false, rpm: 0, fuelW: 0, load: 0, fricW: 0, air: 0, eps: 0, tin: T_AMB, exFlow: 0, egt: T_AMB, v: 0, amb: T_AMB };
+export function soakThermal(p, s, secs, amb = T_AMB) {
+  SOAK_IN.amb = SOAK_IN.tin = SOAK_IN.egt = amb;
+  let t = Math.min(secs, 2 * 86400);
+  let done = 0;
+  while (t > 0) {
+    // short steps while the heat soak and the fan's after-run play out
+    const dt = Math.min(t, done < 1200 ? 2 : 30);
+    thermalStep(p, s, SOAK_IN, dt);
+    t -= dt;
+    done += dt;
+  }
+  if (secs > 2 * 86400) setThermalState(p, s, amb, true);
+  return s;
+}
+
+export class ThermalMethods {
+  initThermal(cfg) {
+    const p = cfg.thermal;
+    const fs = this.fs;
+    this.thP = p;
+    this.ambT = T_AMB; // the one ambient temperature (weather will set it)
+    this.th = newThermal(p, this.ambT);
+    this.thQ = { run: false, rpm: 0, fuelW: 0, load: 0, fricW: 0, air: 0, eps: 0, tin: T_AMB, exFlow: 0, egt: T_AMB, v: 0, amb: T_AMB };
+    // what the cylinders burned and breathed since the last control step
+    this.thFuel = 0;
+    this.thAir = 0;
+    this.thLoad = 0;
+    this.thN = 0;
+    this.thAirS = 0; // air flow, smoothed over the cylinders' events
+    this.wallRef = 0.5 * (T_WARM + manifoldRef(p, this.ambT));
+    // the temperature effects, all neutral at the warm state
+    this.visc = 1;
+    this.fastIdle = 0;
+    this.idleAirK = 1;
+    this.chargeDT = 0;
+    this.burnK = 1;
+    this.eps = 0.27;
+    this.covCold = 0;
+    // piston clearance against block temperature (mechSpec)
+    this.clrK = cfg.mech.slap.dcdT / Math.max(1e-9, cfg.mech.slap.clearance);
+    this.slapK0 = this.slapK;
+    this.slapCross0 = this.slapCross;
+    // hydraulic lifters held open at rest (set when the engine stops)
+    this.cHeld = new Float64Array(this.n);
+    this.cBleed = new Float64Array(this.n);
+    this.heldSet = false;
+
+  }
+
+  // A stored or forced state from the app: { state } (from a save, already
+  // cooled by the time away) or { preset: 'cold' | 'warm' }.
+  setThermal(m) {
+    const p = this.thP;
+    if (m.ambient) this.ambT = m.ambient;
+    if (m.preset) setThermalState(p, this.th, this.ambT, m.preset === 'cold');
+    else if (m.state) Object.assign(this.th, m.state);
+    if (!this.running && this.omega < 1) {
+      // the gas left in a cold pipe is as cold as the pipe
+      const t = clamp(this.th.x, this.ambT, 500);
+      this.egt = this.egtInst = this.pipeWall = t;
+      this.heldSet = false;
+    }
+    this.thermalEffects();
+  }
+
+  // Control rate: integrate the temperatures, then what they change.
+  thermalControl(dtc, rpm) {
+    const q = this.thQ;
+    const s = this.th;
+    q.amb = this.ambT;
+    q.run = this.omega > 30;
+    q.rpm = rpm;
+    // (the fuel's heat as it comes, a charge at a time; the air flow
+    // smoothed, as the heat transfer and the charge's warming follow its mean)
+    q.fuelW = (this.thFuel * LHV) / dtc;
+    this.thAirS += (this.thAir / dtc - this.thAirS) * Math.min(1, dtc / 0.3);
+    q.air = this.thAirS;
+    q.load = this.thN > 0 ? clamp(this.thLoad / this.thN, 0, 1.5) : 0;
+    q.fricW = this.fric * this.omega;
+    q.exFlow = 1.07 * this.thAirS;
+    q.egt = this.egt;
+    q.v = this.v;
+    q.tin = this.boosted ? this.TB : this.Tpl;
+    // the charge picks up a quarter of the walls' excess at idle flow, less
+    // as the flow grows (heat transfer ~ flow^0.8)
+    q.eps = q.air > 0 ? clamp(0.27 * Math.pow(q.air / this.thP.airIdle, -0.2), 0.08, 0.35) : 0.27;
+    this.thFuel = this.thAir = this.thLoad = 0;
+    this.thN = 0;
+    thermalStep(this.thP, s, q, dtc);
+    this.eps = q.eps;
+    this.thermalEffects();
+
+    // which lifters stay held open: the cams' position where the crank stops
+    if (!q.run && this.omega < 1 && !this.heldSet && this.hydJ > 0) {
+      this.heldSet = true;
+      const exT = this.exTabLo, inT = this.inTabLo;
+      for (let c = 0; c < this.n; c++) {
+        const i = (this.cCA[c] * this.tabScale) | 0;
+        this.cHeld[c] = exT[i] > 0.05 * this.maxAeT || inT[i] > 0.05 * this.maxAiT ? 1 : 0;
+      }
+    } else if (q.run) this.heldSet = false;
+    if (this.hydJ > 0) for (let c = 0; c < this.n; c++) this.cBleed[c] = this.cHeld[c] * s.bleed * this.hydJ;
+  }
+
+  // What the temperatures change, each neutral at the warm state.
+  thermalEffects() {
+    const s = this.th;
+    const cfg = this.cfg;
+    // Oil viscosity: the hydrodynamic part of the friction (bearings, skirts,
+    // rings' film) grows as the square root of the viscosity, the form of the
+    // hydrodynamic terms in Sandoval and Heywood's friction model (SAE
+    // 2003-01-0725), whose cold engine has about twice the warm friction.
+    this.visc = s.o === T_OIL_WARM ? 1 : Math.sqrt(oilVisc(s.o) / VISC_WARM);
+    // The ECU's fast idle: 250 rpm more at 25 °C, nothing above 80 °C, up to
+    // 400 rpm more in a frost (a typical calibration).
+    this.fastIdle = 250 * clamp((353.15 - s.h) / 55, 0, 1.6);
+    // and the extra idle air it allows for the extra friction at that speed
+    if (this.visc !== 1) {
+      const sp = (2 * cfg.stroke * (this.ecu.idle + this.fastIdle)) / 60;
+      const warm = 0.72 + 0.024 * sp + 0.0019 * sp * sp;
+      this.idleAirK = (warm + (this.visc - 1) * (0.22 + 0.024 * sp)) / warm;
+    } else this.idleAirK = 1;
+    // The charge warms on the ports and manifold: less than a warm engine's
+    // when they are cold, more after a heat soak. A cooler charge burns
+    // slower (laminar flame speed ~ T^2.18, Metghalchi and Keck; the
+    // turbulent burn ~ its square root, an estimate).
+    const dW = 0.5 * (s.m + s.h) - this.wallRef;
+    this.chargeDT = dW === 0 ? 0 : this.eps * dW;
+    const tin = (this.boosted ? this.TB : this.Tpl) + 20;
+    this.burnK = this.chargeDT === 0 ? 1 : Math.pow(tin / (tin + this.chargeDT), 1.09);
+    // Below about 80 °C some of the fuel reaches the cylinder as liquid off
+    // the port walls, and the mixture varies from cycle to cycle: about
+    // twice the warm engine's variation at 25 °C (an estimate).
+    this.covCold = 0.03 * clamp((353.15 - s.h) / 55, 0, 1.5);
+    // piston slap: impulse ~ c^(2/3), crossing time ~ c (see mechSpec)
+    if (this.slapK0 > 0) {
+      const k = Math.max(0.3, 1 + this.clrK * (T_WARM - s.b));
+      this.slapK = k === 1 ? this.slapK0 : this.slapK0 * Math.cbrt(k * k);
+      this.slapCross = this.slapCross0 * k;
+    }
+  }
+}

@@ -84,10 +84,15 @@ export class EcuMethods {
     }
     if (this.running && (rpm < 120 || !this.ignition)) this.running = false;
 
+    // Engine temperature, and what it changes (sim/thermal.js)
+    this.thermalControl(dtc, rpm);
+
     // Idle target with start flare & cold fast idle
     this.flare *= Math.exp(-dtc / 1.4);
-    this.coldT = Math.max(0, this.coldT - dtc / 25);
-    this.idleTarget = e.idle + this.flare + 250 * this.coldT;
+    this.idleTarget = e.idle + this.flare + this.fastIdle;
+    // idle air: the ECU's base, and more for a cold engine's friction (its
+    // dashpot and landing air on overrun are set in absolute terms)
+    const ff = this.bypassFF * this.idleAirK;
 
     // Idle speed control (bypass air PI + fast spark trim)
     const idleActive = this.ignition && this.pedal < 0.03;
@@ -111,15 +116,15 @@ export class EcuMethods {
       } else {
         const pe = clamp(errP, -500, 800);
         this.landing *= Math.exp(-dtc / 0.5);
-        this.bypass = clamp(this.bypassFF * (1 + this.idleI + pe * 7e-4 + 1.2 * this.landing), this.bypassFF * 0.1, this.bypassFF * 5);
+        this.bypass = clamp(ff * (1 + this.idleI + pe * 7e-4) + this.bypassFF * 1.2 * this.landing, ff * 0.1, ff * 5);
       }
       this.sparkTrim = clamp(errP * 0.05, -12, 18);
     } else {
-      this.bypass += (this.bypassFF * (1 + this.idleI) - this.bypass) * Math.min(1, dtc * 3);
+      this.bypass += (ff * (1 + this.idleI) - this.bypass) * Math.min(1, dtc * 3);
       this.sparkTrim *= 0.9;
     }
     // cranking air; a two-stroke kicked over at speed needs no extra
-    if (!this.running) this.bypass = this.bypassFF * (this.twoStroke ? 1 : 1.6);
+    if (!this.running) this.bypass = ff * (this.twoStroke ? 1 : 1.6);
 
     // Decel fuel cut / burble
     // Coast (decel fuel cut) vs idle regulation. Fuel resumes early when the
@@ -184,8 +189,8 @@ export class EcuMethods {
     if (this.valveMode === 'open') vt = 1;
     else if (this.valveMode === 'auto') {
       vt = rpm > 3800 && this.thr > 0.35 ? 1 : this.thr > 0.8 ? 1 : 0;
-      // cold start: the valves stay open through the start flare
-      if (this.running && this.coldT > 0.5 && this.sinceStart < 2.5) vt = 1;
+      // cold start (below 50 °C): the valves stay open through the start flare
+      if (this.running && this.th.h < 323.15 && this.sinceStart < 2.5) vt = 1;
     }
     this.valveOpen += (vt - this.valveOpen) * Math.min(1, dtc * 6);
 
@@ -267,11 +272,14 @@ export class EcuMethods {
     this.thrPrevC = this.thr;
     this.tipRet = Math.max(0, Math.min(8, this.tipRet + (dThr > 0 ? dThr * 30 : 0)) - dtc * 12);
 
-    // Friction torque (FMEP from mean piston speed). Below ~400 rpm the rings
-    // and bearings run short of oil film and drag harder, more so cold.
+    // Friction torque (FMEP from mean piston speed, bar). The hydrodynamic
+    // part (bearings, skirts, the rings' oil film: 0.22 bar plus the term in
+    // piston speed) grows with the oil's viscosity (this.visc, 1 warm); the
+    // rest (boundary friction, accessories) and the windage do not. Below
+    // ~400 rpm the rings and bearings run short of oil film and drag harder.
     const sp = (2 * this.cfg.stroke * rpm) / 60;
-    const dry = (0.45 + 0.35 * this.coldT) * Math.exp(-(rpm * rpm) / 90000);
-    this.fric = this.fricK * (0.72 + 0.024 * sp + 0.0019 * sp * sp + dry);
+    const dry = 0.45 * Math.exp(-(rpm * rpm) / 90000);
+    this.fric = this.fricK * (0.5 + (0.22 + 0.024 * sp) * this.visc + 0.0019 * sp * sp + dry);
     // turning slowly, compression has time to leak past the rings
     const lk = clamp((520 - rpm) / 260, 0, 1);
     for (let c = 0; c < this.n; c++) this.cLeak[c] = 1 + lk * (2.5 + 2.5 * this.cLeakVar[c]);

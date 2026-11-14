@@ -111,9 +111,9 @@ export class StarterMethods {
 
   // Key to START: the solenoid clicks in, and ~40 ms later the pinion is in
   // mesh and the main contacts close.
-  crankStart(cold) {
-    this.coldT = cold ? 1 : 0;
+  crankStart() {
     if (this.starter) return;
+    const s = this.th;
     this.starter = true;
     this.starterT = 0;
     this.stHold = 0;
@@ -124,18 +124,25 @@ export class StarterMethods {
       this.kickN = 0;
       this.kickWait = 0.3;
     } else {
-      // a cold battery sags further under the cranking current
-      this.stV = this.st.volts * (cold ? 0.98 : 1);
-      this.stR = this.st.ohms * (cold ? 1.06 : 1);
+      // A cold battery sags further under the cranking current: a lead-acid
+      // cell's resistance rises about 0.3% for each kelvin it cools (an
+      // estimate). The battery sits under the bonnet, a third of the way
+      // from the air's temperature to the engine's.
+      const bt = this.ambT + 0.3 * (s.h - this.ambT);
+      const bc = Math.max(0, (this.ambT + 0.3 * (363.15 - this.ambT) - bt) / 19.5);
+      this.stV = this.st.volts * (1 - 0.02 * bc);
+      this.stR = this.st.ohms * (1 + 0.06 * bc);
       this.stKickC += 0.6;
     }
     if (!this.running) {
       // The ECU fires only once it has seen the cam and crank signals (a
       // dry-sump race engine is spun up for oil pressure first; a magneto
-      // sparks at once), and a cold port wall soaks up the first squirts.
+      // sparks at once), and a port wall below about 60 °C soaks up the
+      // first squirts as a film, more of them the colder it is.
       this.crankRevs = 0;
       this.syncRevs = this.kick ? 0.05 : (this.st.type === 'external' ? 7 : 1.1) + 1.3 * rnd();
-      this.filmLeft = cold ? Math.round(this.n * (0.3 + 0.4 * rnd())) + 1 : 0;
+      const wet = Math.min(2, (333.15 - s.h) / 35);
+      this.filmLeft = wet > 0 ? Math.round(this.n * (0.3 + 0.4 * rnd()) * wet) + 1 : 0;
     }
   }
 

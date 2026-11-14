@@ -55,8 +55,12 @@ export class EngineProcessor extends AudioWorkletProcessor {
       case 'ignition':
         if (!this.sim) return;
         this.sim.ignition = !!m.on;
-        if (m.on && m.crank) this.sim.crankStart(!!m.cold);
+        if (m.on && m.crank) this.sim.crankStart();
         if (!m.on) this.sim.starter = false;
+        break;
+      case 'thermal':
+        // the engine's temperatures: a stored state, or forced cold or warm
+        this.sim?.setThermal(m);
         break;
       case 'shift':
         this.sim?.requestShift(m.dir);
@@ -194,8 +198,14 @@ export class EngineProcessor extends AudioWorkletProcessor {
     if (tune) this.applyTune(sim, tune);
     if (hot && old) {
       // Same car, new hardware: carry the running state across.
-      for (const k of ['omega', 'ignition', 'running', 'gear', 'v', 'ww', 'pos', 'clutch', 'pedal', 'thr', 'thrCmd', 'brake', 'idleI', 'egt', 'egtInst', 'pipeWall', 'launch', 'dyno', 'dynoI', 'dynoLoad', 'mode', 'flare', 'coldT', 'accel', 'follow', 'followV', 'followA'])
+      for (const k of ['omega', 'ignition', 'running', 'gear', 'v', 'ww', 'pos', 'clutch', 'pedal', 'thr', 'thrCmd', 'brake', 'idleI', 'egt', 'egtInst', 'pipeWall', 'launch', 'dyno', 'dynoI', 'dynoLoad', 'mode', 'flare', 'accel', 'follow', 'followV', 'followA'])
         sim[k] = old[k];
+      // same car: same temperatures, same lifters, the same fan still turning
+      Object.assign(sim.th, old.th);
+      sim.ambT = old.ambT;
+      sim.heldSet = old.heldSet;
+      for (let c = 0; c < sim.n; c++) sim.cHeld[c] = old.cHeld[c % old.n];
+      sim.thermalEffects();
       // a start in progress carries on with the new hardware
       for (const k of ['starter', 'starterT', 'stHold', 'crankRevs', 'syncRevs', 'filmLeft', 'stW', 'stLock', 'stEng', 'stV', 'stR', 'stActive', 'stEnv'])
         sim[k] = old[k];
@@ -394,6 +404,13 @@ export class EngineProcessor extends AudioWorkletProcessor {
       afr: s.lastAfr,
       boostTgt: s.boostNow,
       follow: s.follow ? s.follow.kind : null,
+      // temperatures (K): the gauge's, the oil's; the whole state, for the
+      // app to keep between sessions
+      id: s.cfg.id,
+      coolant: s.th.h,
+      oil: s.th.o,
+      fan: s.th.fan,
+      th: s.th,
     };
     s.afEvents = 0;
     s.afIntensity = 0;

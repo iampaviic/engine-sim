@@ -15,6 +15,7 @@ import { NitrousMethods } from './sim/nitrous.js';
 import { DrivetrainMethods } from './sim/drivetrain.js';
 import { MechanicalMethods } from './sim/mechanical.js';
 import { AeroMethods } from './sim/aero.js';
+import { ThermalMethods } from './sim/thermal.js';
 import { SourceMethods } from './sim/sources.js';
 import { mixin } from './mixin.js';
 
@@ -406,7 +407,6 @@ export class EngineSim {
     this.launchRpm = e.launchRpm;
     this.shiftCut = 0;
     this.flare = 0;
-    this.coldT = 0;
     this.camHi = false;
     this.camSwitch = cfg.camSwitchRpm;
     // Nitrous: liquid N2O through a solenoid into the intake
@@ -544,7 +544,6 @@ export class EngineSim {
     this.egtAcc = 0;
     this.egtW = 0;
     this.tempCounter = 0;
-    this.coolant = 0;
 
     // Telemetry accumulators
     this.telTq = 0;
@@ -576,6 +575,7 @@ export class EngineSim {
     this.initStarter(cfg);
     this.boosted = this.isTurbo || this.isSC || this.isCentri;
     this.initMech(cfg);
+    this.initThermal(cfg);
     const vh = cfg.vehicle;
     this.axleLoad = vh.mass * 9.81 * (vh.drive === 'awd' ? 1 : vh.rearBias);
     this.loadTransfer = vh.drive === 'awd' ? 0 : vh.mass * 0.2;
@@ -667,4 +667,4 @@ export class EngineSim {
 // methods, copied onto the prototype once, here. After that they are
 // ordinary methods, so a call from the per-sample loop costs what it would
 // if the whole class were written in this file.
-mixin(EngineSim, EcuMethods, CylinderMethods, StarterMethods, InductionMethods, NitrousMethods, DrivetrainMethods, MechanicalMethods, AeroMethods, SourceMethods, ListenMethods);
+mixin(EngineSim, EcuMethods, CylinderMethods, StarterMethods, InductionMethods, NitrousMethods, DrivetrainMethods, MechanicalMethods, ThermalMethods, AeroMethods, SourceMethods, ListenMethods);

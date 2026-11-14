@@ -1,8 +1,11 @@
 // Offline renderer: runs the real AudioWorklet code in Node and writes a WAV
 // plus a telemetry CSV. Used for tuning and regression checks.
 //
-//   node tools/render.mjs <presetId> <scenario> [out.wav] [--camera rear]
+//   node tools/render.mjs <presetId> <scenario> [out.wav] [--camera rear] [--thermal cold]
 //   (scenarios: rev idle dyno drive boost flyby autobahn)
+//
+// Engines start fully warm, the state the model is calibrated at;
+// --thermal cold (opts.thermal) starts one cold through at 25 °C.
 
 import { writeFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -97,6 +100,7 @@ export async function render(presetId, scenarioName, opts = {}) {
   // clock and would drop to half rate whenever rendering runs slower than real time
   send({ type: 'quality', quality: opts.quality ?? 'full' });
   send({ type: 'config', cfg, tune: opts.tune });
+  if (opts.thermal) send({ type: 'thermal', preset: opts.thermal });
   if (opts.camera) send({ type: 'camera', camera: opts.camera });
   let scen = SCENARIOS[scenarioName] ?? scenarioName;
   if (scenarioName === 'autobahn') {
@@ -164,7 +168,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
     else pos.push(args[i]);
   }
   const [id = 'v8-ls', scen = 'rev', out = `/tmp/${id}-${scen}.wav`] = pos;
-  const r = await render(id, scen, { camera: flags.camera, duration: flags.dur ? +flags.dur : undefined, tune: flags.tune ? JSON.parse(flags.tune) : undefined });
+  const r = await render(id, scen, { camera: flags.camera, thermal: flags.thermal, duration: flags.dur ? +flags.dur : undefined, tune: flags.tune ? JSON.parse(flags.tune) : undefined });
   let peak = 0, nan = 0;
   for (let i = 0; i < r.L.length; i++) {
     const a = Math.abs(r.L[i]);

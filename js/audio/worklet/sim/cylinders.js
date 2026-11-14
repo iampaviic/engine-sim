@@ -24,6 +24,9 @@ export class CylinderMethods {
     const load = fresh / (1.18 * this.vd);
     this.cAirIn[c] = fresh;
     this.telAir += fresh;
+    this.thAir += fresh;
+    this.thLoad += load;
+    this.thN++;
     // nitrous in the charge: its oxygen counts 1.57 times
     const nos = fresh * this.nosX;
     const o2 = nos > 0 ? fresh + (NOS_O2 - 1) * nos : fresh;
@@ -61,6 +64,7 @@ export class CylinderMethods {
     this.cFuel[c] = fuel;
     this.cBurnable[c] = burnable;
     this.telFuel += fuel;
+    this.thFuel += fuel;
     this.lastAfr = fuelOn ? afr : 0;
 
     // A mixture moved away from the factory's: richer burns a little faster
@@ -94,7 +98,8 @@ export class CylinderMethods {
 
 
     // Combustion variability grows with residual gas and light load.
-    const sig = 0.016 + 0.45 * Math.max(0, xr - 0.14) + 0.04 * Math.max(0, 0.4 - load);
+    // (and with liquid fuel off a cold port wall: covCold, sim/thermal.js)
+    const sig = 0.016 + 0.45 * Math.max(0, xr - 0.14) + 0.04 * Math.max(0, 0.4 - load) + this.covCold;
     let misfire = false;
     if (xr > 0.3 && rnd() < (xr - 0.3) * 1.6) misfire = true;
     if (load < 0.08 && rnd() < (0.08 - load) * 5) misfire = true;
@@ -110,6 +115,8 @@ export class CylinderMethods {
       50 * this.cfg.burnScale * (0.82 + 0.3 * rpmF) * (1 + 2.2 * Math.max(0, xr - 0.06)) * (1 + 0.7 * Math.max(0, 0.55 - load));
     dur *= 1 + 0.45 * sig * gauss();
     if (mixDur !== 1) dur *= mixDur;
+    // a cold charge burns slower, a heat-soaked one faster (sim/thermal.js)
+    if (this.burnK !== 1) dur *= this.burnK;
     if (dur < 20) dur = 20;
     // Spark advance for best torque (CA50 around 8-10 deg ATDC).
     let adv = 0.5 * dur - 9 + this.sparkTrim + this.ecu.sparkBase + this.sparkAdj - this.knockRet - this.tipRet;
@@ -217,7 +224,8 @@ export class CylinderMethods {
     const floatSev = this.floatSev;
     const cBi = this.cBi, cBe = this.cBe;
     let knockSnd = 0;
-    const Tint = this.Tpl;
+    // the charge as the ports and manifold leave it (sim/thermal.js)
+    const Tint = this.Tpl + this.chargeDT;
     const sqTint = Math.sqrt(Tint);
     const Tex = Math.max(450, this.egt * 0.85);
     const sqTex = Math.sqrt(Tex);
@@ -227,6 +235,8 @@ export class CylinderMethods {
     let vtExc = 0, slapExc = 0, injExc = 0;
     let combExc = 0;
     const seatIn = this.seatIn, seatEx = this.seatEx, lashIn = this.lashIn, lashEx = this.lashEx;
+    // bled-down hydraulic lifters (per cylinder, sim/thermal.js)
+    const cBleed = this.cBleed, hydOn = this.th.bleed > 1e-3 && this.hydJ > 0;
     const slapOn = this.slapK > 0, injJ = this.injJ, cTol = this.cTol;
     const ivo = this.cfg.ivo;
     for (let c = 0; c < n; c++) {
@@ -258,7 +268,7 @@ export class CylinderMethods {
         }
         if (crossed(caPrev, ca, evo)) {
           this.onEVO(c);
-          vtExc += lashEx * cTol[c];
+          vtExc += (lashEx + cBleed[c]) * cTol[c];
         }
         if (crossed(caPrev, ca, evc)) {
           vtExc += seatEx * cTol[c];
@@ -267,7 +277,7 @@ export class CylinderMethods {
             vtExc += seatEx * floatSev * 3;
           }
         }
-        if (lashIn > 0 && crossed(caPrev, ca, ivo)) vtExc += lashIn * cTol[c];
+        if ((lashIn > 0 || hydOn) && crossed(caPrev, ca, ivo)) vtExc += (lashIn + cBleed[c]) * cTol[c];
         // dead centres are every 180 degrees, top centres at 0 and 360: the
         // piston slaps across the bore at each, and port injection ends
         // before the intake valve opens at the top of the exhaust stroke
