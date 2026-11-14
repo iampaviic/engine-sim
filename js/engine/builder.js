@@ -485,7 +485,6 @@ export function designToSpec(d) {
 
   spec.sound = {
     exhaust: 1,
-    intake: d.intake.itb ? 1.3 : 1.1,
     valvetrain: d.layout === 'rotary' ? 'none' : d.valvetrain === 'sohc' ? 'dohc' : d.valvetrain,
     trim: d.calib?.trim ?? estimateTrim(d, L, n),
   };
@@ -590,7 +589,7 @@ function applyBase(d, gen) {
 // Rough loudness trim until the virtual dyno has measured the real one.
 function estimateTrim(d, L, n) {
   let t = 0.9 / Math.sqrt(Math.max(0.5, L));
-  if (d.induction.type === 'turbo') t *= 1.5;
+  if (d.induction.type === 'turbo') t *= 1.8;
   if (d.exhaust.muffler === 'none') t *= 0.45;
   else if (d.exhaust.muffler === 'stock') t *= 1.6;
   if (d.exhaust.cat) t *= 1.2;
