@@ -146,6 +146,12 @@ export class StarterMethods {
     }
   }
 
+  // Ignition on: after a hot soak the rail holds vapour.
+  keyOn() {
+    if (this.kick || this.twoStroke) return;
+    this.keyOnVapour();
+  }
+
   // Kick start: one stroke of the lever turns the crank ~2.5 times, then the
   // gear lets go and the lever springs back up over its ratchet. Another
   // kick follows if the engine didn't catch.

@@ -1071,7 +1071,7 @@ function inletSpec(spec, displacement) {
 }
 
 // ---------------------------------------------------------------------------
-// Engine temperature: six lumped masses and the paths heat takes between
+// Engine temperature: seven lumped masses and the paths heat takes between
 // them and out to the air, sized from the engine. The worklet integrates them
 // (worklet/sim/thermal.js, which says what each mass is); the app uses the
 // same numbers to cool a stored engine down by the time it was left.
@@ -1085,7 +1085,8 @@ function inletSpec(spec, displacement) {
 // counts with the crank, rods and pistons, a fifth of the engine in steel.
 // The metal round the chambers and exhaust ports is a twentieth of the
 // engine, the intake manifold a twenty-fifth, the exhaust manifold
-// and down pipe a sixteenth in steel.
+// and down pipe a sixteenth in steel; the fuel rail and its fuel hold
+// 400 J/K for a 2 L engine and soak up from the manifold in a few minutes.
 //
 // Heat. A spark-ignition engine sends roughly a quarter to a third of its
 // fuel's energy into the coolant, the larger share at light load (Heywood,
@@ -1099,8 +1100,9 @@ function inletSpec(spec, displacement) {
 // two hours to cool from 90 °C to within a third of the way to ambient
 // (half-cold after an afternoon, cold overnight), twenty-odd minutes to warm
 // up at idle and a few minutes driving. The pump, the oil's contact with
-// the block, the intake manifold's flange and the exhaust's glow on the
-// intake side are estimates.
+// the block, the intake manifold's flange, the exhaust manifold's flange
+// on the head (6 W/K for a 2 L engine) and the exhaust's glow on the intake
+// side are estimates.
 // ---------------------------------------------------------------------------
 function thermalSpec(spec, dispLitres, displacement) {
   const iron = spec.block === 'iron';
@@ -1128,6 +1130,7 @@ function thermalSpec(spec, dispLitres, displacement) {
     cO: (twoStroke ? 0.8 : 2 + 1.1 * l9) * 1740 + 0.2 * mass * 470,
     cM: 0.04 * mass * 900,
     cX: 0.06 * mass * 500,
+    cR: 400 * surf,
     gWH: qCool / 60,
     // the water pump moves a quarter of the coolant a second at 3,000 rpm;
     // stopped, the head and block mix only by thermosiphon (~10 minutes)
@@ -1136,6 +1139,8 @@ function thermalSpec(spec, dispLitres, displacement) {
     gBO: 100 * l9,
     gHM: 2.5 * surf,
     gXM: 0.6 * surf,
+    gRM: 2 * surf,
+    gXH: 6 * surf,
     gRad,
     uDesign: 10,
     uNat: 0.15,

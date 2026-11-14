@@ -52,12 +52,15 @@ export class EngineProcessor extends AudioWorkletProcessor {
         if (m.launch != null) this.sim.launch = !!m.launch;
         if (m.nos != null) this.sim.nosBtn = !!m.nos;
         break;
-      case 'ignition':
+      case 'ignition': {
         if (!this.sim) return;
+        const was = this.sim.ignition;
         this.sim.ignition = !!m.on;
+        if (m.on && !was) this.sim.keyOn();
         if (m.on && m.crank) this.sim.crankStart();
         if (!m.on) this.sim.starter = false;
         break;
+      }
       case 'thermal':
         // the engine's temperatures: a stored state, or forced cold or warm
         this.sim?.setThermal(m);
@@ -203,7 +206,7 @@ export class EngineProcessor extends AudioWorkletProcessor {
       // same car: same temperatures, same lifters, the same fan still turning
       Object.assign(sim.th, old.th);
       sim.ambT = old.ambT;
-      sim.heldSet = old.heldSet;
+      for (const k of ['vapour', 'heldSet']) sim[k] = old[k];
       for (let c = 0; c < sim.n; c++) sim.cHeld[c] = old.cHeld[c % old.n];
       sim.thermalEffects();
       // a start in progress carries on with the new hardware

@@ -1,4 +1,4 @@
-// Engine temperature, at control rate, and what it changes: six lumped
+// Engine temperature, at control rate, and what it changes: seven lumped
 // masses heated by the fuel's heat and the engine's friction, cooled by the
 // radiator and the air.
 //
@@ -7,6 +7,7 @@
 //   b  the rest of the coolant and the block
 //   o  the oil, with the crank, rods, pistons and sump
 //   m  the intake manifold
+//   r  the fuel rail and the fuel in it
 //   x  the exhaust manifold and down pipe
 //
 // The masses and conductances come from the engine's size (compile.js,
@@ -33,6 +34,9 @@ const THERMO_FULL = 365.15;
 // Radiator fan: on at 100 °C, off again at 96 °C.
 const FAN_ON = 373.15;
 const FAN_OFF = 369.15;
+// The fuel washing through the rail while the pump runs, return flow
+// included: about 30 W/K (an estimate).
+const RAIL_FLOW = 30;
 
 // Kinematic viscosity (cSt) of a 5W-30 oil at T kelvin, by Walther's
 // equation (ASTM D341) through its data-sheet points, 64 cSt at 40 °C and
@@ -66,12 +70,12 @@ function exhaustRef(amb) {
 
 // A fresh state object, fully warm (the default) or cold through at amb.
 export function newThermal(p, amb = T_AMB, cold = false) {
-  const s = { w: 0, h: 0, b: 0, o: 0, m: 0, x: 0, th: 0, fan: false, after: 0, bleed: 0, runT: 0 };
+  const s = { w: 0, h: 0, b: 0, o: 0, m: 0, r: 0, x: 0, th: 0, fan: false, after: 0, bleed: 0, runT: 0 };
   return setThermalState(p, s, amb, cold);
 }
 export function setThermalState(p, s, amb, cold) {
   if (cold) {
-    s.w = s.h = s.b = s.o = s.m = s.x = amb;
+    s.w = s.h = s.b = s.o = s.m = s.r = s.x = amb;
     s.th = 0;
     // a night's rest: the lifters held open by their cams have bled down
     s.bleed = 1;
@@ -80,6 +84,7 @@ export function setThermalState(p, s, amb, cold) {
     s.w = T_WARM + 4;
     s.o = T_OIL_WARM;
     s.m = manifoldRef(p, amb);
+    s.r = amb + 5 + ((s.m - amb - 5) * p.gRM) / (p.gRM + RAIL_FLOW);
     s.x = exhaustRef(amb);
     s.th = 0.5;
     s.bleed = 0;
@@ -94,7 +99,8 @@ export function setThermalState(p, s, amb, cold) {
 // turns the pumps), rpm, fuelW (fuel power, W), load (0..1), fricW
 // (friction power, W), air (kg/s drawn in), eps (the share of the wall's
 // excess temperature the charge picks up), tin (K, air arriving at the
-// ports), exFlow (kg/s), egt (K), v (road speed, m/s), amb (K).
+// ports), exFlow (kg/s), egt (K), v (road speed, m/s), pump (the fuel pump
+// runs), amb (K).
 export function thermalStep(p, s, q, dt) {
   const a = q.amb;
   const run = q.run;
@@ -133,19 +139,27 @@ export function thermalStep(p, s, q, dt) {
   // radiator (a few percent of the pump's flow, an estimate)
   const gR = open * rad * (run ? 1 : 0.03);
   s.w = relax(s.w, p.cW, gWH, gWH * s.h, 0.95 * qGas, dt);
-  s.h = relax(s.h, p.cH, gWH + gHB + p.gHM + gR, gWH * s.w + gHB * s.b + p.gHM * s.m + gR * a, -0.5 * qCh, dt);
+  // (the exhaust manifold's flange conducts into the head: running, a share
+  // of the exhaust's heat; stopped, the heat soak that lifts the head's
+  // coolant for minutes after a hard run)
+  s.h = relax(s.h, p.cH, gWH + gHB + p.gHM + gR + p.gXH, gWH * s.w + gHB * s.b + p.gHM * s.m + gR * a + p.gXH * s.x, -0.5 * qCh, dt);
   const gBA = p.aEng * hb;
   s.b = relax(s.b, p.cB, gHB + gBO + gBA, gHB * s.h + gBO * s.o + gBA * a, 0.5 * qFr, dt);
   const gOA = p.aSump * hu;
   s.o = relax(s.o, p.cO, gBO + gOA, gBO * s.b + gOA * a, 0.5 * qFr + 0.05 * qGas, dt);
   const gMA = p.aMan * hb;
   s.m = relax(s.m, p.cM, p.gHM + gMA + p.gXM, p.gHM * s.h + gMA * a + p.gXM * s.x, -0.5 * qCh, dt);
+  // The fuel rail sits on the manifold. While the pump runs, fuel from the
+  // tank (a few kelvin above the air) keeps it cool; stopped, it soaks up
+  // towards the manifold's temperature over a few minutes.
+  const gF = q.pump ? RAIL_FLOW : 0;
+  s.r = relax(s.r, p.cR, p.gRM + gF, p.gRM * s.m + gF * (a + 5), 0, dt);
   // The exhaust: heated by the gas (pulsing pipe flow, 20 to 250 W/m^2 K
   // with the flow), cooled by the air and by its own glow (emissivity 0.85,
   // which dominates once it is hot).
   const gGX = run ? p.aX * (20 + 230 * Math.pow(q.exFlow / p.exMax, 0.8)) : 0;
   const gXA = p.aX * (hu + 4.8e-8 * (s.x * s.x + a * a) * (s.x + a));
-  s.x = relax(s.x, p.cX, gGX + gXA + p.gXM, gGX * q.egt + gXA * a + p.gXM * s.m, 0, dt);
+  s.x = relax(s.x, p.cX, gGX + gXA + p.gXM + p.gXH, gGX * q.egt + gXA * a + p.gXM * s.m + p.gXH * s.h, 0, dt);
 
   // The fan runs on the sender's temperature, and for ten minutes after
   // the engine stops it may come on again to clear the heat soak.
@@ -168,7 +182,7 @@ export function thermalStep(p, s, q, dt) {
 
 // Cool a stopped engine down by secs seconds: the app's catch-up for the
 // time it was not running.
-const SOAK_IN = { run: false, rpm: 0, fuelW: 0, load: 0, fricW: 0, air: 0, eps: 0, tin: T_AMB, exFlow: 0, egt: T_AMB, v: 0, amb: T_AMB };
+const SOAK_IN = { run: false, rpm: 0, fuelW: 0, load: 0, fricW: 0, air: 0, eps: 0, tin: T_AMB, exFlow: 0, egt: T_AMB, v: 0, pump: false, amb: T_AMB };
 export function soakThermal(p, s, secs, amb = T_AMB) {
   SOAK_IN.amb = SOAK_IN.tin = SOAK_IN.egt = amb;
   let t = Math.min(secs, 2 * 86400);
@@ -191,7 +205,7 @@ export class ThermalMethods {
     this.thP = p;
     this.ambT = T_AMB; // the one ambient temperature (weather will set it)
     this.th = newThermal(p, this.ambT);
-    this.thQ = { run: false, rpm: 0, fuelW: 0, load: 0, fricW: 0, air: 0, eps: 0, tin: T_AMB, exFlow: 0, egt: T_AMB, v: 0, amb: T_AMB };
+    this.thQ = { run: false, rpm: 0, fuelW: 0, load: 0, fricW: 0, air: 0, eps: 0, tin: T_AMB, exFlow: 0, egt: T_AMB, v: 0, pump: false, amb: T_AMB };
     // what the cylinders burned and breathed since the last control step
     this.thFuel = 0;
     this.thAir = 0;
@@ -207,6 +221,7 @@ export class ThermalMethods {
     this.burnK = 1;
     this.eps = 0.27;
     this.covCold = 0;
+    this.vapour = 0; // share of the fuel rail that is vapour after a hot soak
     // piston clearance against block temperature (mechSpec)
     this.clrK = cfg.mech.slap.dcdT / Math.max(1e-9, cfg.mech.slap.clearance);
     this.slapK0 = this.slapK;
@@ -251,6 +266,7 @@ export class ThermalMethods {
     q.exFlow = 1.07 * this.thAirS;
     q.egt = this.egt;
     q.v = this.v;
+    q.pump = this.ignition && this.omega > 10;
     q.tin = this.boosted ? this.TB : this.Tpl;
     // the charge picks up a quarter of the walls' excess at idle flow, less
     // as the flow grows (heat transfer ~ flow^0.8)
@@ -271,6 +287,12 @@ export class ThermalMethods {
       }
     } else if (q.run) this.heldSet = false;
     if (this.hydJ > 0) for (let c = 0; c < this.n; c++) this.cBleed[c] = this.cHeld[c] * s.bleed * this.hydJ;
+
+    // vapour in the rail collapses under the pump's pressure in a few seconds
+    if (this.vapour > 0) {
+      if (this.ignition) this.vapour *= Math.exp(-dtc / 4);
+      if (this.vapour < 0.005) this.vapour = 0;
+    }
   }
 
   // What the temperatures change, each neutral at the warm state.
@@ -309,5 +331,14 @@ export class ThermalMethods {
       this.slapK = k === 1 ? this.slapK0 : this.slapK0 * Math.cbrt(k * k);
       this.slapCross = this.slapCross0 * k;
     }
+  }
+
+  // Key on: after a hot soak the fuel in the rail has partly boiled (its
+  // light ends, once the rail is past about 70 °C and its pressure has bled
+  // away), so the first injections run lean until the pump's pressure
+  // collapses the bubbles. (Estimates.)
+  keyOnVapour() {
+    if (!this.thP.injected || this.running) return;
+    this.vapour = 0.6 * clamp((this.th.r - 343.15) / 20, 0, 1);
   }
 }

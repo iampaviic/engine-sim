@@ -57,6 +57,8 @@ export class CylinderMethods {
       afr = afr0 = 10.5;
     }
     if (this.launchCut) afr = afr0 = 11.5;
+    // after a hot soak, vapour in the rail: the first injections run lean
+    if (this.vapour > 0) afr /= 1 - this.vapour;
     if (this.tcCut > 0.45 && rnd() < (this.tcCut - 0.45) * 1.6) fuelOn = false; // TC cuts fuel
     // (the nitrous kit adds the fuel to match its oxygen)
     const fuel = fuelOn ? o2 / afr : 0;
