@@ -3,7 +3,7 @@
 // subsystem.
 
 import { AFR_ST, CHOKE_AIR, CV, DYN_WASTEGATE, INV4PI, N_SRC, P_AMB, PI, R, RAD2DEG, T_AMB, TAU } from './constants.js';
-import { Band4, clamp, crossed, lpCoef, Modes, ResBank } from './dsp.js';
+import { Band4, clamp, crossed, lpCoef, Modes } from './dsp.js';
 import { Net } from './net.js';
 import { ListenMethods } from './listener.js';
 import { EcuMethods } from './sim/ecu.js';
@@ -12,6 +12,7 @@ import { StarterMethods } from './sim/starter.js';
 import { InductionMethods } from './sim/induction.js';
 import { NitrousMethods } from './sim/nitrous.js';
 import { DrivetrainMethods } from './sim/drivetrain.js';
+import { MechanicalMethods } from './sim/mechanical.js';
 import { AeroMethods } from './sim/aero.js';
 import { SourceMethods } from './sim/sources.js';
 import { mixin } from './mixin.js';
@@ -67,7 +68,6 @@ export class EngineSim {
     this.cCA = new Float64Array(n);
     this.cP = new Float64Array(n);
     this.cP1 = new Float64Array(n);
-    this.cP2 = new Float64Array(n);
     this.cFuel = new Float64Array(n);
     this.cBurnable = new Float64Array(n);
     this.cQ = new Float64Array(n);
@@ -90,7 +90,6 @@ export class EngineSim {
       this.cMb[c] = 0.05 * m;
       this.cP[c] = P_AMB;
       this.cP1[c] = P_AMB;
-      this.cP2[c] = P_AMB;
     }
 
     // Two-stroke: a sealed crankcase under each piston, fed through a reed
@@ -447,22 +446,12 @@ export class EngineSim {
     this.tcCut = 0;
     this.slip = 0;
     this.gearTorque = 0;
-    this.gearPhase = 0;
     this.dynoLoad = 0;
     this.dynoI = 0;
     this.dyno = null;
 
     // Sound bits
     this.snd = cfg.sound;
-    this.valvetrain = new ResBank(
-      cfg.sound.valvetrain === 'ohv' ? [2300, 3900, 6100] : cfg.sound.valvetrain === 'pneumatic' ? [3400, 5600, 8800] : [3100, 5200, 8200],
-      [9, 12, 14],
-      [1, 0.7, 0.45],
-      fs
-    );
-    this.block = new ResBank([780, 1350, 2150, 3300], [6, 7, 8, 9], [1, 0.8, 0.55, 0.35], fs);
-    this.vtExc = 0;
-    this.combExc = 0;
     this.srcBuf = new Float64Array(N_SRC);
     this.ibLp1 = 0;
     this.ibLp2 = 0;
@@ -552,19 +541,15 @@ export class EngineSim {
     this.itb = cfg.itb ? 1 : 0;
     this.rasp26 = 26 * cfg.sound.rasp;
     this.exG = INV4PI * cfg.sound.exhaust;
-    const vtt = cfg.sound.valvetrain;
-    this.vtK = vtt === 'ohv' ? 1.5 : vtt === 'pneumatic' ? 0.6 : vtt === 'none' ? 0 : 1;
-    this.gearK = cfg.sound.gear * (cfg.vehicle.straightCut ? 1 : 0.2);
     this.initStarter(cfg);
     this.boosted = this.isTurbo || this.isSC || this.isCentri;
+    this.initMech(cfg);
     const vh = cfg.vehicle;
     this.axleLoad = vh.mass * 9.81 * (vh.drive === 'awd' ? 1 : vh.rearBias);
     this.loadTransfer = vh.drive === 'awd' ? 0 : vh.mass * 0.2;
     this.brakeK = vh.brakeK ?? vh.mass * 9.81 * 0.95;
     this.dragK = 0.5 * 1.2 * vh.cd * vh.area;
     this.rollK = vh.mass * 9.81 * 0.012;
-    this.vtExcS = 0;
-    this.combExcS = 0;
     this.turboSnd = 0;
     this.scopePrevCA = 0;
     this.posts = [];
@@ -650,4 +635,4 @@ export class EngineSim {
 // methods, copied onto the prototype once, here. After that they are
 // ordinary methods, so a call from the per-sample loop costs what it would
 // if the whole class were written in this file.
-mixin(EngineSim, EcuMethods, CylinderMethods, StarterMethods, InductionMethods, NitrousMethods, DrivetrainMethods, AeroMethods, SourceMethods, ListenMethods);
+mixin(EngineSim, EcuMethods, CylinderMethods, StarterMethods, InductionMethods, NitrousMethods, DrivetrainMethods, MechanicalMethods, AeroMethods, SourceMethods, ListenMethods);

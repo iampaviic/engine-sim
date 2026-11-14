@@ -55,7 +55,7 @@ const V12_65 = {
     layout: 'front',
     shiftTime: 0.1,
   },
-  sound: { exhaust: 1, intake: 1.2, mech: 0.8, valvetrain: 'dohc', trim: 0.25, starter: 1.2 },
+  sound: { exhaust: 1, intake: 1.2, valvetrain: 'dohc', trim: 0.25, starter: 1.2 },
 };
 
 const V12_60 = {
@@ -108,7 +108,7 @@ const V12_60 = {
     drive: 'awd',
     shiftTime: 0.06,
   },
-  sound: { exhaust: 1.1, intake: 1.1, mech: 0.8, valvetrain: 'dohc', trim: 0.33, starter: 1.35 },
+  sound: { exhaust: 1.1, intake: 1.1, valvetrain: 'dohc', trim: 0.33, starter: 1.35 },
 };
 
 const V8_LS = {
@@ -159,7 +159,7 @@ const V8_LS = {
     layout: 'front',
     shiftTime: 0.22,
   },
-  sound: { exhaust: 1, intake: 0.8, mech: 1, valvetrain: 'ohv', trim: 1.45, starter: 0.34 },
+  sound: { exhaust: 1, intake: 0.8, valvetrain: 'ohv', trim: 1.45, starter: 0.34 },
 };
 
 const V8_BIGBLOCK = {
@@ -171,6 +171,7 @@ const V8_BIGBLOCK = {
   blurb:
     'Late-sixties big-block with a race cam: 84° of valve overlap. Exhaust gas pushes back into the intake at idle, combustion gets ragged, and the idle lopes. Headers into glasspacks, no crossover.',
   listen: 'The choppy idle is not scripted. It comes from high residual gas making every cycle burn a little differently.',
+  block: 'iron',
   cylinders: 8,
   bore: 108,
   stroke: 96,
@@ -212,7 +213,7 @@ const V8_BIGBLOCK = {
     shiftTime: 0.3,
     mu: 1.0,
   },
-  sound: { exhaust: 1.1, intake: 1.3, mech: 1.3, valvetrain: 'ohv', trim: 0.71, starter: 4.9 },
+  sound: { exhaust: 1.1, intake: 1.3, valvetrain: 'ohv', trim: 0.71, starter: 4.9, lifters: 'solid', injection: 'none' },
 };
 
 const V8_BLOWER = {
@@ -264,7 +265,7 @@ const V8_BLOWER = {
     layout: 'front',
     shiftTime: 0.16,
   },
-  sound: { exhaust: 1, intake: 1, mech: 1, valvetrain: 'ohv', gear: 0.2, trim: 0.77, starter: 0.66 },
+  sound: { exhaust: 1, intake: 1, valvetrain: 'ohv', trim: 0.77, starter: 0.66 },
 };
 
 const V8_FLAT = {
@@ -316,7 +317,7 @@ const V8_FLAT = {
     layout: 'mid',
     shiftTime: 0.08,
   },
-  sound: { exhaust: 1, intake: 1.2, mech: 0.8, valvetrain: 'dohc', trim: 0.4, starter: 1.6 },
+  sound: { exhaust: 1, intake: 1.2, valvetrain: 'dohc', trim: 0.4, starter: 1.6 },
 };
 
 const I6_TURBO = {
@@ -328,6 +329,7 @@ const I6_TURBO = {
   blurb:
     'Iron-block straight six on a large single turbo at 1.4 bar. The turbine soaks up the exhaust pulses; the compressor whistles as it spools; lift off and the blow-off valve vents.',
   listen: 'Switch the blow-off valve off in the workshop to hear real compressor surge flutter.',
+  block: 'iron',
   cylinders: 6,
   bore: 86,
   stroke: 86,
@@ -363,7 +365,7 @@ const I6_TURBO = {
     layout: 'front',
     shiftTime: 0.2,
   },
-  sound: { exhaust: 1.1, intake: 1, mech: 0.9, valvetrain: 'dohc', trim: 0.543, starter: 1.49 },
+  sound: { exhaust: 1.1, intake: 1, valvetrain: 'dohc', trim: 0.543, starter: 1.49, timing: 'belt' },
 };
 
 const F6_GT = {
@@ -415,7 +417,7 @@ const F6_GT = {
     shiftTime: 0.07,
     mu: 1.3,
   },
-  sound: { exhaust: 1, intake: 1.5, mech: 1, valvetrain: 'dohc', trim: 0.5, starter: 1.4 },
+  sound: { exhaust: 1, intake: 1.5, valvetrain: 'dohc', trim: 0.5, starter: 1.4 },
 };
 
 const V10_72 = {
@@ -466,7 +468,7 @@ const V10_72 = {
     layout: 'front',
     shiftTime: 0.1,
   },
-  sound: { exhaust: 1, intake: 1.4, mech: 0.8, valvetrain: 'dohc', trim: 0.68, starter: 0.84 },
+  sound: { exhaust: 1, intake: 1.4, valvetrain: 'dohc', trim: 0.68, starter: 0.84 },
 };
 
 const F1_V10 = {
@@ -523,7 +525,7 @@ const F1_V10 = {
     shiftTime: 0.04,
     mu: 1.9,
   },
-  sound: { exhaust: 1, intake: 1.2, mech: 1, valvetrain: 'pneumatic', gear: 0.8, trim: 0.102, starter: 20.87 },
+  sound: { exhaust: 1, intake: 1.2, valvetrain: 'pneumatic', trim: 0.102, starter: 20.87 },
 };
 
 const I4_RALLY = {
@@ -535,6 +537,7 @@ const I4_RALLY = {
   blurb:
     'Stage-rally four with a restricted turbo and an anti-lag system. Off throttle, the ECU keeps air flowing and retards the spark so far that fuel burns in the exhaust manifold, which keeps the turbo spinning.',
   listen: 'Lift off the throttle and the anti-lag bangs start.',
+  block: 'iron',
   cylinders: 4,
   bore: 86,
   stroke: 86,
@@ -573,7 +576,7 @@ const I4_RALLY = {
     shiftTime: 0.05,
     mu: 1.05,
   },
-  sound: { exhaust: 1.1, intake: 1, mech: 1, valvetrain: 'dohc', gear: 0.7, trim: 0.9, starter: 1.64 },
+  sound: { exhaust: 1.1, intake: 1, valvetrain: 'dohc', trim: 0.9, starter: 1.64, timing: 'belt' },
 };
 
 const I4_VTEC = {
@@ -621,7 +624,7 @@ const I4_VTEC = {
     layout: 'front',
     shiftTime: 0.22,
   },
-  sound: { exhaust: 1, intake: 1.4, mech: 1.1, valvetrain: 'dohc', trim: 0.81, starter: 0.91 },
+  sound: { exhaust: 1, intake: 1.4, valvetrain: 'dohc', trim: 0.81, starter: 0.91 },
 };
 
 const F4_TURBO = {
@@ -672,7 +675,7 @@ const F4_TURBO = {
     layout: 'front',
     shiftTime: 0.2,
   },
-  sound: { exhaust: 1.1, intake: 1, mech: 1, valvetrain: 'dohc', trim: 0.499, starter: 0.88 },
+  sound: { exhaust: 1.1, intake: 1, valvetrain: 'dohc', trim: 0.499, starter: 0.88, timing: 'belt' },
 };
 
 const ROTARY = {
@@ -724,7 +727,7 @@ const ROTARY = {
     layout: 'front',
     shiftTime: 0.2,
   },
-  sound: { exhaust: 1.1, intake: 1.2, mech: 0.5, valvetrain: 'none', trim: 0.42, starter: 6.59 },
+  sound: { exhaust: 1.1, intake: 1.2, valvetrain: 'none', trim: 0.42, starter: 6.59 },
 };
 
 const VTWIN = {
@@ -774,7 +777,7 @@ const VTWIN = {
     shiftTime: 0.25,
     mu: 1.0,
   },
-  sound: { exhaust: 1.2, intake: 1.2, mech: 1.6, valvetrain: 'ohv', trim: 0.79, starter: 1.12 },
+  sound: { exhaust: 1.2, intake: 1.2, valvetrain: 'ohv', trim: 0.79, starter: 1.12 },
 };
 
 const MX250 = {
@@ -827,7 +830,7 @@ const MX250 = {
     shiftTime: 0.15,
     mu: 1.0,
   },
-  sound: { exhaust: 1, intake: 1.2, mech: 0.6, valvetrain: 'none', trim: 3.07, starter: 5.65 },
+  sound: { exhaust: 1, intake: 1.2, valvetrain: 'none', trim: 3.07, starter: 5.65 },
 };
 
 const V12_2T = {
@@ -884,7 +887,7 @@ const V12_2T = {
     shiftTime: 0.05,
     mu: 1.4,
   },
-  sound: { exhaust: 1, intake: 1.2, mech: 0.6, valvetrain: 'none', trim: 1.33, starter: 2.24 },
+  sound: { exhaust: 1, intake: 1.2, valvetrain: 'none', trim: 1.33, starter: 2.24 },
 };
 
 const I6_SEQ = {
@@ -896,6 +899,7 @@ const I6_SEQ = {
   blurb:
     'The iron-block 3.0 L straight six as it left the factory, before the tuners got to it: a small turbo does the work alone low down, then a valve opens the exhaust to its twin at 4,000 rpm and both blow together. Silky 1-5-3-6-2-4 firing on top.',
   listen: 'Pull through 4,000 rpm and hear the second turbo join. The Tuner Six is the same block on one big turbo.',
+  block: 'iron',
   cylinders: 6,
   bore: 86,
   stroke: 86,
@@ -931,7 +935,7 @@ const I6_SEQ = {
     layout: 'front',
     shiftTime: 0.22,
   },
-  sound: { exhaust: 1.1, intake: 1, mech: 0.9, valvetrain: 'dohc', trim: 2.47, starter: 0.35 },
+  sound: { exhaust: 1.1, intake: 1, valvetrain: 'dohc', trim: 2.47, starter: 0.35, timing: 'belt' },
 };
 
 const I6_GTA = {
@@ -943,6 +947,7 @@ const I6_GTA = {
   blurb:
     'A short-stroke 2.6 L six built to win touring-car races: two small turbos, one for the front three cylinders and one for the rear three, and six individual throttles. Revs to 8,000 and sounds harder and raspier than the longer-stroke 3.0.',
   listen: 'Hold it in third through 7,000 rpm. The throttles howl over the turbos.',
+  block: 'iron',
   cylinders: 6,
   bore: 86,
   stroke: 73.7,
@@ -979,7 +984,7 @@ const I6_GTA = {
     layout: 'front',
     shiftTime: 0.25,
   },
-  sound: { exhaust: 1.05, intake: 1.2, mech: 0.9, valvetrain: 'dohc', trim: 1.008, starter: 1.33 },
+  sound: { exhaust: 1.05, intake: 1.2, valvetrain: 'dohc', trim: 1.008, starter: 1.33, timing: 'belt' },
 };
 
 const V6_TT = {
@@ -1033,7 +1038,7 @@ const V6_TT = {
     shiftTime: 0.06,
     mu: 1.25,
   },
-  sound: { exhaust: 1, intake: 1, mech: 1, valvetrain: 'dohc', gear: 0.9, trim: 1.306, starter: 0.82 },
+  sound: { exhaust: 1, intake: 1, valvetrain: 'dohc', trim: 1.306, starter: 0.82 },
 };
 
 const I4_TOUGE = {
@@ -1080,7 +1085,7 @@ const I4_TOUGE = {
     shiftTime: 0.3,
     mu: 1.0,
   },
-  sound: { exhaust: 1.05, intake: 1.5, mech: 1.1, valvetrain: 'dohc', trim: 0.919, starter: 1.49 },
+  sound: { exhaust: 1.05, intake: 1.5, valvetrain: 'dohc', trim: 0.919, starter: 1.49 },
 };
 
 const ROTARY_TT = {
@@ -1132,7 +1137,7 @@ const ROTARY_TT = {
     layout: 'front',
     shiftTime: 0.2,
   },
-  sound: { exhaust: 1.1, intake: 1.1, mech: 0.5, valvetrain: 'none', trim: 1.99, starter: 2.98 },
+  sound: { exhaust: 1.1, intake: 1.1, valvetrain: 'none', trim: 1.99, starter: 2.98 },
 };
 
 const V8_HOTVEE = {
@@ -1185,7 +1190,7 @@ const V8_HOTVEE = {
     layout: 'front',
     shiftTime: 0.1,
   },
-  sound: { exhaust: 1, intake: 1, mech: 0.9, valvetrain: 'dohc', trim: 1.858, starter: 0.92 },
+  sound: { exhaust: 1, intake: 1, valvetrain: 'dohc', trim: 1.858, starter: 0.92, injection: 'di' },
 };
 
 const I5_TURBO = {
@@ -1197,6 +1202,7 @@ const I5_TURBO = {
   blurb:
     'Five cylinders fire every 144°, two and a half pulses per crank turn, so the note sits between a four and a six. The 1-2-4-5-3 order hops back and forth along the block, and each pulse reaches the turbo from a different distance. That is the warble.',
   listen: 'Rev it slowly from idle: the warble is the 2.5th engine order beating against its neighbours.',
+  block: 'iron',
   cylinders: 5,
   bore: 82.5,
   stroke: 92.8,
@@ -1234,7 +1240,7 @@ const I5_TURBO = {
     layout: 'front',
     shiftTime: 0.08,
   },
-  sound: { exhaust: 1.1, intake: 1.1, mech: 1, valvetrain: 'dohc', trim: 1.679, starter: 0.94 },
+  sound: { exhaust: 1.1, intake: 1.1, valvetrain: 'dohc', trim: 1.679, starter: 0.94, timing: 'belt' },
 };
 
 const W16 = {
@@ -1287,7 +1293,7 @@ const W16 = {
     drive: 'awd',
     shiftTime: 0.08,
   },
-  sound: { exhaust: 1, intake: 1, mech: 0.9, valvetrain: 'dohc', trim: 3.835, starter: 0.6 },
+  sound: { exhaust: 1, intake: 1, valvetrain: 'dohc', trim: 3.835, starter: 0.6 },
 };
 
 export const PRESETS = [V12_65, V12_60, W16, V8_LS, V8_BIGBLOCK, V8_BLOWER, V8_HOTVEE, V8_FLAT, V10_72, F1_V10, F6_GT, V6_TT, I6_TURBO, I6_SEQ, I6_GTA, I5_TURBO, I4_RALLY, I4_VTEC, I4_TOUGE, F4_TURBO, ROTARY, ROTARY_TT, VTWIN, MX250, V12_2T];

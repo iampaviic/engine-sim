@@ -2,7 +2,7 @@
 // wastegate channels each sample, and captures the scope and pressure-wave
 // snapshots.
 
-import { INV4PI, KNOCK_RAD, P_AMB, SRC_BUF, SRC_MASK, TAU } from '../constants.js';
+import { INV4PI, P_AMB, SRC_BUF, SRC_MASK, TAU } from '../constants.js';
 import { crossed, rnd } from '../dsp.js';
 
 export class SourceMethods {
@@ -38,28 +38,15 @@ export class SourceMethods {
     intake = intake * INV4PI * snd.intake + this.turboSnd;
     if (this.nosFlow > 0 || this.purgeFlow > 0 || this.nosClick > 0 || this.nosRing > 0) intake += this.nitrousSound();
 
-    // mechanical: valve seating ticks + combustion knock through the block
-    if (rpm > 30 && this.vtExcS > 0) {
-      const r6 = rpm / 6000;
-      this.vtExc += this.vtExcS * r6 * (r6 + 0.15) * this.vtK * (0.7 + 0.6 * rnd());
-    }
-    const vtOut = this.valvetrain.tick(this.vtExc * (rnd() * 0.5 + 0.75));
-    this.vtExc *= 0.2;
-    const cb = this.block.tick(this.combExcS * 1e-4);
-    let mech = (vtOut * 7 + cb * 0.04 + this.knockSndS * KNOCK_RAD) * snd.mech;
-    // straight-cut / gearbox whine
-    if (this.gear > 0 && this.clutch > 0.5) {
-      const fin = (this.ww * this.veh.final) / TAU;
-      this.gearPhase += (fin * 29) / fs;
-      this.gearPhase -= Math.floor(this.gearPhase);
-      const amp = this.gearK * (0.02 + Math.abs(this.gearTorque) / 400) * Math.min(1, fin / 20);
-      mech += Math.sin(TAU * this.gearPhase) * amp + Math.sin(2 * TAU * this.gearPhase + 1) * amp * 0.4;
-    }
+    // mechanical: the engine's structure and accessories, the gearbox
+    let mech = this.stepMech(rpm, omega) * snd.mech;
+    this.axleSnd = 0;
+    if (this.gear > 0 && this.clutch > 0.5) mech += this.gearSound();
     if (this.stActive) mech += this.starterSound();
 
     // chassis: road, wind, tyre squeal
     // (a mic riding on the car hears the wind on its own, in aero())
-    let chassis = 0;
+    let chassis = this.axleSnd;
     if (this.v > 0.3) {
       const vv = this.v;
       const nz = rnd() - 0.5;

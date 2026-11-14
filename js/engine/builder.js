@@ -486,9 +486,7 @@ export function designToSpec(d) {
   spec.sound = {
     exhaust: 1,
     intake: d.intake.itb ? 1.3 : 1.1,
-    mech: d.valvetrain === 'ohv' ? 1.1 : d.valvetrain === 'pneumatic' ? 1 : 0.9,
     valvetrain: d.layout === 'rotary' ? 'none' : d.valvetrain === 'sohc' ? 'dohc' : d.valvetrain,
-    gear: car.straightCut ? 0.8 : 0.3,
     trim: d.calib?.trim ?? estimateTrim(d, L, n),
   };
 

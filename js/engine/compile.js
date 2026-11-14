@@ -1024,6 +1024,221 @@ export function nitrousSpec(spec, litres) {
   return { shot, max: Math.max(50, Math.round((0.9 * hp) / 25) * 25), bottle: spec.nitrous?.bottle ?? +(shot * 0.03).toFixed(2) };
 }
 
+// ---------------------------------------------------------------------------
+// Mechanical noise: the sound of the engine's own parts hitting each other,
+// radiated by its structure. Everything here is worked out from the engine's
+// dimensions, so a big pushrod V8 and a small twin-cam four differ the way
+// their hardware does.
+//
+// An impact of impulse J (N·s) on a structure of modal mass M sets it moving
+// at v = J / M, and a surface of area S moving at v radiates (above a few
+// hundred hertz, where the radiation efficiency is about 1)
+//   p(1 m) = rho c v sqrt(S / 2 pi).
+// The worklet rings the head and block modes with each impulse; the gains
+// below fold in M and S so its output is pascals at 1 m.
+//
+// As a check on the whole chain, Anderton's survey of 44 engines (SAE
+// 790270) and later measurements put a two-litre petrol four at roughly
+// 93-96 dB(A) at 1 m at rated speed; `node tools/sources.mjs` prints what
+// this model gives.
+// ---------------------------------------------------------------------------
+const RHO_C = 415; // air, Pa·s/m
+
+function mechSpec(spec, g, dispLitres, twoStroke) {
+  const snd = spec.sound ?? {};
+  const veh = spec.vehicle ?? {};
+  const ecu = spec.ecu ?? {};
+  const rotary = spec.kind === 'rotary';
+  const vt = rotary || twoStroke ? 'none' : snd.valvetrain ?? 'dohc';
+  const iron = spec.block === 'iron';
+  const limit = ecu.limit ?? 6500;
+
+  // --- the structure
+  // Geometrically similar structures ring at frequencies proportional to
+  // (speed of sound in the metal) / (size). The reference sets are a 2 L
+  // aluminium four (86 mm bore): block bending and torsion from about 780 Hz,
+  // head and cam-cover panels from about 3 kHz. A pushrod engine's rocker
+  // covers and long, soft valve train sit lower; a pneumatic race head higher.
+  // Grey iron: E about 110 GPa at 7,200 kg/m^3 against aluminium's 71 GPa at
+  // 2,700, so its modes are 0.76 times as high, and its graphite flakes damp
+  // them more.
+  const B = rotary ? 0.1 : mm(spec.bore);
+  const perBank = rotary ? spec.cylinders / 3 : spec.banks ? Math.max(...spec.banks.map((b) => b.length)) : spec.cylinders;
+  const len = perBank * 1.2 * B + 0.12; // bores at 1.2 B pitch, plus the end walls
+  const cRel = iron ? 0.76 : 1;
+  const kBlock = ((4 * 1.2 * 0.086 + 0.12) / len) * cRel;
+  const kHead = (0.086 / B) * cRel;
+  const headRef = vt === 'ohv' ? [2300, 3900, 6100] : vt === 'pneumatic' ? [3400, 5600, 8800] : [3100, 5200, 8200];
+  const blockQ = [6, 7, 8, 9].map((q) => q * (iron ? 0.75 : 1));
+  const headQ = [9, 12, 14].map((q) => q * (iron ? 0.75 : 1));
+  // Dressed engine mass: about 100 kg for a 2 L aluminium four, 250 kg for a
+  // 6 L V8, 28 kg for a 250 cc single; iron blocks a quarter more. Most of
+  // the sound leaves through the thin walls (sump, crankcase skirts, timing
+  // and cam covers), so the mass that moves is small: a twentieth of the
+  // engine in a block mode, a fortieth in a head or cover mode. That fraction
+  // is the least certain number here, and the one the measured levels above
+  // pin down. The radiating surface grows as mass^(2/3).
+  const mass = (15 + 45 * Math.pow(dispLitres, 0.9)) * (iron ? 1.25 : 1);
+  const area = 0.25 * Math.pow(mass / 100, 2 / 3);
+  const rad = (frac) => (RHO_C / (frac * mass)) * Math.sqrt(area / (2 * Math.PI));
+  const radBlock = rad(0.05), radHead = rad(0.025);
+  // The worklet's struck modes ring at (gain) x (impulse): these gains share
+  // one blow among the modes of a bank so that together they give (impulse)
+  // x (radiation) pascals.
+  const gains = (shape, r) => {
+    const sum = shape.reduce((a, b) => a + b, 0);
+    return shape.map((x) => (x / sum) * r);
+  };
+  // Below about c / (pi D) an engine-sized body is a poor radiator (its
+  // radiation efficiency falls as frequency squared).
+  const radF = 343 / (Math.PI * 2 * Math.sqrt(area));
+
+  // --- valves landing on their seats
+  // Closing ramps are designed to seat the valve at no more than about
+  // 0.4 m/s at the engine's rated speed; the cam turns that ramp at crank
+  // speed, so the seating velocity is proportional to rpm. The impulse is
+  // (moving mass) x (velocity) x (1 + restitution, about 0.3). A steel valve
+  // weighs about 50 g at a 33 mm head and grows as d^1.7 (120 g at 55 mm);
+  // the retainer and part of the spring land with it (x1.3), a rocker tip
+  // too on a pushrod engine (x1.5); a pneumatic head's titanium valves carry
+  // no spring (x0.63).
+  const v = spec.valves ?? {};
+  const valveMass = (d) => 0.05 * Math.pow(mm(d ?? 33) / 0.033, 1.7);
+  const kEff = vt === 'ohv' ? 1.5 : vt === 'pneumatic' ? 0.63 : 1.3;
+  const seat = (count, dia) => (vt === 'none' ? 0 : (count ?? 2) * valveMass(dia) * kEff * 0.4 * 1.3);
+  // Opening: the train takes up its lash and hits the valve tip at ramp
+  // velocity. Hydraulic lifters (the default on a pushrod engine) have no
+  // lash; solid lifters swing a rocker, pushrod and lifter (about 0.25 kg at
+  // the valve); a twin-cam's shimmed bucket is about 35 g a valve.
+  const lifters = snd.lifters ?? (vt === 'ohv' ? 'hydraulic' : 'solid');
+  const lashMass = vt === 'none' || lifters === 'hydraulic' ? 0 : vt === 'ohv' ? 0.25 : vt === 'pneumatic' ? 0.02 : 0.035;
+  const lash = (count) => lashMass * (vt === 'ohv' ? 1 : count ?? 2) * 0.4;
+
+  // --- piston slap
+  // At each dead centre the connecting rod swings through vertical and the
+  // side force on the piston reverses, throwing it across its clearance c.
+  // With the side force growing at a rate F' the piston (mass m) lands at
+  //   v = 1.651 (F' c^2 / m)^(1/3)        (Ungar and Ross, J. Sound Vib. 1965)
+  // and F' = (axial force) x (r / l) x omega there. The worklet evaluates the
+  // axial force (gas pressure less inertia) at each dead centre, so slap
+  // follows load and misfires. Running clearance is about 0.0006 of the bore
+  // warm (0.001 for a two-stroke, whose piston runs hotter than its bore). A
+  // piston is as heavy as its pin and rod can stand at the rev limit (about
+  // 1.5 MPa of inertia load over the bore area, which gives 0.55 kg for a
+  // 103 mm pushrod V8 at 6,600 rpm), never more than a plain cast piston of
+  // its size. The oil film takes up more than half the blow (x0.4) and
+  // spreads it in time: the worklet takes the blow to last about a third of
+  // the time the piston spent crossing, t = (6 m c / F')^(1/3), which is why
+  // a warm engine does not slap at idle (a slow, soft landing that the
+  // block's modes barely notice) and does at speed and load.
+  let slap = { k: 0, area: 0, inertia: 0, lambda: 0, cross: 0 };
+  if (!rotary) {
+    const r = mm(spec.stroke) / 2;
+    const l = mm(spec.rod ?? spec.stroke * 1.65);
+    const lambda = r / l;
+    const wLim = (limit * Math.PI) / 30;
+    const mP = Math.max(0.05, Math.min(0.5 * Math.pow(B / 0.086, 3), (1.5e6 * B * B) / (r * wLim * wLim * (1 + lambda))));
+    const c = (twoStroke ? 1e-3 : 6e-4) * B;
+    slap = { k: 0.4 * mP * 1.651 * Math.cbrt((c * c) / mP), area: g.pistonArea, inertia: 1.35 * mP * r, lambda, cross: 6 * mP * c };
+  }
+
+  // --- timing drive
+  // A roller chain meets its sprocket one link at a time (polygon action);
+  // each roller lands at v = (pi n p / 30) sin(360/z + gamma), gamma = 35 -
+  // 120/z degrees, for pitch p and z teeth at n rpm. A 21-tooth crank
+  // sprocket on 8 mm chain (3.5 g a link) gives 0.6 m/s per 1000 rpm; guides
+  // and oil take most of it (x0.3). A toothed rubber belt lands a tenth as
+  // hard. Spur gears (race engines, and the gear that phases a rotary's rotor)
+  // whine instead, the way a gearbox does (below): 2 um of transmission error
+  // for ground, lightly loaded gears, less still on a rotor's phasing gear.
+  const timing = snd.timing ?? (rotary ? 'gear' : twoStroke ? 'none' : vt === 'pneumatic' ? 'gear' : 'chain');
+  const drives = timing === 'none' ? 0 : rotary || vt === 'ohv' ? 1 : spec.banks?.length ?? 1;
+  const casing = (te) => ((RHO_C * 0.1 * 2.8e8 * te) / (2 * Math.PI * 6)) * Math.sqrt(0.2 / (2 * Math.PI));
+  let tim = { z: 0, impulse: 0, tone: 0 };
+  if (timing === 'chain' || timing === 'belt') {
+    const z = timing === 'chain' ? 21 : 22;
+    const pitch = timing === 'chain' ? 0.008 : 0.009525;
+    const gamma = 35 - 120 / z;
+    const v1000 = ((Math.PI * 1000 * pitch) / 30) * Math.sin(((360 / z + gamma) * Math.PI) / 180);
+    // N·s per tooth per rpm
+    tim = { z, impulse: ((timing === 'chain' ? 0.0035 * 0.3 : 0.0035 * 0.03) * v1000 * drives) / 1000, tone: 0 };
+  } else if (timing === 'gear') {
+    tim = { z: rotary ? 34 : 30, impulse: 0, tone: casing(2e-6) * drives * (rotary ? 0.3 : 1) };
+  }
+
+  // --- injectors
+  // Each injection ends with the needle (a few grams at about 1 m/s) hitting
+  // its seat: the same small blow at any speed, which is why injectors tick
+  // at idle and vanish under everything else at speed. The injector and rail
+  // are light and ring freely: about 0.1 Pa peak at 1 m per tick. Direct
+  // injection works against 100-200 bar and its high-pressure pump ticks too
+  // (x3). Carburettors and two-stroke carbs have none.
+  const injection = snd.injection ?? (twoStroke ? 'none' : 'port');
+  const injector = injection === 'none' ? 0 : ((injection === 'di' ? 0.3 : 0.1) / radHead);
+
+  // --- alternator
+  // A claw-pole alternator has 36 stator slots; the magnetic pull at the
+  // 36th order of its shaft is its whine. With a 2.8:1 pulley that is the
+  // 101st engine order. The level (60 dB at 1 m at an 800 rpm idle, charging
+  // hard) is an estimate; it grows with speed and with the charging current.
+  const alternator = (snd.alternator ?? !(twoStroke || vt === 'pneumatic')) ? { order: 36 * 2.8, pa: 0.02 } : { order: 0, pa: 0 };
+
+  // --- gearbox
+  // Gear whine is the transmission error of the loaded mesh (Smith, "Gear
+  // Noise and Vibration"): a force of (mesh stiffness, about 2.8e8 N/m for a
+  // 20 mm face) x (error) at the tooth frequency and its harmonics, of which
+  // about a tenth passes the bearings into the casing (6 kg modal mass,
+  // 0.2 m^2). The casing is mass-controlled above a few hundred hertz, so
+  // its velocity is F / (2 pi f M) and the sound p = rho c v sqrt(S / 2 pi).
+  // Ground helical gears hold the error to about 2 um; straight-cut race
+  // gears, with one pair of teeth carrying the load at a time, about 8 um and
+  // richer harmonics. Tooth counts come from the ratio on a fixed centre
+  // distance (66 teeth a pair, or 48 coarser ones in a race box). A front
+  // engine driving the rear wheels has a direct top gear (1.00) with no mesh
+  // in the power path, and its final drive is in the axle, not the gearbox.
+  const straight = !!veh.straightCut;
+  const transaxle = (veh.layout ?? 'front') !== 'front' || veh.drive === 'awd' || veh.drive === 'fwd';
+  const pair = straight ? 48 : 66;
+  const ratios = veh.gears ?? [3.2, 2.1, 1.5, 1.15, 0.92, 0.75];
+  const final = veh.final ?? 3.7;
+  const gears = {
+    zin: ratios.map((r) => (!transaxle && Math.abs(r - 1) < 0.005 ? 0 : Math.round(pair / (1 + r)))),
+    pinion: Math.max(8, Math.min(17, Math.round(41 / final))),
+    rad: casing(straight ? 8e-6 : 2e-6), // Pa·Hz at 1 m
+    finalRad: casing(3e-6), // hypoid or helical final drive
+    harm: straight ? [1, 0.5, 0.25] : [1, 0.25, 0.08],
+    transaxle,
+  };
+
+  return {
+    blockF: [780, 1350, 2150, 3300].map((f) => f * kBlock),
+    blockQ,
+    blockG: gains([1, 0.8, 0.55, 0.35], radBlock),
+    headF: headRef.map((f) => f * kHead),
+    headQ,
+    headG: gains([1, 0.7, 0.45], radHead),
+    radF,
+    // Combustion: the gas force on the piston crown and head (N per Pa). It
+    // is carried round a closed path (head, bolts, block, bearings, crank),
+    // so little of it moves the outer walls: measured "structural
+    // attenuation" (cylinder pressure level less the level at 1 m) is 100 to
+    // 110 dB around 1 kHz for car engines. The 0.04 puts the reference
+    // engine at 105 dB at its first block mode. A rotor's working face is
+    // about vd^(2/3).
+    combArea: 0.04 * (rotary ? 1.2 * Math.pow(g.vd, 2 / 3) : g.pistonArea),
+    seatIn: seat(v.inCount, v.inDia),
+    seatEx: seat(v.exCount, v.exDia),
+    lashIn: lash(v.inCount),
+    lashEx: lash(v.exCount),
+    designRpm: limit,
+    slap,
+    timing: tim,
+    injector,
+    alternator,
+    gears,
+  };
+}
+
 export function compileEngine(spec) {
   const g = geometryTables(spec);
   const cycle = g.cycle;
@@ -1137,6 +1352,7 @@ export function compileEngine(spec) {
     // cold cranking friction: the worklet's FMEP at a crawl, cold oil
     starter: starterSpec(spec, dispLitres, compressionTorque(g, cylOffset, twoStroke ? exLo.close : inLo.close, exLo.open), (displacement / (4 * Math.PI)) * 1.52e5 * (spec.friction ?? 1)),
     nitrous: nitrousSpec(spec, dispLitres),
+    mech: mechSpec(spec, g, dispLitres, twoStroke),
     combustion: spec.combustion ?? 0.8,
     burnScale: spec.burnScale ?? 1,
     stroke: mm(spec.stroke ?? 70),
@@ -1164,7 +1380,6 @@ export function compileEngine(spec) {
       mech: snd.mech ?? 1,
       valvetrain: snd.valvetrain ?? 'dohc',
       rasp: snd.rasp ?? 1,
-      gear: snd.gear ?? 0.3,
       trim: snd.trim ?? 1,
       starter: snd.starter ?? 1,
     },
