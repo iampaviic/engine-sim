@@ -1,6 +1,6 @@
 # Firing Order: guide for agents
 
-A physically modelled engine sound simulator: vanilla ES modules, no framework, no web build step, shipped to iOS and Android through Capacitor. Every sound comes from a per-sample physics simulation, with no samples or recordings. `README.md` explains the physics and every feature for users; read its section on a subsystem before changing that subsystem. This file maps where things live and lists the rules the code itself doesn't state.
+A physically modelled engine sound simulator: vanilla ES modules, no framework, no web build step, with iOS and Android shells through Capacitor. It is a personal project that will not be published to the App Store or Google Play: store compliance, monetisation and release hardening are out of scope. The Free/Pro paywall code still exists, but the web build is fully unlocked, so new features need no gating. Every sound comes from a per-sample physics simulation, with no samples or recordings. `README.md` explains the physics and every feature for users; read its section on a subsystem before changing that subsystem. This file maps where things live and lists the rules the code itself doesn't state.
 
 ## Map
 
@@ -17,7 +17,7 @@ A physically modelled engine sound simulator: vanilla ES modules, no framework, 
 | `js/ui/*` | `tach`, `schematic` (pressure waves), `scope` (spectrum, p–V, dyno), `view3d` (three.js), `garage`, `workshop`, `maps`, `builder`, `scenes`, `controls`, `carlink`, `paywall`, `settings`. |
 | `js/car/*` | Follow my car: ELM327 over Web Bluetooth (`elm.js`, `obd.js`), GPS + motion fusion (`gps.js`), demo drive. |
 | `js/platform/*` | Capacitor bridges: native plugins, storage, RevenueCat purchases. |
-| `js/config.js` | Free/Pro split (`FREE`), store keys. |
+| `js/config.js` | Legacy Free/Pro split (`FREE`) and store keys; unused for new work. |
 | `tools/` | Node harness that runs the real worklet offline, plus Python analysis. |
 | `ios/`, `android/` | Native shells. Only touch these for native features (the `EngineAudio` plugin lives there). |
 
@@ -62,9 +62,9 @@ Two kinds of change reach the engine:
 - `node tools/knockcal.mjs <id>`, and copy the suggested value into `ecu.knockCal`.
 - `node tools/loudness.mjs <id>`, and copy the suggested value into `sound.trim`.
 - Check `node tools/batch.mjs <id>` (idle holds its target, power is plausible, `nan 0`).
-- Add a row to the README engine table, and decide whether it belongs in `FREE.engines`.
+- Add a row to the README engine table.
 
-**Add a feature:** decide its Free/Pro side in `js/config.js` (`FREE`; UI gates call `app.isPro()`), give it a keyboard shortcut and touch control (`js/ui/controls.js`, README Controls table), and check the phone portrait layout.
+**Add a feature:** give it a keyboard shortcut and touch control (`js/ui/controls.js`, README Controls table), and check the phone portrait layout.
 
 ## Verify
 
