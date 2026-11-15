@@ -1564,6 +1564,11 @@ button {
   bottom: calc(var(--deck-h) + 8px + env(safe-area-inset-bottom, 0px));
   transform: translateX(-50%);
   width: min(460px, calc(100% - 24px));
+  /* on a phone the list is taller than the room above the deck: scroll it */
+  max-height: calc(100vh - var(--deck-h) - 24px - env(safe-area-inset-bottom, 0px) - env(safe-area-inset-top, 0px));
+  max-height: calc(100dvh - var(--deck-h) - 24px - env(safe-area-inset-bottom, 0px) - env(safe-area-inset-top, 0px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -1572,6 +1577,9 @@ button {
   border: 1px solid var(--line-2);
   border-radius: 14px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+}
+.scene-pick > * {
+  flex-shrink: 0;
 }
 .scene-pick button {
   text-align: left;
@@ -1609,6 +1617,33 @@ button {
   border-radius: 4px;
   padding: 0 5px;
   align-self: center;
+}
+/* the weather, on top of the scenes */
+.scene-pick .pick-wx {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 4px 4px;
+}
+.scene-pick .pick-wx > span {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 15px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--smoke);
+}
+.scene-pick .pick-wx .seg {
+  flex: 1;
+  flex-wrap: nowrap;
+}
+.scene-pick .pick-wx .seg button {
+  display: block;
+  flex: 1;
+  text-align: center;
+  padding: 6px 8px;
+  border-radius: 7px;
+  font-size: 13px;
 }
 .tree {
   position: fixed;

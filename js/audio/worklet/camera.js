@@ -206,11 +206,12 @@ export class CameraMethods {
           // inside, the sound arrives through whole panels, not from a point
           // beside the ear
           gain = 1 / Math.max(r, cabin ? 1 : 0.35);
-          // air absorption + ground impedance
+          // air absorption + ground impedance (the road's reflection follows
+          // the weather: sim/weather.js)
           fc = 18000 / (1 + r / 70);
           if (path === 1) {
-            gain *= 0.62;
-            fc = Math.min(fc, 5200);
+            gain *= sim.gndG;
+            fc = Math.min(fc, sim.gndF);
           }
           // A pipe mouth radiates evenly while it is small against the wave
           // (ka < 1); above that it beams (Levine & Schwinger): about +6 dB

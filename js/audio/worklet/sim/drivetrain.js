@@ -106,7 +106,7 @@ export class DrivetrainMethods {
       } else if (wIn * 9.549 < rpm - 150 && this.v < 14) {
         // pull-away: slip the clutch to hold the engine near a launch speed
         // that rises with pedal (DCT-style launch).
-        const tgt = stall + 250 + this.pedal * Math.max(0, this.launchRpm - stall - 250) * 0.85;
+        const tgt = stall + 250 + this.pedal * Math.max(0, this.launchEff - stall - 250) * 0.85;
         this.clutch = clamp(this.clutch + (rpm - tgt) * 0.0009 * dtc * 60, 0, 1);
       } else {
         this.clutch = Math.min(1, this.clutch + dtc * 6);
@@ -269,7 +269,15 @@ export class DrivetrainMethods {
       const slipV = this.ww * v.tire - vv;
       const Nz = this.axleLoad + this.loadTransfer * Math.max(0, this.accel);
       const as = slipV < 0 ? -slipV : slipV;
-      const mu = v.mu * ftanh(slipV / 0.55) * (1 - 0.22 * clamp((as - 1.5) / 8, 0, 1));
+      let mu;
+      if (this.slideK > 0) {
+        // A wet road (sim/weather.js): less grip, so the tread's grip in the
+        // contact patch is used up at a smaller slip (the brush model: full
+        // sliding at a slip of 3 mu Fz / C, Pacejka), and it falls away as
+        // the tyre slides faster.
+        const g = this.gripK, s0 = 1.5 * g;
+        mu = v.mu * g * ftanh(slipV / (0.55 * g)) * (1 - 0.22 * clamp((as - s0) / 8, 0, 1)) * (as > s0 ? Math.exp((s0 - as) * this.slideK) : 1);
+      } else mu = v.mu * ftanh(slipV / 0.55) * (1 - 0.22 * clamp((as - 1.5) / 8, 0, 1));
       const Fx = Nz * mu;
       const brakeT = this.brake * this.brakeK * v.tire * 0.45 * ftanh(this.ww * 4);
       this.ww += ((load * G * 0.92 - Fx * v.tire - brakeT) / Jwe) * dt;

@@ -18,6 +18,7 @@ export class EngineProcessor extends AudioWorkletProcessor {
     this.L = new Listener(this.fs);
     this.camera = 'rear';
     this.env = 'open';
+    this.weather = 'dry';
     this.flyby = null;
     this.telEvery = Math.round(this.fs / 40);
     this.telCount = 0;
@@ -61,6 +62,12 @@ export class EngineProcessor extends AudioWorkletProcessor {
         if (!m.on) this.sim.starter = false;
         break;
       }
+      case 'weather':
+        // the day: dry, damp or rain (sim/weather.js); every engine gets it
+        this.weather = m.weather;
+        this.sim?.setWeather(m.weather);
+        this.updateScene(0);
+        break;
       case 'thermal':
         // the engine's temperatures: a stored state, or forced cold or warm
         this.sim?.setThermal(m);
@@ -185,6 +192,7 @@ export class EngineProcessor extends AudioWorkletProcessor {
     const old = this.sim;
     const rate = this.eco ? this.fs / 2 : this.fs;
     const sim = new EngineSim(cfg, rate);
+    sim.setWeather(this.weather);
     if (old) {
       sim.mode = old.mode;
       sim.valveMode = old.valveMode;
@@ -425,6 +433,8 @@ export class EngineProcessor extends AudioWorkletProcessor {
       stall: s.evStall,
       refused: s.evRefused,
       grind: s.evGrind,
+      // the day the engine runs in (sim/weather.js)
+      weather: s.weather,
     };
     s.evStall = 0;
     s.evRefused = 0;

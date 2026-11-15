@@ -29,7 +29,9 @@ export class CylinderMethods {
     this.thN++;
     // nitrous in the charge: its oxygen counts 1.57 times
     const nos = fresh * this.nosX;
-    const o2 = nos > 0 ? fresh + (NOS_O2 - 1) * nos : fresh;
+    let o2 = nos > 0 ? fresh + (NOS_O2 - 1) * nos : fresh;
+    // the air's share of it carries the day's oxygen (sim/weather.js)
+    if (this.airO2 !== 1) o2 -= (fresh - nos) * (1 - this.airO2);
 
     const cranking = rpm < 350;
     let fuelOn = this.ignition && !this.dfco && this.crankRevs >= this.syncRevs;

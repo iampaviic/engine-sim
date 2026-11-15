@@ -92,6 +92,30 @@ export function toggleScenePick(force) {
   const show = force ?? p.hidden;
   if (show) {
     p.innerHTML = '';
+    // the day the scenes run in (the same for free driving)
+    const wx = document.createElement('div');
+    wx.className = 'pick-wx';
+    wx.setAttribute('role', 'group');
+    wx.setAttribute('aria-label', 'Weather');
+    wx.innerHTML = '<span>Weather</span><kbd>R</kbd>';
+    const seg = document.createElement('div');
+    seg.className = 'seg';
+    for (const [w, text] of [
+      ['dry', 'Dry'],
+      ['damp', 'Damp'],
+      ['rain', 'Rain'],
+    ]) {
+      const b = document.createElement('button');
+      b.textContent = text;
+      b.setAttribute('aria-pressed', String(app.weather === w));
+      b.addEventListener('click', () => {
+        app.setWeather(w);
+        for (const x of seg.children) x.setAttribute('aria-pressed', String(x === b));
+      });
+      seg.appendChild(b);
+    }
+    wx.insertBefore(seg, wx.lastChild);
+    p.appendChild(wx);
     for (const [id, def] of Object.entries(SCENES)) {
       const b = document.createElement('button');
       b.setAttribute('role', 'menuitem');

@@ -1,6 +1,6 @@
 // Nitrous oxide: the solenoid, bottle and purge, and their sounds.
 
-import { NOS_LAT, NOS_PER_HP, T_AMB } from '../constants.js';
+import { NOS_LAT, NOS_PER_HP } from '../constants.js';
 import { clamp, rnd } from '../dsp.js';
 
 export class NitrousMethods {
@@ -36,7 +36,7 @@ export class NitrousMethods {
       this.nosCool *= Math.exp(-dtc / 0.8);
       if (this.nosCool < 0.01) this.nosCool = 0;
     }
-    if (!this.boosted) this.Tpl = T_AMB - this.nosCool;
+    if (!this.boosted) this.Tpl = this.ambT - this.nosCool;
   }
 
   // Nitrous sounds: the solenoids' snap, the purge valve's roar of gas and,

@@ -17,6 +17,7 @@ import { MechanicalMethods } from './sim/mechanical.js';
 import { AeroMethods } from './sim/aero.js';
 import { ThermalMethods } from './sim/thermal.js';
 import { GearboxMethods } from './sim/gearbox.js';
+import { WeatherMethods } from './sim/weather.js';
 import { SourceMethods } from './sim/sources.js';
 import { mixin } from './mixin.js';
 
@@ -326,6 +327,42 @@ export class EngineSim {
     // autoignites, what is left of the charge burns at once and the chamber
     // rings at its first acoustic modes (1.84 c / (pi B) and ~1.66x that).
     this.octane = cfg.ecu.octane;
+    // the day's air: its dry air against the reference day's, and what its
+    // water is worth in octane numbers (sim/weather.js)
+    this.weather = 'dry';
+    this.airO2 = 1;
+    this.humON = 0;
+    // and its road: the tyres' grip against the dry road's, and how fast a
+    // wet road's friction falls with sliding speed (per m/s)
+    this.gripK = 1;
+    this.slideK = 0;
+    this.squealK = 1;
+    // the water on it: film depth (mm), the spray's level and filters, and
+    // the weather's own random stream
+    this.film = 0;
+    this.sprayK = 0;
+    this.sprayA = 0;
+    this.spHa = this.spLa = 0;
+    this.spL = this.spH1 = this.spH2 = 0;
+    this.wRs = 0x6a09e667;
+    // rain on the roof: per drop class (half a roof each) the chance of a
+    // drop each sample, its peak force and its decay; the force on each half
+    // now; the near field's high-pass; the panel's modes; the sound at the
+    // ears (sim/weather.js)
+    this.rainOn = false;
+    this.rnP = new Float64Array(6);
+    this.rnF = new Float64Array(6);
+    this.rnD = new Float64Array(6);
+    this.rnYL = new Float64Array(6);
+    this.rnYR = new Float64Array(6);
+    this.rnNear = this.rnFar = this.rnHp = 0;
+    this.rnHl = this.rnHr = 0;
+    this.roofBank = null;
+    this.rainL = this.rainR = 0;
+    // the road's reflection to the listener: gain, and the corner above
+    // which it loses the highs (camera.js)
+    this.gndG = 0.62;
+    this.gndF = 5200;
     this.setOctane(this.octane);
     this.kF1 = 1.841 / (PI * cfg.bore);
     this.kDecay = Math.exp(-1 / (fs * 0.0015));
@@ -406,6 +443,7 @@ export class EngineSim {
     this.afrTarget = e.afr;
     this.launch = false;
     this.launchRpm = e.launchRpm;
+    this.launchEff = e.launchRpm; // as the road's grip allows (sim/ecu.js)
     this.shiftCut = 0;
     this.flare = 0;
     this.camHi = false;
@@ -596,6 +634,7 @@ export class EngineSim {
     this.initMech(cfg);
     this.initThermal(cfg);
     this.initGearbox(cfg);
+    this.setWeather('dry');
     const vh = cfg.vehicle;
     this.axleLoad = vh.mass * 9.81 * (vh.drive === 'awd' ? 1 : vh.rearBias);
     this.loadTransfer = vh.drive === 'awd' ? 0 : vh.mass * 0.2;
@@ -687,4 +726,4 @@ export class EngineSim {
 // methods, copied onto the prototype once, here. After that they are
 // ordinary methods, so a call from the per-sample loop costs what it would
 // if the whole class were written in this file.
-mixin(EngineSim, EcuMethods, CylinderMethods, StarterMethods, InductionMethods, NitrousMethods, DrivetrainMethods, GearboxMethods, MechanicalMethods, ThermalMethods, AeroMethods, SourceMethods, ListenMethods);
+mixin(EngineSim, EcuMethods, CylinderMethods, StarterMethods, InductionMethods, NitrousMethods, DrivetrainMethods, GearboxMethods, WeatherMethods, MechanicalMethods, ThermalMethods, AeroMethods, SourceMethods, ListenMethods);
