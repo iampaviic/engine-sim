@@ -17,6 +17,7 @@ import { MechanicalMethods } from './sim/mechanical.js';
 import { AeroMethods } from './sim/aero.js';
 import { ThermalMethods } from './sim/thermal.js';
 import { GearboxMethods } from './sim/gearbox.js';
+import { WeatherMethods } from './sim/weather.js';
 import { SourceMethods } from './sim/sources.js';
 import { mixin } from './mixin.js';
 
@@ -326,6 +327,11 @@ export class EngineSim {
     // autoignites, what is left of the charge burns at once and the chamber
     // rings at its first acoustic modes (1.84 c / (pi B) and ~1.66x that).
     this.octane = cfg.ecu.octane;
+    // the day's air: its dry air against the reference day's, and what its
+    // water is worth in octane numbers (sim/weather.js)
+    this.weather = 'dry';
+    this.airO2 = 1;
+    this.humON = 0;
     this.setOctane(this.octane);
     this.kF1 = 1.841 / (PI * cfg.bore);
     this.kDecay = Math.exp(-1 / (fs * 0.0015));
@@ -596,6 +602,7 @@ export class EngineSim {
     this.initMech(cfg);
     this.initThermal(cfg);
     this.initGearbox(cfg);
+    this.setWeather('dry');
     const vh = cfg.vehicle;
     this.axleLoad = vh.mass * 9.81 * (vh.drive === 'awd' ? 1 : vh.rearBias);
     this.loadTransfer = vh.drive === 'awd' ? 0 : vh.mass * 0.2;
@@ -687,4 +694,4 @@ export class EngineSim {
 // methods, copied onto the prototype once, here. After that they are
 // ordinary methods, so a call from the per-sample loop costs what it would
 // if the whole class were written in this file.
-mixin(EngineSim, EcuMethods, CylinderMethods, StarterMethods, InductionMethods, NitrousMethods, DrivetrainMethods, GearboxMethods, MechanicalMethods, ThermalMethods, AeroMethods, SourceMethods, ListenMethods);
+mixin(EngineSim, EcuMethods, CylinderMethods, StarterMethods, InductionMethods, NitrousMethods, DrivetrainMethods, GearboxMethods, WeatherMethods, MechanicalMethods, ThermalMethods, AeroMethods, SourceMethods, ListenMethods);

@@ -1,7 +1,7 @@
 // Induction: throttle and plenum, turbochargers (spool, surge, wastegate,
 // dump valve and their sounds) and superchargers.
 
-import { CHOKE_AIR, P_AMB, R, T_AMB, TAU } from '../constants.js';
+import { CHOKE_AIR, P_AMB, R, TAU } from '../constants.js';
 import { clamp, jetUp, orifice, rnd, speedLine } from '../dsp.js';
 
 export class InductionMethods {
@@ -38,7 +38,7 @@ export class InductionMethods {
     const dt = this.dt;
     const boosted = this.boosted;
     const pUp = boosted ? this.pB : P_AMB;
-    const Tup = boosted ? this.TB : T_AMB;
+    const Tup = boosted ? this.TB : this.ambT;
     // butterfly area vs opening, every sample: a stepped area would buzz
     const th = this.thr > 0 ? (this.thr < 1 ? this.thr : 1) : 0;
     this.thrArea = this.Ath * 0.82 * th * Math.sqrt(th * Math.sqrt(th)); // th^1.75
@@ -141,7 +141,7 @@ export class InductionMethods {
     if (this.boosted) return;
     // The jet's speed, from the mean flow and the area open to it (as jetUp).
     const A = this.thrArea + this.bypassS + this.thrLeak;
-    const x = Math.min(1, md / ((CHOKE_AIR * A * P_AMB) / Math.sqrt(T_AMB)));
+    const x = Math.min(1, md / ((CHOKE_AIR * A * P_AMB) / Math.sqrt(this.ambT)));
     const M = (0.579 * x) / (1 - 0.421 * x * x);
     const U = 340 * M;
     // Hiss. A jet's noise peaks where its eddies are shed, at a Strouhal
@@ -253,7 +253,7 @@ export class InductionMethods {
     if (!(Math.abs(this.mc) < 5)) this.mc = 0;
     // shafts
     const PR = this.pB / P_AMB;
-    const work = (1005 * T_AMB * (Math.pow(PR, 0.2857) - 1)) / 0.7; // J per kg compressed
+    const work = (1005 * this.ambT * (Math.pow(PR, 0.2857) - 1)) / 0.7; // J per kg compressed
     // Air shoved back out through the spinning wheel has to be given the
     // wheel's swirl all over again (about U^2 per kg): surge brakes the shaft
     // hard, so each flutter cycle comes a little slower and lower than the last.
@@ -294,8 +294,10 @@ export class InductionMethods {
       scTorque = Pc / Math.max(omega, 30);
       this.scTq = scTorque;
     }
-    const Tc = T_AMB * (1 + (Math.pow(Math.max(PR, 1), 0.2857) - 1) / 0.7);
-    this.TB = Tc - 0.72 * (Tc - T_AMB);
+    // (the wheel draws the day's air, and the intercooler sheds the heat of
+    // compressing it back into that air: ambT, sim/weather.js)
+    const Tc = this.ambT * (1 + (Math.pow(Math.max(PR, 1), 0.2857) - 1) / 0.7);
+    this.TB = Tc - 0.72 * (Tc - this.ambT);
     this.Tpl = this.TB - this.nosCool;
     // Blade-pass whistle and shaft whine. The wheel never sings a clean
     // sine: flow unsteadiness wobbles its tone by a few tenths of a percent,
@@ -461,18 +463,18 @@ export class InductionMethods {
     const PR = this.pB / P_AMB;
     const ev = clamp(1 - 0.12 * (PR - 1), 0.5, 1);
     const vflow = ((this.scDisp * wb) / TAU) * ev;
-    const msc = (P_AMB / (R * T_AMB)) * vflow;
+    const msc = (P_AMB / (R * this.ambT)) * vflow;
     let mby = 0;
     this.scBypassS += this.scBypassStep;
     const Aby = 0.0018 * this.scBypassS + 1e-6;
     if (this.pB > P_AMB) mby = orifice(Aby, this.pB - P_AMB, this.pB / (R * this.TB), 0, this.pB, Math.sqrt(this.TB), CHOKE_AIR);
-    else mby = -orifice(Aby, P_AMB - this.pB, P_AMB / (R * T_AMB), 0, P_AMB, Math.sqrt(T_AMB), CHOKE_AIR);
+    else mby = -orifice(Aby, P_AMB - this.pB, P_AMB / (R * this.ambT), 0, P_AMB, Math.sqrt(this.ambT), CHOKE_AIR);
     this.pB += ((R * this.TB) / this.Vb) * (msc - this.mdTh - mby) * dt;
     if (this.pB < 0.4 * P_AMB) this.pB = 0.4 * P_AMB;
     const eta = this.fiType === 'twinscrew' ? 0.7 : 0.55;
-    const P = (msc * 1005 * T_AMB * (Math.pow(Math.max(PR, 1), 0.2857) - 1)) / eta + msc * 2000;
-    const Tc = T_AMB * (1 + (Math.pow(Math.max(PR, 1), 0.2857) - 1) / eta);
-    this.TB = Tc - 0.65 * (Tc - T_AMB);
+    const P = (msc * 1005 * this.ambT * (Math.pow(Math.max(PR, 1), 0.2857) - 1)) / eta + msc * 2000;
+    const Tc = this.ambT * (1 + (Math.pow(Math.max(PR, 1), 0.2857) - 1) / eta);
+    this.TB = Tc - 0.65 * (Tc - this.ambT);
     this.Tpl = this.TB - this.nosCool;
     // Rotor whine. The rotors seal against each other and the case by
     // clearances, and gas leaks back through them from the pressure side to
@@ -485,7 +487,7 @@ export class InductionMethods {
     // squeezes each pocket by its built-in ratio (about 1.5) before the port
     // opens, boost or no boost, so it whines at idle too.
     const drive = (PR > this.scPi ? PR : this.scPi) - 1;
-    const leak = (P_AMB / (R * T_AMB)) * ((this.scDisp * wb) / TAU) * 0.12 * drive;
+    const leak = (P_AMB / (R * this.ambT)) * ((this.scDisp * wb) / TAU) * 0.12 * drive;
     this.scPhase += ((wb / TAU) * this.scPockets) / fs;
     this.scPhase -= Math.floor(this.scPhase);
     const ph = TAU * this.scPhase;

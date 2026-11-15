@@ -1,7 +1,8 @@
 // Run every preset through the rev + dyno scenarios and print a summary.
-//   node tools/batch.mjs [id ...] [--cold]
-// Engines run fully warm; --cold starts them cold through at 25 °C (the
-// idle target then includes the ECU's fast idle).
+//   node tools/batch.mjs [id ...] [--cold] [--weather damp|rain]
+// Engines run fully warm on a dry 25 °C day; --cold starts them cold through
+// at the day's temperature (the idle target then includes the ECU's fast
+// idle), and --weather changes the day.
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -9,7 +10,9 @@ import { render, writeWav } from './render.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const { PRESETS } = await import(pathToFileURL(path.join(root, 'js/engine/presets.js')).href);
-const ids = process.argv.slice(2).filter((a) => !a.startsWith('--'));
+const wi = process.argv.indexOf('--weather');
+const weather = wi > 0 ? process.argv[wi + 1] : undefined;
+const ids = process.argv.slice(2).filter((a, i) => !a.startsWith('--') && i + 2 !== wi + 1);
 const cold = process.argv.includes('--cold');
 const thermal = cold ? 'cold' : undefined;
 const outDir = process.env.OUT || '/tmp';
@@ -20,12 +23,12 @@ const list = ids.length ? PRESETS.filter((p) => ids.includes(p.id)) : PRESETS;
 // each cpu figure would depend on which engines ran before it.
 if (list.length > 1) {
   let failed = 0;
-  for (const p of list) failed |= spawnSync(process.execPath, [fileURLToPath(import.meta.url), p.id, ...(cold ? ['--cold'] : [])], { stdio: 'inherit' }).status;
+  for (const p of list) failed |= spawnSync(process.execPath, [fileURLToPath(import.meta.url), p.id, ...(cold ? ['--cold'] : []), ...(weather ? ['--weather', weather] : [])], { stdio: 'inherit' }).status;
   process.exit(failed ? 1 : 0);
 }
 
 for (const p of list) {
-  const r = await render(p.id, 'rev', { thermal });
+  const r = await render(p.id, 'rev', { thermal, weather });
   writeWav(`${outDir}/${p.id}-rev.wav`, r.L, r.R, r.fs);
   const tail = r.tel.filter((m) => m.t > 10.5);
   const rpms = tail.map((m) => m.rpm);
@@ -44,7 +47,7 @@ for (const p of list) {
   const map = tail.reduce((a, m) => a + m.map, 0) / (tail.length || 1) / 1e5;
   const spl = tail.reduce((a, m) => a + m.spl, 0) / (tail.length || 1);
   // dyno
-  const d = await render(p.id, 'dyno', { duration: 16, thermal });
+  const d = await render(p.id, 'dyno', { duration: 16, thermal, weather });
   writeWav(`${outDir}/${p.id}-dyno.wav`, d.L, d.R, d.fs);
   let pk = { tq: 0, rpm: 0 }, pp = { kw: 0, rpm: 0 };
   for (const m of d.tel) {

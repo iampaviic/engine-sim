@@ -36,9 +36,10 @@ export class EcuMethods {
     return lo + (hi - lo) * fr;
   }
 
+  // (humON: what the day's damp air is worth, sim/weather.js)
   setOctane(ron) {
     this.octane = ron;
-    this.kTauInv = (this.cfg.ecu.knockCal || KNOCK_CAL) / (17.68e-3 * Math.pow(ron / 100, 3.402));
+    this.kTauInv = (this.cfg.ecu.knockCal || KNOCK_CAL) / (17.68e-3 * Math.pow((ron + this.humON) / 100, 3.402));
   }
 
   // -------------------------------------------------------------------------
