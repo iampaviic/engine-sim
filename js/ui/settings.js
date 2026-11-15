@@ -1,7 +1,8 @@
-// App settings: units, the weather, how the sound shares the phone with
-// other apps, screen keep-awake, and the about box.
+// App settings: units, the weather, haptics, how the sound shares the phone
+// with other apps, screen keep-awake, and the about box.
 
 import { isNative, platform } from '../platform/native.js';
+import { hapticsSupported } from '../platform/haptics.js';
 
 // Fill these in once the support site exists; empty links are left out.
 export const SITE = { privacy: '', support: '' };
@@ -100,6 +101,22 @@ export class Settings {
       app.weather,
       (v) => app.setWeather(v),
       'Cool damp air makes a little more power and knocks less; a wet road grips less, the tyres hiss with spray and, in the cockpit, rain drums on the roof. R cycles it; the Scenes menu has it too.'
+    );
+
+    g = group('Haptics');
+    seg(
+      g,
+      'Feel the car',
+      [
+        ['off', 'Off'],
+        ['low', 'Low'],
+        ['full', 'Full'],
+      ],
+      app.haptics,
+      (v) => app.setHaptics(v),
+      hapticsSupported
+        ? 'Shifts, the limiter, the starter and the engine catching, launches, stalls and grinding gears, pops and knock, and the engine shaking as it idles. The system switch for haptics turns them off too; with reduced motion set the idle shake stays still.'
+        : 'This browser cannot vibrate (none can on an iPhone); the iOS and Android apps and Chrome on Android can.'
     );
 
     if (app.canMixAudio) {
