@@ -10,27 +10,30 @@ globalThis.AudioWorkletProcessor = class {
   }
 };
 let Proc = null;
-globalThis.registerProcessor = (_name, cls) => {
-  Proc = cls;
+globalThis.registerProcessor = (name, cls) => {
+  if (name === 'engine-processor') Proc = cls;
 };
 const ready = import('../audio/engine-worklet.js');
+// the app's one definition of loudness (BS.1770) and the level every engine
+// is trimmed to
+const loudness = import('../audio/worklet/loudness.js');
 
 const FS = 24000;
 const BLOCK = 128;
-const TARGET_RMS = 0.11; // loudness the presets are trimmed to (rear mic, WOT)
 
 self.onmessage = async (e) => {
   const m = e.data;
   if (m.type !== 'analyze') return;
   await ready;
+  const lo = await loudness;
   try {
-    self.postMessage(run(m));
+    self.postMessage(run(m, lo));
   } catch (err) {
     self.postMessage({ type: 'result', id: m.id, error: String(err?.message ?? err) });
   }
 };
 
-function run({ id, cfg, tune }) {
+function run({ id, cfg, tune }, { LOUDNESS_TARGET, integratedLoudness }) {
   const t0 = performance.now();
   posted.length = 0;
   const proc = new Proc();
@@ -41,7 +44,8 @@ function run({ id, cfg, tune }) {
   send({ type: 'ignition', on: true, crank: true });
   const L = new Float32Array(BLOCK), R = new Float32Array(BLOCK);
   const curve = [];
-  const energy = []; // per-block output energy during the sweep
+  // the output during the sweep, for its loudness
+  const sweepL = [], sweepR = [];
   let knockN = 0, knockMax = 0, knockRet = 0, boostMax = 0, floatMax = 0;
   let idleSum = 0, idleN = 0, nan = false, started = false, done = false, sweeping = false;
   const maxT = 32;
@@ -55,7 +59,7 @@ function run({ id, cfg, tune }) {
     proc.process([], [[L, R]]);
     t += BLOCK / FS;
     let en = 0;
-    for (let i = 0; i < BLOCK; i++) en += L[i] * L[i] + R[i] * R[i];
+    for (let i = 0; i < BLOCK; i++) en += L[i] + R[i];
     if (!(en === en)) {
       nan = true;
       break;
@@ -81,23 +85,26 @@ function run({ id, cfg, tune }) {
         boostMax = Math.max(boostMax, p.boost);
       } else if (p.type === 'dyno-done') done = true;
     }
-    if (sweeping) energy.push([t, en]);
+    if (sweeping) {
+      sweepL.push(L.slice());
+      sweepR.push(R.slice());
+    }
     if (t - lastProgress > 1) {
       lastProgress = t;
       self.postMessage({ type: 'progress', id, f: Math.min(1, t / 14) });
     }
   }
   if (nan) return { type: 'result', id, error: 'The simulation became unstable with this combination.' };
-  // loudness over the last 3 s of the sweep (full throttle near redline)
-  const tEnd = energy.length ? energy[energy.length - 1][0] : t;
-  let s = 0, n = 0;
-  for (const [tt, en] of energy) {
-    if (tt > tEnd - 3) {
-      s += en;
-      n += BLOCK * 2;
-    }
-  }
-  const rms = n ? Math.sqrt(s / n) : 0;
+  // the integrated loudness (BS.1770) of the sweep's last 3 s, as
+  // tools/loudness.mjs measures the presets, and the trim that brings it to
+  // the common level
+  const join = (a) => {
+    a = a.slice(-Math.round((3 * FS) / BLOCK));
+    const out = new Float32Array(a.length * BLOCK);
+    a.forEach((b, i) => out.set(b, i * BLOCK));
+    return out;
+  };
+  const I = sweepL.length ? integratedLoudness(join(sweepL), join(sweepR), FS) : -Infinity;
   const trimNow = cfg.sound.trim || 1;
   const pts = curve.filter((p) => p.rpm > 900).map((p) => ({ rpm: p.rpm, tq: p.tq, hp: (p.tq * p.rpm) / 7121 }));
   let pkT = { tq: 0, rpm: 0 }, pkP = { hp: 0, rpm: 0 };
@@ -113,7 +120,7 @@ function run({ id, cfg, tune }) {
     peakTqRpm: pkT.rpm,
     peakHp: pkP.hp,
     peakHpRpm: pkP.rpm,
-    trim: rms > 1e-5 ? +((TARGET_RMS / rms) * trimNow).toFixed(3) : trimNow,
+    trim: I > -70 ? +(trimNow * Math.pow(10, (LOUDNESS_TARGET - I) / 20)).toFixed(3) : trimNow,
     knockN,
     knockMax,
     knockRet,

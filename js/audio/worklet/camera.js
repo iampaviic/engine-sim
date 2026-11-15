@@ -5,7 +5,7 @@
 import { C_AIR, N_SRC, TAU } from './constants.js';
 import { clamp, lpCoef } from './dsp.js';
 
-const CAMERAS = {
+export const CAMERAS = {
   rear: { pos: [-1.3, 1.0, -6.5], cabin: 0 },
   exhaust: { pos: [-0.35, 0.45, -3.1], cabin: 0 },
   side: { pos: [4.5, 1.1, -0.3], cabin: 0 },

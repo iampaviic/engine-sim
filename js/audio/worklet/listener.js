@@ -40,10 +40,15 @@ export class Listener {
   }
 }
 
+// A last-resort safety, not the mix's peak control: engines are trimmed to
+// -20 LUFS at full load (loudness.js), where their peaks stand 4 to 6 dB
+// under full scale, so it touches only what overshoots 0 dBFS (the limiter's
+// afterfire bangs on a free rev) and holds a blow-up under +6 dBFS (2.0).
+// The master chain's true-peak limiter (master.js) shapes the peaks.
 function softclip(x) {
   const a = x < 0 ? -x : x;
-  if (a < 0.75) return x;
-  const y = 0.75 + 0.25 * ftanh((a - 0.75) * 4);
+  if (a < 1) return x;
+  const y = 1 + ftanh(a - 1);
   return x < 0 ? -y : y;
 }
 

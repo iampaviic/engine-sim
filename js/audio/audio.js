@@ -1,20 +1,24 @@
-// Audio graph: engine worklet -> (dry + convolution reverb) -> compressor ->
-// limiter -> master volume -> speakers. Reverb impulse responses are
-// generated procedurally for each environment.
+// Audio graph: engine worklet -> (direct + the surroundings' reverberation,
+// a convolution) -> master processor (leveller and true-peak limiter) ->
+// master volume -> speakers. Each place's impulse response comes from its
+// geometry and surfaces and the camera's position (rooms.js).
 
 import { bundleWorklet } from './worklet-bundle.js';
+import { roomIR } from './rooms.js';
 
 const WORKLET_URL = new URL('./engine-worklet.js', import.meta.url);
 
+// The places (their geometry is in rooms.js). The anechoic choice has no
+// reverberation at all; the open road has a distant facade.
 export const ENVIRONMENTS = {
-  open: { label: 'Open road', wet: 0.1 },
-  garage: { label: 'Garage', wet: 0.28 },
-  tunnel: { label: 'Tunnel', wet: 0.5, boost: 1.25 },
-  canyon: { label: 'Canyon', wet: 0.3 },
-  dry: { label: 'Anechoic', wet: 0 },
+  open: { label: 'Open road' },
+  garage: { label: 'Garage' },
+  tunnel: { label: 'Tunnel' },
+  canyon: { label: 'Canyon' },
+  dry: { label: 'Anechoic', none: true },
   // passing places in the scenes, not somewhere to park
-  barrier: { label: 'Noise wall', wet: 0.32, scene: true },
-  bridge: { label: 'Under a bridge', wet: 0.45, boost: 1.1, scene: true },
+  barrier: { label: 'Noise wall', scene: true },
+  bridge: { label: 'Under a bridge', scene: true },
 };
 
 export class AudioEngine {
@@ -24,13 +28,18 @@ export class AudioEngine {
     this.onMessage = () => {};
     this.env = 'open';
     this.volume = 0.8;
-    this.irCache = {};
+    this.camera = 'rear';
+    this.irCache = new Map();
+    this.warm = null;
   }
 
-  async init() {
+  // ctxIn: a context to build on instead of the speakers' (the test harness,
+  // tools/mix.mjs, passes an OfflineAudioContext, so it renders through
+  // exactly this graph).
+  async init(ctxIn) {
     const AC = window.AudioContext || window.webkitAudioContext;
-    let ctx = new AC({ latencyHint: 'interactive' });
-    if (ctx.sampleRate > 50000) {
+    let ctx = ctxIn ?? new AC({ latencyHint: 'interactive' });
+    if (!ctxIn && ctx.sampleRate > 50000) {
       // The physics runs once per sample; don't pay for 96 kHz.
       await ctx.close();
       ctx = new AC({ latencyHint: 'interactive', sampleRate: 48000 });
@@ -53,56 +62,26 @@ export class AudioEngine {
     node.port.onmessage = (e) => this.onMessage(e.data);
     node.onprocessorerror = (e) => console.error('engine worklet error', e);
     this.node = node;
-
-    this.dry = ctx.createGain();
-    // two reverbs so one place can fade into another (tunnel portals)
-    this.conv = [ctx.createConvolver(), ctx.createConvolver()];
-    this.wetG = [ctx.createGain(), ctx.createGain()];
-    this.wetG[0].gain.value = 0;
-    this.wetG[1].gain.value = 0;
+    Object.assign(this, buildMix(ctx, node, this.volume));
     this.cur = 0;
     this.envNow = null;
-    this.comp = ctx.createDynamicsCompressor();
-    this.comp.threshold.value = -22;
-    this.comp.knee.value = 12;
-    this.comp.ratio.value = 3.2;
-    this.comp.attack.value = 0.008;
-    this.comp.release.value = 0.25;
-    this.makeup = ctx.createGain();
-    this.makeup.gain.value = 1.9;
-    this.limit = ctx.createDynamicsCompressor();
-    this.limit.threshold.value = -3;
-    this.limit.knee.value = 0;
-    this.limit.ratio.value = 20;
-    this.limit.attack.value = 0.002;
-    this.limit.release.value = 0.08;
-    this.master = ctx.createGain();
-    this.master.gain.value = this.volume;
-    this.analyser = ctx.createAnalyser();
-    this.analyser.fftSize = 8192;
-    this.analyser.smoothingTimeConstant = 0.55;
-    this.analyser.minDecibels = -110;
-    this.analyser.maxDecibels = -10;
-
-    node.connect(this.dry);
-    for (let i = 0; i < 2; i++) {
-      node.connect(this.conv[i]);
-      this.conv[i].connect(this.wetG[i]);
-      this.wetG[i].connect(this.comp);
-    }
-    this.dry.connect(this.comp);
-    this.comp.connect(this.makeup);
-    this.makeup.connect(this.limit);
-    this.limit.connect(this.master);
-    this.master.connect(ctx.destination);
-    // analyse the raw engine (before reverb/compression)
-    node.connect(this.analyser);
     this.setEnvironment(this.env);
-    if (ctx.state !== 'running') await ctx.resume();
+    if (!ctxIn && ctx.state !== 'running') await ctx.resume();
   }
 
   post(msg, transfer) {
     if (this.node) this.node.port.postMessage(msg, transfer ?? []);
+    // the reverberation depends on where the mic is
+    if (msg.type === 'camera') this.setCamera(msg.camera);
+  }
+
+  // The master processor's meter (gain reduction, the leveller's gain and
+  // its input loudness every 10 ms, in batches of 0.1 s): fn(message), or
+  // null to stop. For the tools.
+  setMeter(fn) {
+    if (!this.dyn) return;
+    this.dyn.port.onmessage = fn ? (e) => fn(e.data) : null;
+    this.dyn.port.postMessage({ type: 'meter', on: !!fn });
   }
 
   setVolume(v) {
@@ -110,27 +89,71 @@ export class AudioEngine {
     if (this.master) this.master.gain.setTargetAtTime(v, this.ctx.currentTime, 0.03);
   }
 
-  // Switch the surroundings; fade (s) crossfades the two reverbs, e.g. while
-  // a car drives through a tunnel portal.
+  // A place's impulse response for the current camera, built once (0.1 to
+  // 0.3 s for the long tails on a desktop) and kept.
+  ir(name) {
+    const key = `${name}|${this.camera}`;
+    let buf = this.irCache.get(key);
+    if (!buf) {
+      const r = roomIR(name, this.camera, this.ctx.sampleRate);
+      buf = this.ctx.createBuffer(2, r.L.length, this.ctx.sampleRate);
+      buf.copyToChannel(r.L, 0);
+      buf.copyToChannel(r.R, 1);
+      this.irCache.set(key, buf);
+    }
+    return buf;
+  }
+
+  // Switch the surroundings; fade (s) crossfades the two reverberations,
+  // e.g. while a car drives through a tunnel portal. The direct sound is
+  // never touched: the impulse response carries the balance.
   setEnvironment(name, fade = 0.15) {
     this.env = name;
     if (!this.ctx || name === this.envNow) return;
     this.envNow = name;
+    this.crossfade(fade);
+  }
+
+  crossfade(fade) {
+    const name = this.envNow;
     const e = ENVIRONMENTS[name] ?? ENVIRONMENTS.open;
     const t = this.ctx.currentTime;
     const tc = Math.max(0.01, fade / 3);
     const nxt = 1 - this.cur;
-    if (e.wet > 0) {
-      this.irCache[name] ??= makeIR(this.ctx, name);
+    if (!e.none) {
       this.wetG[nxt].gain.cancelScheduledValues(t);
       this.wetG[nxt].gain.setValueAtTime(0, t);
-      this.conv[nxt].buffer = this.irCache[name];
-      this.wetG[nxt].gain.setTargetAtTime(e.wet, t + 0.01, tc);
+      this.conv[nxt].buffer = this.ir(name);
+      this.wetG[nxt].gain.setTargetAtTime(1, t + 0.01, tc);
     }
     this.wetG[this.cur].gain.cancelScheduledValues(t);
     this.wetG[this.cur].gain.setTargetAtTime(0, t, tc);
-    this.dry.gain.setTargetAtTime((1 - e.wet * 0.35) * (e.boost ?? 1), t, tc);
     this.cur = nxt;
+    this.prewarm();
+  }
+
+  // The mic moved: the same place, heard from the new spot.
+  setCamera(camera) {
+    if (camera === this.camera) return;
+    this.camera = camera;
+    // keep only this camera's responses (up to 1.5 MB a place)
+    for (const k of this.irCache.keys()) if (!k.endsWith(`|${camera}`)) this.irCache.delete(k);
+    if (this.ctx && this.envNow) this.crossfade(0.1);
+  }
+
+  // Build the other places' responses for this camera while the page is
+  // idle, so a switch (a scene's tunnel portal) does not wait for one.
+  prewarm() {
+    if (this.warm) return;
+    const next = () => {
+      this.warm = null;
+      const todo = Object.keys(ENVIRONMENTS).find((k) => !ENVIRONMENTS[k].none && !this.irCache.has(`${k}|${this.camera}`));
+      if (!todo || !this.ctx) return;
+      this.ir(todo);
+      this.prewarm();
+    };
+    const ric = globalThis.requestIdleCallback;
+    this.warm = ric ? ric(next, { timeout: 2000 }) : setTimeout(next, 200);
   }
 
   suspend() {
@@ -141,58 +164,45 @@ export class AudioEngine {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Procedural impulse responses
-// ---------------------------------------------------------------------------
+// The graph after the engine: direct and two reverberations (so one place
+// can fade into another at a tunnel portal), the master processor (the leveller and the
+// true-peak limiter, worklet/master.js), master volume; and an analyser on
+// the raw engine. The app (AudioEngine.init) and the test harness both build
+// it here. The worklet module must already be loaded into ctx.
+export function buildMix(ctx, node, volume) {
+  const dry = ctx.createGain();
+  // the responses are already scaled against the direct sound
+  const conv = [new ConvolverNode(ctx, { disableNormalization: true }), new ConvolverNode(ctx, { disableNormalization: true })];
+  const wetG = [ctx.createGain(), ctx.createGain()];
+  wetG[0].gain.value = 0;
+  wetG[1].gain.value = 0;
+  const dyn = new AudioWorkletNode(ctx, 'master-processor', {
+    numberOfInputs: 1,
+    numberOfOutputs: 1,
+    outputChannelCount: [2],
+    channelCount: 2,
+    channelCountMode: 'explicit',
+    channelInterpretation: 'speakers',
+  });
+  dyn.onprocessorerror = (e) => console.error('master worklet error', e);
+  const master = ctx.createGain();
+  master.gain.value = volume;
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 8192;
+  analyser.smoothingTimeConstant = 0.55;
+  analyser.minDecibels = -110;
+  analyser.maxDecibels = -10;
 
-function makeIR(ctx, kind) {
-  const fs = ctx.sampleRate;
-  const spec = {
-    open: { len: 0.9, rt: 0.35, lp0: 9000, lp1: 2500, early: [[0.019, 0.35], [0.043, 0.22], [0.071, 0.16], [0.13, 0.1]], pre: 0.012, level: 0.5 },
-    garage: { len: 1.8, rt: 1.0, lp0: 12000, lp1: 3500, early: [[0.006, 0.5], [0.011, 0.42], [0.017, 0.35], [0.023, 0.3], [0.031, 0.22]], pre: 0.004, level: 0.7 },
-    tunnel: { len: 4.0, rt: 3.1, lp0: 6000, lp1: 1200, early: [[0.012, 0.6], [0.024, 0.5]], pre: 0.008, level: 0.9, flutter: 0.034 },
-    canyon: { len: 3.5, rt: 1.6, lp0: 7000, lp1: 1500, early: [[0.22, 0.45], [0.41, 0.32], [0.63, 0.22], [0.97, 0.14]], pre: 0.03, level: 0.45 },
-    // a concrete wall one lane to the right: one hard reflection, mostly at the right ear
-    barrier: { len: 0.7, rt: 0.28, lp0: 9000, lp1: 2500, early: [[0.021, 0.85], [0.046, 0.3]], pre: 0.012, level: 0.4, side: [0.35, 1] },
-    // the deck a few metres overhead slaps the sound straight back down
-    bridge: { len: 0.6, rt: 0.2, lp0: 7000, lp1: 2000, early: [[0.026, 0.9], [0.052, 0.4], [0.078, 0.18]], pre: 0.02, level: 0.45 },
-  }[kind] ?? { len: 0.8, rt: 0.3, lp0: 9000, lp1: 3000, early: [], pre: 0.01, level: 0.5 };
-  const N = Math.floor(spec.len * fs);
-  const buf = ctx.createBuffer(2, N, fs);
-  let seed = 12345;
-  const rand = () => {
-    seed = (seed * 1664525 + 1013904223) >>> 0;
-    return seed / 4294967296 - 0.5;
-  };
-  for (let ch = 0; ch < 2; ch++) {
-    const d = buf.getChannelData(ch);
-    const decay = Math.log(1000) / (spec.rt * fs); // -60 dB at rt
-    let lp = 0;
-    const pre = Math.floor(spec.pre * fs);
-    for (let i = pre; i < N; i++) {
-      const t = (i - pre) / fs;
-      const fc = spec.lp1 + (spec.lp0 - spec.lp1) * Math.exp(-t / (spec.rt * 0.35));
-      const a = 1 - Math.exp((-2 * Math.PI * fc) / fs);
-      lp += a * (rand() - lp);
-      const env = Math.exp(-decay * (i - pre)) * (1 - Math.exp(-t / 0.004));
-      d[i] = lp * env * spec.level * 1.6;
-    }
-    // early reflections (slightly different per ear; louder on a wall's side)
-    const sg = spec.side ? spec.side[ch] : 1;
-    for (const [tt, g] of spec.early) {
-      const k = Math.floor((tt * (ch ? 1.07 : 0.95)) * fs);
-      if (k < N) {
-        for (let j = 0; j < 24 && k + j < N; j++) d[k + j] += g * sg * Math.exp(-j / 4) * (j === 0 ? 1 : rand() * 0.6);
-      }
-    }
-    // flutter echo between parallel tunnel walls
-    if (spec.flutter) {
-      const D = Math.floor(spec.flutter * fs * (ch ? 1.03 : 1));
-      for (let i = D; i < N; i++) d[i] += d[i - D] * 0.42;
-      let m = 0;
-      for (let i = 0; i < N; i++) m = Math.max(m, Math.abs(d[i]));
-      for (let i = 0; i < N; i++) d[i] *= spec.level / m;
-    }
+  node.connect(dry);
+  for (let i = 0; i < 2; i++) {
+    node.connect(conv[i]);
+    conv[i].connect(wetG[i]);
+    wetG[i].connect(dyn);
   }
-  return buf;
+  dry.connect(dyn);
+  dyn.connect(master);
+  master.connect(ctx.destination);
+  // analyse the raw engine (before reverb and dynamics)
+  node.connect(analyser);
+  return { dry, conv, wetG, dyn, master, analyser };
 }
