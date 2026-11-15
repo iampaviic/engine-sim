@@ -345,6 +345,20 @@ export class EngineSim {
     this.spHa = this.spLa = 0;
     this.spL = this.spH1 = this.spH2 = 0;
     this.wRs = 0x6a09e667;
+    // rain on the roof: per drop class (half a roof each) the chance of a
+    // drop each sample, its peak force and its decay; the force on each half
+    // now; the near field's high-pass; the panel's modes; the sound at the
+    // ears (sim/weather.js)
+    this.rainOn = false;
+    this.rnP = new Float64Array(6);
+    this.rnF = new Float64Array(6);
+    this.rnD = new Float64Array(6);
+    this.rnYL = new Float64Array(6);
+    this.rnYR = new Float64Array(6);
+    this.rnNear = this.rnFar = this.rnHp = 0;
+    this.rnHl = this.rnHr = 0;
+    this.roofBank = null;
+    this.rainL = this.rainR = 0;
     this.setOctane(this.octane);
     this.kF1 = 1.841 / (PI * cfg.bore);
     this.kDecay = Math.exp(-1 / (fs * 0.0015));

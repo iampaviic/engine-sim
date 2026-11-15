@@ -103,6 +103,13 @@ export class ListenMethods {
       l += a[0] * m5;
       r += a[1] * m5;
     }
+    if (L.cabin && this.rainOn) {
+      // rain on the roof overhead (sim/weather.js)
+      this.roofRain();
+      const m5 = this.mix[5];
+      l += this.rainL * m5;
+      r += this.rainR * m5;
+    }
     if (L.cabin) {
       // body boom resonance
       const m = (l + r) * 0.5;
