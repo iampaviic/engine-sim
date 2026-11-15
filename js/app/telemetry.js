@@ -33,6 +33,10 @@ export function onMessage(m) {
     case 'scene':
       onScene(m);
       break;
+    case 'interlock':
+      // a manual car's clutch switch
+      toast('In gear: press the clutch to start');
+      break;
     case 'flyby-done':
       setTimeout(() => {
         if (app.mode === 'flyby') setMode('rev');
@@ -112,6 +116,9 @@ function onTelemetry(t) {
       toast(app.tune.knockCtl ? 'Knock: the ECU hears it and pulls timing' : 'Knock, and the sensor is off: it keeps pinging');
     }
   }
+  // the manual gearbox
+  if (t.stall) toast(app.gearbox === 'manual' && t.gear ? 'Stalled. Clutch in, then START' : 'Stalled. Press START');
+  if (t.refused) toast('Refused: without the clutch a gear needs the load off and the revs matched');
   tach.float = t.float;
   if (t.float > 0.05 && !app.warned.float) {
     app.warned.float = true;

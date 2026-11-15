@@ -31,7 +31,9 @@ export function defaultTune(f) {
     antilag: !!f.ecu.antilag,
     launchRpm: f.ecu.launchRpm ?? 4000,
     tc: true,
-    autoShift: true,
+    // the gearbox is the driver's choice, kept from engine to engine
+    autoShift: (app.gearbox ?? 'auto') === 'auto',
+    manual: app.gearbox === 'manual',
     valve: 'auto',
     spark: 0,
     octane: f.ecu.octane ?? 98,
@@ -105,6 +107,7 @@ export function loadEngine(id, { autostart = false, keepOff = false } = {}) {
   updateEngineUI();
   if (app.started) {
     app.audio.post({ type: 'config', cfg: workletConfig(app.compiled), tune: app.tune });
+    app.sentPedal = null; // the new engine hears the pedals' positions at once
     sendThermal();
     app.audio.post({ type: 'camera', camera: app.mode === 'flyby' ? 'flyby' : app.camera });
     if (autostart || wasRunning) setTimeout(() => app.crank(), 350);
@@ -202,7 +205,7 @@ app.loadSpec = (spec, { hot = false, quiet = false, remember = false } = {}) => 
   app.factory = spec;
   app.spec = clone(spec);
   app.tune = defaultTune(spec);
-  if (keep) for (const k of ['tc', 'autoShift', 'valve']) app.tune[k] = keep[k];
+  if (keep) for (const k of ['tc', 'autoShift', 'manual', 'valve']) app.tune[k] = keep[k];
   app.camLevel = 0;
   app.flyLevel = 1;
   app.compiled = compile(app.spec);

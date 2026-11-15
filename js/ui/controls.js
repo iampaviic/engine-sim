@@ -1,15 +1,18 @@
 // Inputs: keyboard, touch/mouse pedals, mouse-wheel hand throttle, gamepad.
-// Produces smoothed pedal/brake values and discrete actions.
+// Produces smoothed pedal/brake/clutch values and discrete actions.
 
 export class Controls {
-  constructor({ gas, brake, gasVal, onAction }) {
+  constructor({ gas, brake, clutch, gasVal, onAction }) {
     this.gasEl = gas;
     this.brakeEl = brake;
+    this.clutchEl = clutch;
     this.gasVal = gasVal;
     this.onAction = onAction;
     this.keys = new Set();
     this.touchGas = 0;
     this.touchBrake = 0;
+    this.touchClutch = 0;
+    this.clutch = 0; // 0 up (engaged), 1 floored
     this.hand = 0;
     this.external = 0; // e.g. the builder's hold-to-rev button
     this.blipT = 0;
@@ -21,6 +24,7 @@ export class Controls {
     this.bindKeys();
     this.bindPedal(gas, (v) => (this.touchGas = v));
     this.bindPedal(brake, (v) => (this.touchBrake = v));
+    this.bindPedal(clutch, (v) => (this.touchClutch = v));
   }
 
   bindKeys() {
@@ -113,7 +117,7 @@ export class Controls {
     });
     window.addEventListener('blur', () => {
       this.keys.clear();
-      this.touchGas = this.touchBrake = 0;
+      this.touchGas = this.touchBrake = this.touchClutch = 0;
       this.setLaunch(false);
       this.setNos(false);
     });
@@ -170,7 +174,7 @@ export class Controls {
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
     let pad = null;
     for (const p of pads) if (p && p.connected) pad = p;
-    if (!pad) return { gas: 0, brake: 0 };
+    if (!pad) return { gas: 0, brake: 0, clutch: 0 };
     const b = (i) => pad.buttons[i]?.value ?? 0;
     const edge = (i, fn) => {
       const on = (pad.buttons[i]?.pressed ?? false);
@@ -192,7 +196,9 @@ export class Controls {
       this.padPrev.nos = n;
       this.setNos(n);
     }
-    return { gas: b(7), brake: b(6) };
+    // the clutch: the left stick pulled back
+    const ly = pad.axes[1] ?? 0;
+    return { gas: b(7), brake: b(6), clutch: Math.max(0, Math.min(1, (ly - 0.12) / 0.8)) };
   }
 
   update(dt) {
@@ -213,6 +219,19 @@ export class Controls {
     this.brake += Math.max(-8 * dt, Math.min(10 * dt, brk - this.brake));
     if (this.pedal < 0.002) this.pedal = 0;
     if (this.brake < 0.002) this.brake = 0;
+    // The clutch: a thumb on the pedal or a stick goes where it is put,
+    // about as fast as a foot. A key can only say down or up: down it goes
+    // at once, and up at the pace of a foot on a brisk pull-away (full
+    // travel in about two thirds of a second, a quarter of a second through
+    // the bite: an estimate).
+    const key = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight') ? 1 : 0;
+    const foot = Math.max(this.touchClutch, pad.clutch);
+    if (foot >= key) this.clutch += Math.max(-14 * dt, Math.min(14 * dt, foot - this.clutch));
+    else if (this.clutch < key) this.clutch = Math.min(1, this.clutch + 10 * dt);
+    else this.clutch = Math.max(foot, this.clutch - 1.5 * dt);
+    if (this.clutch < 0.002) this.clutch = 0;
+    this.clutchEl.firstElementChild.style.height = `${(this.clutch * 100).toFixed(1)}%`;
+    this.clutchEl.setAttribute('aria-valuenow', Math.round(this.clutch * 100));
     this.gasEl.firstElementChild.style.height = `${(this.pedal * 100).toFixed(1)}%`;
     this.brakeEl.firstElementChild.style.height = `${(this.brake * 100).toFixed(1)}%`;
     this.gasEl.setAttribute('aria-valuenow', Math.round(this.pedal * 100));

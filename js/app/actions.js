@@ -115,6 +115,7 @@ export async function start() {
   app.started = true;
   app.starting = false;
   app.audio.post({ type: 'config', cfg: workletConfig(app.compiled), tune: app.tune });
+  app.sentPedal = null;
   sendThermal();
   app.audio.post({ type: 'camera', camera: app.camera });
   app.audio.post({ type: 'mix', gains: mixGains() });

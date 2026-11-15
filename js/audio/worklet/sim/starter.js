@@ -124,6 +124,12 @@ export class StarterMethods {
   // mesh and the main contacts close.
   crankStart() {
     if (this.starter) return;
+    // a manual car's clutch switch: the starter turns only with the clutch
+    // pressed or the gearbox in neutral, so it cannot drive the car
+    if (this.manualOn && this.gear > 0 && this.clutch > 0.02) {
+      this.posts.push({ type: 'interlock' });
+      return;
+    }
     const s = this.th;
     this.starter = true;
     this.starterT = 0;

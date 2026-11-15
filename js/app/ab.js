@@ -31,7 +31,7 @@ export function abSwitch(on) {
   const a = app.ab ?? { spec: app.factory, tune: defaultTune(app.factory) };
   if (on && !app.abCompiled) app.abCompiled = compile(a.spec);
   const spec = on ? a.spec : app.spec;
-  const tune = on ? { ...a.tune, autoShift: app.tune.autoShift, tc: app.tune.tc } : app.tune;
+  const tune = on ? { ...a.tune, autoShift: app.tune.autoShift, manual: app.tune.manual, tc: app.tune.tc } : app.tune;
   const compiled = on ? app.abCompiled : app.compiled;
   app.audio.post({ type: 'config', cfg: workletConfig(compiled), tune, hot: true });
   schem.setEngine(compiled, spec);

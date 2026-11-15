@@ -65,7 +65,13 @@ export class DrivetrainMethods {
       this.ww = this.v / v.tire;
       return;
     }
-    // drive / flyby
+    // drive / flyby; the driver's own clutch and lever (sim/gearbox.js)
+    const man = this.manual && this.mode === 'drive' && !this.scripted && !this.follow;
+    if (man !== this.manualOn) this.setManualOn(man);
+    if (man) {
+      this.manualControl(dtc);
+      return;
+    }
     const maxT = 1.5 * this.peakTorqueGuess();
     const G = this.gear > 0 ? v.gears[this.gear - 1] * v.final : 0;
     const wIn = this.ww * G;
@@ -211,6 +217,10 @@ export class DrivetrainMethods {
   requestShift(dir) {
     const v = this.veh;
     if (this.mode !== 'drive' && this.mode !== 'flyby') return;
+    if (this.manualOn) {
+      this.manualShift(dir);
+      return;
+    }
     if (this.shift) return;
     const to = clamp(this.gear + dir, 0, v.gears.length);
     if (to === this.gear) return;
@@ -272,7 +282,9 @@ export class DrivetrainMethods {
       this.slip = slipV;
       this.gearTorque = load;
     } else if (this.mode === 'drive' || this.mode === 'flyby') {
-      // coasting in neutral / clutch open
+      // coasting in neutral / clutch open (a manual box's input shaft spins
+      // on its own, held by the clutch or pulled round by a synchroniser)
+      if (this.manualOn) load = this.stepInputShaft(omega);
       const v = this.veh;
       const vv = this.v;
       const drag = this.dragK * vv * vv + this.rollK * ftanh(vv * 2);
