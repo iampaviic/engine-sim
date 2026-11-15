@@ -54,7 +54,7 @@ export class SourceMethods {
     // the exhaust ticking as it cools, the radiator fan
     if (this.tkOn > 0 || this.fanW > 0) mech += this.thermalSound();
 
-    // chassis: road, wind, tyre squeal
+    // chassis: road, wind, tyre squeal, the spray off a wet road
     // (a mic riding on the car hears the wind on its own, in aero())
     let chassis = this.axleSnd;
     // the fuel pump, in the tank under the rear seat
@@ -68,6 +68,7 @@ export class SourceMethods {
       const sf = this.surface === 'asphalt' ? 1 : this.surface === 'concrete' ? 1.3 : 1.15;
       chassis += this.roadLp * vv * 0.35 * sf + (this.aeroMic ? 0 : (this.windLp1 - this.windLp2) * vv * vv * 0.0025);
     }
+    if (this.sprayA > 0) chassis += this.spraySound();
     if (this.bumpX !== 0 || this.bumpCl > 1e-5 || this.bumpY1 > 1e-6 || this.bumpY1 < -1e-6) {
       // tyre and suspension ring at ~70 Hz; the tread slaps the joint
       const y = this.bumpB1 * this.bumpY1 + this.bumpB2 * this.bumpY2 + this.bumpX;
@@ -81,7 +82,7 @@ export class SourceMethods {
     if (sl > 1.2 && this.gear > 0) {
       this.sqPhase += (820 + 180 * Math.sin(this.pos * 3 + sl) + (rnd() - 0.5) * 300) / fs;
       this.sqPhase -= Math.floor(this.sqPhase);
-      chassis += Math.sin(TAU * this.sqPhase) * Math.min(1, (sl - 1.2) / 4) * 1.4;
+      chassis += Math.sin(TAU * this.sqPhase) * Math.min(1, (sl - 1.2) / 4) * 1.4 * this.squealK;
     }
 
     // The wastegate dump leaves as a near-sonic jet: broadband turbulent

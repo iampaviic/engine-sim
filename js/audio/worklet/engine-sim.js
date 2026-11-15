@@ -336,6 +336,15 @@ export class EngineSim {
     // wet road's friction falls with sliding speed (per m/s)
     this.gripK = 1;
     this.slideK = 0;
+    this.squealK = 1;
+    // the water on it: film depth (mm), the spray's level and filters, and
+    // the weather's own random stream
+    this.film = 0;
+    this.sprayK = 0;
+    this.sprayA = 0;
+    this.spHa = this.spLa = 0;
+    this.spL = this.spH1 = this.spH2 = 0;
+    this.wRs = 0x6a09e667;
     this.setOctane(this.octane);
     this.kF1 = 1.841 / (PI * cfg.bore);
     this.kDecay = Math.exp(-1 / (fs * 0.0015));

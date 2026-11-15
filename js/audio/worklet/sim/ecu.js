@@ -303,6 +303,7 @@ export class EcuMethods {
 
     this.vehicleControl(dtc, rpm);
     if (this.aeroMic) this.aeroCtl(dtc);
+    if (this.film > 0) this.sprayCtl();
 
     // Temperatures -> pipe sound speed
     if (this.twoStroke) {
