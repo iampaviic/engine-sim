@@ -95,9 +95,11 @@ function run({ id, cfg, tune }, { LOUDNESS_TARGET, integratedLoudness }) {
     }
   }
   if (nan) return { type: 'result', id, error: 'The simulation became unstable with this combination.' };
-  // the sweep's integrated loudness (BS.1770), as tools/loudness.mjs measures
-  // the presets, and the trim that brings it to the common level
+  // the integrated loudness (BS.1770) of the sweep's last 3 s, as
+  // tools/loudness.mjs measures the presets, and the trim that brings it to
+  // the common level
   const join = (a) => {
+    a = a.slice(-Math.round((3 * FS) / BLOCK));
     const out = new Float32Array(a.length * BLOCK);
     a.forEach((b, i) => out.set(b, i * BLOCK));
     return out;

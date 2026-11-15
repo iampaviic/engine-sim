@@ -2,10 +2,16 @@
 // app: the loudness tool and the virtual dyno trim each engine with it, and
 // the master processor reads its own level with it.
 
-// Every engine is trimmed so a full-load dyno sweep, heard by the rear
-// camera's mic, has this integrated loudness at the worklet's output: the
-// level the master chain (sim-side of the volume control) is built around.
-export const LOUDNESS_TARGET = -16;
+// Every engine is trimmed so the top of a full-load dyno sweep (its last 3
+// s, at full throttle near the rev limit: an engine's loudest sustained
+// state), heard by the rear camera's mic, has this integrated loudness at
+// the worklet's output. An engine's peaks stand 12 to 16 dB above its
+// loudness, so at -20 its sustained full load stays 4 to 6 dB under full
+// scale and clear of the worklet's safety clip (listener.js); the master
+// chain (master.js) then brings full load up to MASTER_TARGET and its
+// true-peak limiter holds the peaks.
+export const LOUDNESS_TARGET = -20;
+export const MASTER_TARGET = -16;
 
 // K-weighting at any sample rate. The standard gives its two biquads at 48
 // kHz; these are the analog prototypes they come from (a high shelf, +4 dB

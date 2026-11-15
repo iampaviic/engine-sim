@@ -1,8 +1,8 @@
 // Each preset's loudness and the trim that brings it to the common target.
 // The measure is ITU-R BS.1770-4 integrated loudness (js/audio/worklet/
-// loudness.js) of a full-load dyno sweep heard by the rear camera's mic, at
-// the worklet's output, the same measure the virtual dyno uses for a
-// builder's engine. Also printed: a settled idle's loudness (5-8 s after
+// loudness.js) of the last 3 s of a full-load dyno sweep (full throttle
+// near the rev limit) heard by the rear camera's mic, at the worklet's
+// output: the same measure the virtual dyno uses for a builder's engine. Also printed: a settled idle's loudness (5-8 s after
 // the start), as a contrast against it.
 //   node tools/loudness.mjs [id ...] [--write]
 // --write puts the suggested trims into js/engine/presets.js.
@@ -25,7 +25,7 @@ for (const p of list) {
   const d = await render(p.id, 'dyno', { duration: 16, camera: 'rear' });
   const sweep = d.tel.filter((m) => m.dyno);
   const fs = d.fs;
-  const a = Math.floor((sweep.length ? sweep[0].t : 3) * fs), b = Math.floor((sweep.length ? sweep[sweep.length - 1].t : 12) * fs);
+  const b = Math.floor((sweep.length ? sweep[sweep.length - 1].t : 12) * fs), a = b - 3 * fs;
   const I = integratedLoudness(d.L.subarray(a, b), d.R.subarray(a, b), fs);
   // a settled idle: 5 to 8 s after the start (past the start flare)
   const id = await render(p.id, 'idle', { duration: 8, camera: 'rear' });
