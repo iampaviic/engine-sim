@@ -101,6 +101,9 @@ export class Controls {
         case 'KeyH':
           this.onAction('temp');
           break;
+        case 'KeyR':
+          this.onAction('weather');
+          break;
         case 'KeyB':
           this.onAction('ab', true);
           break;

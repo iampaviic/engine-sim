@@ -1,10 +1,12 @@
 // Preferences the user sets: camera, environment, quality, volume, units,
-// the gearbox, sharing the speaker with other apps, keeping the screen awake.
+// the gearbox, the weather, sharing the speaker with other apps, keeping the
+// screen awake.
 
 import { sprint, units } from '../ui/units.js';
 import { call, EngineAudio } from '../platform/native.js';
 import { $, app, store } from './state.js';
 import { toast } from './ui.js';
+import { weatherAmbient } from '../audio/worklet/sim/weather.js';
 import { applyAudioSessionType, screenAwake } from './platform.js';
 
 app.setCamera = (c) => {
@@ -46,6 +48,23 @@ app.setGearbox = (g) => {
     if (!t?.gear) toast('Neutral. Clutch in, then shift up for first');
   }
 };
+// The weather, the same for every engine and kept between visits: 'dry',
+// 'damp' or 'rain' (worklet/sim/weather.js has what each means).
+const WEATHERS = ['dry', 'damp', 'rain'];
+app.weather = WEATHERS.includes(store.get('weather', 'dry')) ? store.get('weather', 'dry') : 'dry';
+app.setWeather = (w) => {
+  if (!WEATHERS.includes(w)) w = 'dry';
+  app.weather = w;
+  store.set('weather', w);
+  if (app.started) app.audio.post({ type: 'weather', weather: w });
+  toast(weatherText(w));
+};
+app.cycleWeather = () => app.setWeather(WEATHERS[(WEATHERS.indexOf(app.weather) + 1) % WEATHERS.length]);
+export function weatherText(w) {
+  const t = Math.round(weatherAmbient(w) - 273.15);
+  return w === 'rain' ? `Rain, ${t} °C: a wet road, less grip` : w === 'damp' ? `Damp road, ${t} °C` : `Dry, ${t} °C`;
+}
+
 // the third pedal shows only with a manual gearbox
 export function syncGearboxUI() {
   const man = app.gearbox === 'manual';

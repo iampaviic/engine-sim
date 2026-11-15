@@ -80,6 +80,11 @@ export function action(a, v) {
       app.toggleEngineTemp();
       if (workshop.open) workshop.render();
       break;
+    case 'weather':
+      app.cycleWeather();
+      if (settings.open) settings.render();
+      if (!$('scenePick').hidden) toggleScenePick(true);
+      break;
     case 'escape':
       settings.hide();
       garage.hide();
@@ -114,6 +119,7 @@ export async function start() {
   app.audio.setEnvironment(app.env);
   app.started = true;
   app.starting = false;
+  app.audio.post({ type: 'weather', weather: app.weather });
   app.audio.post({ type: 'config', cfg: workletConfig(app.compiled), tune: app.tune });
   app.sentPedal = null;
   sendThermal();

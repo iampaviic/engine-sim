@@ -138,6 +138,12 @@ function air(w) {
 }
 const REF = air(WEATHER.dry);
 
+// The day's air temperature, K. The app cools a stored engine towards it
+// between visits (js/app/thermal.js).
+export function weatherAmbient(name) {
+  return (WEATHER[name] ?? WEATHER.dry).T;
+}
+
 export class WeatherMethods {
   setWeather(name) {
     const w = WEATHER[name] ?? WEATHER.dry;

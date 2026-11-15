@@ -433,6 +433,8 @@ export class EngineProcessor extends AudioWorkletProcessor {
       stall: s.evStall,
       refused: s.evRefused,
       grind: s.evGrind,
+      // the day the engine runs in (sim/weather.js)
+      weather: s.weather,
     };
     s.evStall = 0;
     s.evRefused = 0;

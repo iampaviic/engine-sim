@@ -1,5 +1,5 @@
-// App settings: units, how the sound shares the phone with other apps,
-// screen keep-awake, and the about box.
+// App settings: units, the weather, how the sound shares the phone with
+// other apps, screen keep-awake, and the about box.
 
 import { isNative, platform } from '../platform/native.js';
 
@@ -86,6 +86,20 @@ export class Settings {
       app.units.speed,
       (v) => app.setUnits(v),
       'Drag strip time slips always show mph and km/h.'
+    );
+
+    g = group('Weather');
+    seg(
+      g,
+      'The day',
+      [
+        ['dry', 'Dry'],
+        ['damp', 'Damp'],
+        ['rain', 'Rain'],
+      ],
+      app.weather,
+      (v) => app.setWeather(v),
+      'Cool damp air makes a little more power and knocks less; a wet road grips less, the tyres hiss with spray and, in the cockpit, rain drums on the roof. R cycles it; the Scenes menu has it too.'
     );
 
     if (app.canMixAudio) {
