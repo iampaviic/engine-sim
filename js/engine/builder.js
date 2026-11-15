@@ -586,14 +586,15 @@ function applyBase(d, gen) {
   return spec;
 }
 
-// Rough loudness trim until the virtual dyno has measured the real one.
+// Rough loudness trim until the virtual dyno has measured the real one
+// (scaled to the presets' BS.1770 trims: about 1.3 times the old RMS ones).
 function estimateTrim(d, L, n) {
-  let t = 0.9 / Math.sqrt(Math.max(0.5, L));
+  let t = 1.17 / Math.sqrt(Math.max(0.5, L));
   if (d.induction.type === 'turbo') t *= 1.8;
   if (d.exhaust.muffler === 'none') t *= 0.45;
   else if (d.exhaust.muffler === 'stock') t *= 1.6;
   if (d.exhaust.cat) t *= 1.2;
-  return +Math.min(3, Math.max(0.1, t * (n >= 8 ? 0.7 : 1))).toFixed(2);
+  return +Math.min(4, Math.max(0.1, t * (n >= 8 ? 0.7 : 1))).toFixed(2);
 }
 
 export function describeFiring(d, fire, banks) {

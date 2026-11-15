@@ -1,17 +1,18 @@
 // Loudness (ITU-R BS.1770-4: K-weighting, 400 ms blocks, absolute and
 // relative gates) and true peak (4x oversampled) of stereo PCM at 48 kHz.
 // Used by tools/loudness.mjs and tools/mix.mjs.
+import { kWeights } from '../js/audio/worklet/loudness.js';
+
 export const FS = 48000;
 
-// K-weighting at 48 kHz (BS.1770-4, table 1 and 2): a high shelf, then the
-// RLB high-pass.
-const K1 = { b: [1.53512485958697, -2.69169618940638, 1.19839281085285], a: [1, -1.69065929318241, 0.73248077421585] };
-const K2 = { b: [1, -2, 1], a: [1, -1.99004745483398, 0.99007225036621] };
-function biquad(x, { b, a }) {
+// K-weighting: the app's own (js/audio/worklet/loudness.js), the standard's
+// two biquads.
+const [K1, K2] = kWeights(FS);
+function biquad(x, c) {
   const y = new Float64Array(x.length);
   let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
   for (let i = 0; i < x.length; i++) {
-    const v = b[0] * x[i] + b[1] * x1 + b[2] * x2 - a[1] * y1 - a[2] * y2;
+    const v = c[0] * x[i] + c[1] * x1 + c[2] * x2 - c[3] * y1 - c[4] * y2;
     x2 = x1; x1 = x[i]; y2 = y1; y1 = v; y[i] = v;
   }
   return y;
