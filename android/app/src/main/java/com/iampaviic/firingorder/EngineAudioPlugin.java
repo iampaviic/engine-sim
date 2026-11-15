@@ -8,6 +8,7 @@ import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
 import android.os.Build;
+import android.provider.Settings;
 import android.view.WindowManager;
 import androidx.core.content.ContextCompat;
 import com.getcapacitor.JSObject;
@@ -20,7 +21,8 @@ import com.getcapacitor.annotation.CapacitorPlugin;
  * Audio focus, headphone unplugging and screen keep-awake for the engine
  * sound. The sound itself is Web Audio inside the WebView; this plugin tells
  * the page when to pause and resume it (calls, other apps, unplugged
- * headphones) and keeps the screen on while the engine runs.
+ * headphones) and keeps the screen on while the engine runs. It also tells
+ * the page whether the system wants haptic feedback at all.
  */
 @CapacitorPlugin(name = "EngineAudio")
 public class EngineAudioPlugin extends Plugin implements AudioManager.OnAudioFocusChangeListener {
@@ -90,6 +92,19 @@ public class EngineAudioPlugin extends Plugin implements AudioManager.OnAudioFoc
                 else getActivity().getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                 call.resolve();
             });
+    }
+
+    /**
+     * Whether touch feedback is on in the system's settings (Sound and
+     * vibration): the app's haptics follow it, since the Haptics plugin's
+     * vibrations do not ask.
+     */
+    @PluginMethod
+    public void hapticFeedback(PluginCall call) {
+        boolean on = Settings.System.getInt(getContext().getContentResolver(), Settings.System.HAPTIC_FEEDBACK_ENABLED, 1) != 0;
+        JSObject result = new JSObject();
+        result.put("enabled", on);
+        call.resolve(result);
     }
 
     @SuppressWarnings("deprecation")

@@ -314,6 +314,7 @@ export class DrivetrainMethods {
     this.pos += this.v * dt;
     const net = torque - this.fric - scTorque;
     this.telTq += net;
+    this.telTq2 += net * net;
     this.telN++;
     this.cycTq += net;
     this.cycN++;

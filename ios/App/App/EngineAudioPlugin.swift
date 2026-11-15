@@ -1,11 +1,13 @@
 import AVFoundation
 import Capacitor
+import CoreHaptics
 import UIKit
 
 /// Audio session, interruptions and screen keep-awake for the engine sound.
 /// The sound itself is Web Audio inside the web view. This plugin sets the
 /// session up so it plays with the ring/silent switch on, and tells the page
-/// when to pause and resume (calls, Siri, headphones unplugged).
+/// when to pause and resume (calls, Siri, headphones unplugged). It also
+/// answers whether the system wants haptic feedback.
 @objc(EngineAudioPlugin)
 public class EngineAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "EngineAudioPlugin"
@@ -13,7 +15,8 @@ public class EngineAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "configure", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setActive", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "setKeepAwake", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "setKeepAwake", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "hapticFeedback", returnType: CAPPluginReturnPromise)
     ]
 
     private var mixWithOthers = false
@@ -66,6 +69,14 @@ public class EngineAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             CAPLog.print("EngineAudio: could not change the audio session:", error.localizedDescription)
         }
         call.resolve()
+    }
+
+    /// The app's haptics are the Haptics plugin's impacts, which go through
+    /// UIImpactFeedbackGenerator: iOS itself drops them when System Haptics
+    /// is off, so there is nothing to read here (and no public way to read
+    /// it). The answer is no only on hardware without a haptic engine.
+    @objc func hapticFeedback(_ call: CAPPluginCall) {
+        call.resolve(["enabled": CHHapticEngine.capabilitiesForHardware().supportsHaptics])
     }
 
     @objc func setKeepAwake(_ call: CAPPluginCall) {
