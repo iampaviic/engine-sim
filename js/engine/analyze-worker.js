@@ -10,8 +10,8 @@ globalThis.AudioWorkletProcessor = class {
   }
 };
 let Proc = null;
-globalThis.registerProcessor = (_name, cls) => {
-  Proc = cls;
+globalThis.registerProcessor = (name, cls) => {
+  if (name === 'engine-processor') Proc = cls;
 };
 const ready = import('../audio/engine-worklet.js');
 // the app's one definition of loudness (BS.1770) and the level every engine

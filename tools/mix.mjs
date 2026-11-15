@@ -5,12 +5,15 @@
 // times (ctx.suspend). The tool starts its own static server.
 //
 //   node tools/mix.mjs [id ...] [--scen rev|drive] [--env open] [--camera rear]
-//                      [--weather rain] [--dur 11] [--wav dir] [--json out.json]
+//                      [--weather rain] [--dur 13] [--wav dir] [--json out.json]
+//                      [--root dir]
 //
 // Per engine it prints the integrated loudness (ITU-R BS.1770-4), the
-// momentary loudness at idle (1.4-2.6 s) and at full throttle (6.2-7.4 s) of
-// the rev scenario, their difference (the contrast), and the true peak (4x
-// oversampled) and sample peak.
+// loudness of the rev scenario's free rev at full throttle (6.2-7.4 s, on the
+// rev limiter) and of its settled idle afterwards (11.6-12.8 s), their
+// difference (the contrast), and the true peak (4x oversampled) and sample
+// peak, with the app's volume control at full. --root serves another
+// checkout of the app (an older build, to compare against).
 
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -42,10 +45,10 @@ export const SCEN = {
 };
 
 let server = null, browser = null, base = null;
-export async function openMix() {
+export async function openMix(appRoot = root) {
   if (browser) return;
   const port = 18000 + Math.floor(Math.random() * 1000);
-  server = spawn(process.execPath, [path.join(here, 'serve.mjs'), String(port)], { stdio: 'ignore' });
+  server = spawn(process.execPath, [path.join(appRoot, 'tools/serve.mjs'), String(port)], { stdio: 'ignore' });
   base = `http://localhost:${port}/`;
   const { chromium } = createRequire(import.meta.url)('playwright');
   browser = await chromium.launch();
@@ -65,7 +68,7 @@ export async function closeMix() {
 }
 
 // opts: { id, scen (name or [[t, message]...]), dur, camera, env, weather,
-// extra (messages sent before the scenario) } -> { L, R, meter }
+// extra (messages sent before the scenario) } -> { L, R, meter, tel }
 export async function renderMix(opts) {
   await openMix();
   const page = await browser.newPage();
@@ -81,9 +84,13 @@ export async function renderMix(opts) {
       const { PRESETS } = await import('/js/engine/presets.js');
       const eng = new AudioEngine();
       eng.env = env ?? 'open';
-      const meter = [];
+      eng.volume = 1; // the app's volume control at full
+      const meter = [], tel = [];
+      eng.onMessage = (m) => {
+        if (m.type === 'tel' && (!tel.length || ctx.currentTime - tel[tel.length - 1].t >= 0.1)) tel.push({ t: ctx.currentTime, rpm: m.rpm });
+      };
       await eng.init(ctx);
-      eng.onMeter = (m) => meter.push(m);
+      eng.setMeter?.((m) => meter.push(m));
       eng.post({ type: 'quality', quality: 'full' });
       if (weather) eng.post({ type: 'weather', weather });
       eng.post({ type: 'config', cfg: workletConfig(compileEngine(PRESETS.find((p) => p.id === id))) });
@@ -104,22 +111,24 @@ export async function renderMix(opts) {
           ctx.resume();
         });
       const buf = await ctx.startRendering();
+      // the last meter messages are still on their way
+      await new Promise((r) => setTimeout(r, 200));
       const enc = (a) => {
         const u = new Uint8Array(a.buffer);
         let s = '';
         for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
         return btoa(s);
       };
-      return { L: enc(buf.getChannelData(0)), R: enc(buf.getChannelData(1)), meter };
+      return { L: enc(buf.getChannelData(0)), R: enc(buf.getChannelData(1)), meter, tel };
     },
-    { id: opts.id, scen, dur: opts.dur ?? 11, camera: opts.camera, env: opts.env, weather: opts.weather, extra: opts.extra }
+    { id: opts.id, scen, dur: opts.dur ?? 13, camera: opts.camera, env: opts.env, weather: opts.weather, extra: opts.extra }
   );
   await page.close();
   const dec = (s) => {
     const b = Buffer.from(s, 'base64');
     return new Float32Array(b.buffer, b.byteOffset, b.length / 4);
   };
-  return { L: dec(r.L), R: dec(r.R), meter: r.meter };
+  return { L: dec(r.L), R: dec(r.R), meter: r.meter, tel: r.tel };
 }
 
 // The rev scenario's numbers (see the header).
@@ -131,7 +140,7 @@ export function measure(L, R) {
   };
   let sp = 0;
   for (let i = 0; i < L.length; i++) sp = Math.max(sp, Math.abs(L[i]), Math.abs(R[i]));
-  return { I: integrated(L, R), idle: seg(1.4, 2.6), wot: seg(6.2, 7.4), tp: db(Math.max(truePeak(L), truePeak(R))), sp: db(sp) };
+  return { I: integrated(L, R), idle: seg(11.6, 12.8), wot: seg(6.2, 7.4), tp: db(Math.max(truePeak(L), truePeak(R))), sp: db(sp) };
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
@@ -144,6 +153,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
   }
   const { PRESETS } = await import(pathToFileURL(path.join(root, 'js/engine/presets.js')).href);
   const list = ids.length ? ids : PRESETS.map((p) => p.id);
+  if (flags.root) await openMix(path.resolve(flags.root));
   const out = {};
   for (const id of list) {
     const r = await renderMix({ id, scen: flags.scen ?? 'rev', dur: flags.dur ? +flags.dur : undefined, env: flags.env, camera: flags.camera, weather: flags.weather });

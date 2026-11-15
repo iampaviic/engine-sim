@@ -33,6 +33,23 @@ export function kWeights(fs) {
   return [shelf, hp];
 }
 
+// True peak (BS.1770-4 annex 2): the signal oversampled 4 times, and the
+// largest of those samples. The interpolator is a windowed sinc (Blackman
+// window) with 12 taps a phase, as the annex's is. Phase p of input step n,
+// the sum over k of h[p + os k] x[n - k], is the signal (12 os - 1) / (2 os)
+// - p / os samples ago (5.875 - p / 4 at 4x). One definition for the
+// master's limiter (which oversamples finer, os 8) and the tools' meter.
+export const TP_OS = 4;
+export function truePeakTaps(os = TP_OS, per = 12) {
+  const n = os * per, h = new Float64Array(n), c = (n - 1) / 2;
+  for (let i = 0; i < n; i++) {
+    const t = (i - c) / os;
+    const sinc = t === 0 ? 1 : Math.sin(Math.PI * t) / (Math.PI * t);
+    h[i] = sinc * (0.42 - 0.5 * Math.cos((2 * Math.PI * i) / (n - 1)) + 0.08 * Math.cos((4 * Math.PI * i) / (n - 1)));
+  }
+  return h;
+}
+
 // Loudness of a mean square of K-weighted samples (summed over channels).
 export function lufs(ms) {
   return -0.691 + 10 * Math.log10(ms + 1e-30);

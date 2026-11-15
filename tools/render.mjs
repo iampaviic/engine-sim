@@ -37,7 +37,7 @@ export async function loadWorklet(fs = 48000, url = null) {
   globalThis.sampleRate = fs;
   let Proc = null;
   globalThis.registerProcessor = (name, cls) => {
-    Proc = cls;
+    if (name === 'engine-processor') Proc = cls;
   };
   // The query re-runs the entry, so it registers the processor again. The
   // modules behind it load once per process, so restart their random stream:

@@ -1,7 +1,7 @@
 // Loudness (ITU-R BS.1770-4: K-weighting, 400 ms blocks, absolute and
 // relative gates) and true peak (4x oversampled) of stereo PCM at 48 kHz.
 // Used by tools/loudness.mjs and tools/mix.mjs.
-import { kWeights } from '../js/audio/worklet/loudness.js';
+import { kWeights, TP_OS, truePeakTaps } from '../js/audio/worklet/loudness.js';
 
 export const FS = 48000;
 
@@ -52,20 +52,9 @@ export function shortTermMax(L, R) {
   }
   return m;
 }
-// 4x oversampling: a 48-tap windowed-sinc interpolator (12 taps per phase,
-// as BS.1770-4 annex 2 uses), then the largest absolute sample.
-const OS = 4, TAPS = 48;
-const H = (() => {
-  const h = new Float64Array(TAPS);
-  const c = (TAPS - 1) / 2;
-  for (let i = 0; i < TAPS; i++) {
-    const t = (i - c) / OS;
-    const sinc = t === 0 ? 1 : Math.sin(Math.PI * t) / (Math.PI * t);
-    const w = 0.42 - 0.5 * Math.cos((2 * Math.PI * i) / (TAPS - 1)) + 0.08 * Math.cos((4 * Math.PI * i) / (TAPS - 1));
-    h[i] = sinc * w;
-  }
-  return h;
-})();
+// 4x oversampling with the app's own interpolator (loudness.js, the one the
+// master's limiter uses), then the largest absolute sample.
+const OS = TP_OS, H = truePeakTaps(), TAPS = H.length;
 export function truePeak(x) {
   let m = 0;
   const per = TAPS / OS;

@@ -27,7 +27,11 @@
 //   camera.js      mic and body geometry -> listener taps
 //   scenes.js      the scripted drives
 //   processor.js   EngineProcessor: messages, hot swap, eco mode, telemetry
+//   loudness.js    BS.1770 loudness and true peak, and the levels engines are trimmed to
+//   master.js      MasterProcessor: the leveller and true-peak limiter after the reverbs
 
 import { EngineProcessor } from './worklet/processor.js';
+import { MasterProcessor } from './worklet/master.js';
 
 registerProcessor('engine-processor', EngineProcessor);
+registerProcessor('master-processor', MasterProcessor);

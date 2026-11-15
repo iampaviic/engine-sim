@@ -1,6 +1,6 @@
-// Audio graph: engine worklet -> (dry + convolution reverb) -> compressor ->
-// limiter -> master volume -> speakers. Reverb impulse responses are
-// generated procedurally for each environment.
+// Audio graph: engine worklet -> (dry + convolution reverb) -> master
+// processor (leveller and true-peak limiter) -> master volume -> speakers.
+// Reverb impulse responses are generated procedurally for each environment.
 
 import { bundleWorklet } from './worklet-bundle.js';
 
@@ -67,6 +67,15 @@ export class AudioEngine {
     if (this.node) this.node.port.postMessage(msg, transfer ?? []);
   }
 
+  // The master processor's meter (gain reduction, the leveller's gain and
+  // its input loudness every 10 ms, in batches of 0.1 s): fn(message), or
+  // null to stop. For the tools.
+  setMeter(fn) {
+    if (!this.dyn) return;
+    this.dyn.port.onmessage = fn ? (e) => fn(e.data) : null;
+    this.dyn.port.postMessage({ type: 'meter', on: !!fn });
+  }
+
   setVolume(v) {
     this.volume = v;
     if (this.master) this.master.gain.setTargetAtTime(v, this.ctx.currentTime, 0.03);
@@ -104,29 +113,25 @@ export class AudioEngine {
 }
 
 // The graph after the engine: dry and two reverbs (so one place can fade into
-// another at a tunnel portal), compressor, makeup, limiter, master volume;
-// and an analyser on the raw engine. The app (AudioEngine.init) and the test
-// harness both build it here.
+// another at a tunnel portal), the master processor (the leveller and the
+// true-peak limiter, worklet/master.js), master volume; and an analyser on
+// the raw engine. The app (AudioEngine.init) and the test harness both build
+// it here. The worklet module must already be loaded into ctx.
 export function buildMix(ctx, node, volume) {
   const dry = ctx.createGain();
   const conv = [ctx.createConvolver(), ctx.createConvolver()];
   const wetG = [ctx.createGain(), ctx.createGain()];
   wetG[0].gain.value = 0;
   wetG[1].gain.value = 0;
-  const comp = ctx.createDynamicsCompressor();
-  comp.threshold.value = -22;
-  comp.knee.value = 12;
-  comp.ratio.value = 3.2;
-  comp.attack.value = 0.008;
-  comp.release.value = 0.25;
-  const makeup = ctx.createGain();
-  makeup.gain.value = 1.9;
-  const limit = ctx.createDynamicsCompressor();
-  limit.threshold.value = -3;
-  limit.knee.value = 0;
-  limit.ratio.value = 20;
-  limit.attack.value = 0.002;
-  limit.release.value = 0.08;
+  const dyn = new AudioWorkletNode(ctx, 'master-processor', {
+    numberOfInputs: 1,
+    numberOfOutputs: 1,
+    outputChannelCount: [2],
+    channelCount: 2,
+    channelCountMode: 'explicit',
+    channelInterpretation: 'speakers',
+  });
+  dyn.onprocessorerror = (e) => console.error('master worklet error', e);
   const master = ctx.createGain();
   master.gain.value = volume;
   const analyser = ctx.createAnalyser();
@@ -139,16 +144,14 @@ export function buildMix(ctx, node, volume) {
   for (let i = 0; i < 2; i++) {
     node.connect(conv[i]);
     conv[i].connect(wetG[i]);
-    wetG[i].connect(comp);
+    wetG[i].connect(dyn);
   }
-  dry.connect(comp);
-  comp.connect(makeup);
-  makeup.connect(limit);
-  limit.connect(master);
+  dry.connect(dyn);
+  dyn.connect(master);
   master.connect(ctx.destination);
-  // analyse the raw engine (before reverb/compression)
+  // analyse the raw engine (before reverb and dynamics)
   node.connect(analyser);
-  return { dry, conv, wetG, comp, makeup, limit, master, analyser };
+  return { dry, conv, wetG, dyn, master, analyser };
 }
 
 // ---------------------------------------------------------------------------
