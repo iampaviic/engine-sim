@@ -27,10 +27,13 @@ export class AudioEngine {
     this.irCache = {};
   }
 
-  async init() {
+  // ctxIn: a context to build on instead of the speakers' (the test harness,
+  // tools/mix.mjs, passes an OfflineAudioContext, so it renders through
+  // exactly this graph).
+  async init(ctxIn) {
     const AC = window.AudioContext || window.webkitAudioContext;
-    let ctx = new AC({ latencyHint: 'interactive' });
-    if (ctx.sampleRate > 50000) {
+    let ctx = ctxIn ?? new AC({ latencyHint: 'interactive' });
+    if (!ctxIn && ctx.sampleRate > 50000) {
       // The physics runs once per sample; don't pay for 96 kHz.
       await ctx.close();
       ctx = new AC({ latencyHint: 'interactive', sampleRate: 48000 });
@@ -53,52 +56,11 @@ export class AudioEngine {
     node.port.onmessage = (e) => this.onMessage(e.data);
     node.onprocessorerror = (e) => console.error('engine worklet error', e);
     this.node = node;
-
-    this.dry = ctx.createGain();
-    // two reverbs so one place can fade into another (tunnel portals)
-    this.conv = [ctx.createConvolver(), ctx.createConvolver()];
-    this.wetG = [ctx.createGain(), ctx.createGain()];
-    this.wetG[0].gain.value = 0;
-    this.wetG[1].gain.value = 0;
+    Object.assign(this, buildMix(ctx, node, this.volume));
     this.cur = 0;
     this.envNow = null;
-    this.comp = ctx.createDynamicsCompressor();
-    this.comp.threshold.value = -22;
-    this.comp.knee.value = 12;
-    this.comp.ratio.value = 3.2;
-    this.comp.attack.value = 0.008;
-    this.comp.release.value = 0.25;
-    this.makeup = ctx.createGain();
-    this.makeup.gain.value = 1.9;
-    this.limit = ctx.createDynamicsCompressor();
-    this.limit.threshold.value = -3;
-    this.limit.knee.value = 0;
-    this.limit.ratio.value = 20;
-    this.limit.attack.value = 0.002;
-    this.limit.release.value = 0.08;
-    this.master = ctx.createGain();
-    this.master.gain.value = this.volume;
-    this.analyser = ctx.createAnalyser();
-    this.analyser.fftSize = 8192;
-    this.analyser.smoothingTimeConstant = 0.55;
-    this.analyser.minDecibels = -110;
-    this.analyser.maxDecibels = -10;
-
-    node.connect(this.dry);
-    for (let i = 0; i < 2; i++) {
-      node.connect(this.conv[i]);
-      this.conv[i].connect(this.wetG[i]);
-      this.wetG[i].connect(this.comp);
-    }
-    this.dry.connect(this.comp);
-    this.comp.connect(this.makeup);
-    this.makeup.connect(this.limit);
-    this.limit.connect(this.master);
-    this.master.connect(ctx.destination);
-    // analyse the raw engine (before reverb/compression)
-    node.connect(this.analyser);
     this.setEnvironment(this.env);
-    if (ctx.state !== 'running') await ctx.resume();
+    if (!ctxIn && ctx.state !== 'running') await ctx.resume();
   }
 
   post(msg, transfer) {
@@ -139,6 +101,54 @@ export class AudioEngine {
   resume() {
     return this.ctx?.resume();
   }
+}
+
+// The graph after the engine: dry and two reverbs (so one place can fade into
+// another at a tunnel portal), compressor, makeup, limiter, master volume;
+// and an analyser on the raw engine. The app (AudioEngine.init) and the test
+// harness both build it here.
+export function buildMix(ctx, node, volume) {
+  const dry = ctx.createGain();
+  const conv = [ctx.createConvolver(), ctx.createConvolver()];
+  const wetG = [ctx.createGain(), ctx.createGain()];
+  wetG[0].gain.value = 0;
+  wetG[1].gain.value = 0;
+  const comp = ctx.createDynamicsCompressor();
+  comp.threshold.value = -22;
+  comp.knee.value = 12;
+  comp.ratio.value = 3.2;
+  comp.attack.value = 0.008;
+  comp.release.value = 0.25;
+  const makeup = ctx.createGain();
+  makeup.gain.value = 1.9;
+  const limit = ctx.createDynamicsCompressor();
+  limit.threshold.value = -3;
+  limit.knee.value = 0;
+  limit.ratio.value = 20;
+  limit.attack.value = 0.002;
+  limit.release.value = 0.08;
+  const master = ctx.createGain();
+  master.gain.value = volume;
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 8192;
+  analyser.smoothingTimeConstant = 0.55;
+  analyser.minDecibels = -110;
+  analyser.maxDecibels = -10;
+
+  node.connect(dry);
+  for (let i = 0; i < 2; i++) {
+    node.connect(conv[i]);
+    conv[i].connect(wetG[i]);
+    wetG[i].connect(comp);
+  }
+  dry.connect(comp);
+  comp.connect(makeup);
+  makeup.connect(limit);
+  limit.connect(master);
+  master.connect(ctx.destination);
+  // analyse the raw engine (before reverb/compression)
+  node.connect(analyser);
+  return { dry, conv, wetG, comp, makeup, limit, master, analyser };
 }
 
 // ---------------------------------------------------------------------------
