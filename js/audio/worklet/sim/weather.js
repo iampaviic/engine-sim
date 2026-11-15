@@ -11,11 +11,24 @@ import { P_AMB, T_AMB } from '../constants.js';
 // cooler, near saturation and, with the low that brings it, a little lower
 // pressure. These are typical mid-latitude figures, not measurements (T in
 // kelvin, p in pascals, rh 0..1).
+//   The road: grip is the tyres' peak friction against the dry road's.
+// Wong (Theory of Ground Vehicles, table of road adhesion) gives asphalt
+// 0.8 to 0.9 dry and 0.5 to 0.7 wet, peak and sliding alike, so about 0.7
+// in the rain; a damp road, its texture wet but not flooded, halfway
+// (estimate). wet (0..1) is how far the water film has the say over the
+// friction once the tyre slides (1 in rain, a thin film half that:
+// estimate).
 const WEATHER = {
-  dry: { T: T_AMB, p: P_AMB, rh: 0.32 },
-  damp: { T: 288, p: 101000, rh: 0.88 },
-  rain: { T: 285, p: 100200, rh: 0.96 },
+  dry: { T: T_AMB, p: P_AMB, rh: 0.32, grip: 1, wet: 0 },
+  damp: { T: 288, p: 101000, rh: 0.88, grip: 0.85, wet: 0.5 },
+  rain: { T: 285, p: 100200, rh: 0.96, grip: 0.7, wet: 1 },
 };
+// On a wet road friction falls as the tyre slides faster: the water has
+// less time to be squeezed out of the contact. The PIARC friction index
+// (ASTM E1960) writes it F(S) = F60 exp((60 - S) / Sp), with the speed
+// constant Sp = 14.2 + 89 MPD km/h; a typical dense asphalt's texture depth
+// (MPD) of 0.7 mm gives 76 km/h, 21 m/s.
+const SP_WET = 21;
 
 // Saturation vapour pressure of water over a flat surface, Pa, at t degrees
 // C (the Magnus form, Alduchov and Eskridge, J. Appl. Meteor. 35, 1996).
@@ -53,5 +66,9 @@ export class WeatherMethods {
     // better (0.28: an estimate in the middle of the range).
     this.humON = 0.28 * (a.g - REF.g);
     this.setOctane(this.octane);
+    // the road (sim/drivetrain.js): traction and launch control see the
+    // wheels spin sooner and act on it as they would on any slippery road
+    this.gripK = w.grip;
+    this.slideK = w.wet / SP_WET;
   }
 }

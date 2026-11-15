@@ -332,6 +332,10 @@ export class EngineSim {
     this.weather = 'dry';
     this.airO2 = 1;
     this.humON = 0;
+    // and its road: the tyres' grip against the dry road's, and how fast a
+    // wet road's friction falls with sliding speed (per m/s)
+    this.gripK = 1;
+    this.slideK = 0;
     this.setOctane(this.octane);
     this.kF1 = 1.841 / (PI * cfg.bore);
     this.kDecay = Math.exp(-1 / (fs * 0.0015));
@@ -412,6 +416,7 @@ export class EngineSim {
     this.afrTarget = e.afr;
     this.launch = false;
     this.launchRpm = e.launchRpm;
+    this.launchEff = e.launchRpm; // as the road's grip allows (sim/ecu.js)
     this.shiftCut = 0;
     this.flare = 0;
     this.camHi = false;

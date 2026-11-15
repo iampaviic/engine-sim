@@ -160,8 +160,12 @@ export class EcuMethods {
     this.alsActive =
       this.antilag && this.isTurbo && this.pedal < 0.15 && rpm > 3000 && this.running && this.gear > 0 && (this.mode === 'drive' || this.mode === 'flyby');
 
-    // Rev limiter with hysteresis
-    const lim = this.launch && this.v < 1 ? this.launchRpm : this.limitRpm;
+    // Rev limiter with hysteresis. Launch control holds the engine where the
+    // tyres can take what the clutch then sends them: on a slippery road
+    // (sim/weather.js) it holds it lower, in proportion to the grip above
+    // idle, as a wet launch setting does.
+    this.launchEff = this.gripK === 1 ? this.launchRpm : e.idle + (this.launchRpm - e.idle) * this.gripK;
+    const lim = this.launch && this.v < 1 ? this.launchEff : this.limitRpm;
     if (rpm > lim) this.limCut = true;
     else if (rpm < lim - (this.launch ? 250 : e.hyst)) this.limCut = false;
     this.launchCut = this.launch && this.v < 1 && this.limCut;
@@ -181,9 +185,12 @@ export class EcuMethods {
     }
 
     // Traction control: trims torque with spark cuts when the driven wheels
-    // spin (the classic stuttering 'brap').
+    // spin (the classic stuttering 'brap'). It lets them slip as far as the
+    // tyres' grip peaks, which on a slippery road is nearer (sim/weather.js,
+    // and the tyre in sim/drivetrain.js): real systems infer the road's grip
+    // from how the car accelerates while the wheels slip.
     if (this.tc && this.gear > 0 && (this.mode === 'drive' || this.mode === 'flyby')) {
-      const allow = 1.6 + 0.12 * this.v;
+      const allow = this.gripK === 1 ? 1.6 + 0.12 * this.v : (1.6 + 0.12 * this.v) * this.gripK;
       const ex = this.slip - allow;
       this.tcCut = clamp(this.tcCut + (ex > 0 ? ex * 0.25 : -0.8) * dtc * 10, 0, rpm < 2500 ? 0.2 : 0.7);
     } else this.tcCut = 0;
