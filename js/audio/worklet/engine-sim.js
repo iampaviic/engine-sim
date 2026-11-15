@@ -604,6 +604,7 @@ export class EngineSim {
 
     // Telemetry accumulators
     this.telTq = 0;
+    this.telTq2 = 0; // (its square: how much the torque swings, for haptics)
     this.telN = 0;
     this.telAir = 0;
     this.telFuel = 0;

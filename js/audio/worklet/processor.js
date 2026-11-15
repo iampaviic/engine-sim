@@ -363,7 +363,12 @@ export class EngineProcessor extends AudioWorkletProcessor {
     const s = this.sim;
     const tq = s.cycleTorque;
     s.torqueAvg += (tq - s.torqueAvg) * 0.5;
+    // how far the crank's torque swung about its mean since the last
+    // message (N·m rms): the firing pulses the engine's mounts pass on
+    const mTq = s.telN ? s.telTq / s.telN : 0;
+    const rip = s.telN ? Math.sqrt(Math.max(0, s.telTq2 / s.telN - mTq * mTq)) : 0;
     s.telTq = 0;
+    s.telTq2 = 0;
     s.telN = 0;
     const spl = s.telSplN ? Math.sqrt(s.telSpl / s.telSplN) : 0;
     s.telSpl = 0;
@@ -435,6 +440,11 @@ export class EngineProcessor extends AudioWorkletProcessor {
       grind: s.evGrind,
       // the day the engine runs in (sim/weather.js)
       weather: s.weather,
+      // for haptics: the torque's swing (N·m rms), the firing frequency
+      // (Hz) and the car's acceleration (m/s^2)
+      rip,
+      fire: ((s.rpm / 60) * s.n * 360) / s.cycle,
+      accel: s.accel,
     };
     s.evStall = 0;
     s.evRefused = 0;
