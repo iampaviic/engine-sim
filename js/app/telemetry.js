@@ -6,6 +6,7 @@ import { builder, carPanel, controls, mapEd, schem, scope, tach, toast, view3d, 
 import { screenAwake } from './platform.js';
 import { onScene, setMode } from './modes.js';
 import { saveThermal } from './thermal.js';
+import { shake, tap, taps } from '../platform/haptics.js';
 
 // --------------------------------------------------------------- messages
 export function onMessage(m) {
@@ -100,12 +101,9 @@ function onTelemetry(t) {
     tach.speedText = t.running ? speedText(t.speed) : t.starter ? 'CRANKING' : 'OFF';
   }
   if (app.following && carPanel.open) carPanel.updateLive();
-  if (inGear && t.gear !== app.lastGear && app.lastGear) navigator.vibrate?.(12);
   app.lastGear = t.gear;
-  if (t.af > 0 && t.afI > 0.12) {
-    schem.flame(Math.min(1.2, t.afI * 1.5));
-    if (t.afI > 0.35) navigator.vibrate?.(8);
-  }
+  if (t.af > 0 && t.afI > 0.12) schem.flame(Math.min(1.2, t.afI * 1.5));
+  feel(t, inGear);
   $('startBtn').classList.toggle('on', !!t.running);
   const wantAwake = (app.keepAwake || app.following) && !!t.running && !document.hidden;
   if (wantAwake !== app.awake) screenAwake(wantAwake);
@@ -143,6 +141,78 @@ function onTelemetry(t) {
       toast(`${sprint().text} in ${tm.result.toFixed(2)} s`);
     }
   }
+}
+
+// ---------------------------------------------------------------- haptics
+// What a hand on the car would feel, from the same telemetry (rendered as
+// taps by js/platform/haptics.js; priority 5 cuts in over anything below).
+// Not while following a real car: the phone is in one.
+const fz = { gear: null, tq: 0, v: 0, starter: false, running: false, rip: 0, limT: 0, afT: 0 };
+function feel(t, inGear) {
+  if (app.following) return;
+  const v = app.compiled.vehicle;
+  const now = performance.now();
+  // a stall: the engine stops dead and the car lurches on its mounts
+  if (t.stall) taps([1, 0.7, 0.45, 0.25], 70, 5);
+  // the engine catches: a kick as it fires and rocks on its mounts; before
+  // that, the starter's pinion meeting the ring gear
+  if (t.running && !fz.running && (t.starter || fz.starter)) taps([0.85, 0.4], 60, 4);
+  else if (t.starter && !fz.starter && !t.running) tap(0.5, 3);
+  // A shift jolts the car by the change in drive force: the engine's torque
+  // just before it times the step in overall ratio, over wheel radius and
+  // mass. Full strength at 4 m/s^2 (about a hard first-to-second shift: an
+  // estimate), and a light click for even the gentlest.
+  if (inGear && fz.gear !== null && t.gear !== fz.gear) {
+    const G = (n) => (n > 0 ? v.gears[n - 1] * v.final : 0);
+    const da = (Math.abs(fz.tq) * 0.92 * Math.abs(G(fz.gear) - G(t.gear))) / (v.tire * v.mass);
+    tap(0.15 + 0.85 * Math.min(1, da / 4), 3);
+  }
+  // a grinding gear buzzes as long as it grinds, harder the bigger the
+  // speed difference; a refused one is a single knock through the lever
+  if (t.grind > 0) tap(0.3 + 0.7 * Math.min(1, t.grind / 1500), 3);
+  else if (t.refused) tap(0.5, 3);
+  // leaving the line: a kick as hard as the launch (8 m/s^2 is full)
+  if (fz.v < 0.3 && t.speed >= 0.3 && t.accel > 2) tap(Math.min(1, t.accel / 8), 4);
+  // Afterfire: afI is the bang's pressure pulse in the pipe over 30 kPa (it
+  // tops out at 2), and the pipe and body are pushed in proportion; below 9
+  // kPa it is felt only as sound. A run of pops comes as taps no closer
+  // than 90 ms. Knock is a light, sharp tick.
+  if (t.af > 0 && t.afI > 0.3 && now - fz.afT > 90) {
+    fz.afT = now;
+    tap(Math.min(1, t.afI / 2), 2);
+  }
+  if (t.knockN > 0) tap(0.2 + 0.4 * Math.min(1, t.knock / 3e5), 2);
+  // The limiter's cuts stutter the engine (and the loaded drivetrain in
+  // gear); the launch limiter bounces the car on its tyres.
+  if (t.lim && now - fz.limT > 80) {
+    fz.limT = now;
+    tap(t.launch ? 0.55 : inGear ? 0.45 : 0.3, 1);
+  }
+  // The engine's shake, while it idles or cranks with the car standing.
+  // The firing pulses swing the crank's torque (rip, N·m rms) at the firing
+  // frequency, and the engine's mounts pass that on to the body. A car's
+  // rubber mounts put the engine's roll mode near 10 Hz, damped at 15 % of
+  // critical (estimates), so above it they pass on less and less: the
+  // transmissibility sqrt((1 + (2 z r)^2) / ((1 - r^2)^2 + (2 z r)^2)), r =
+  // f / 10 Hz. A motorcycle's engine is part of its frame and passes it all.
+  // The torque rocks the body on a lever about half a metre long (the mounts'
+  // spacing), so the body shakes at about T / (0.5 m x mass). Felt from 2
+  // mm/s^2 (strength 0) to 0.5 m/s^2 (1), on a log scale: the range the
+  // phone renders, an estimate. So a car rocks as it cranks (near the
+  // mounts' resonance), barely shakes at idle, and a single or a twin
+  // shakes the bike all the time.
+  fz.rip += ((t.rip ?? 0) - fz.rip) * 0.15;
+  if ((t.running || t.starter) && t.speed < 1 && t.thr < 0.2 && t.fire > 0) {
+    const r = t.fire / 10, z = 0.15;
+    const tr = v.mass < 500 ? 1 : Math.sqrt((1 + (2 * z * r) ** 2) / ((1 - r * r) ** 2 + (2 * z * r) ** 2));
+    const s = Math.log10((fz.rip * tr) / (0.5 * v.mass) / 0.002) / Math.log10(250);
+    if (s > 0.05) shake(Math.min(1, s), t.fire);
+  }
+  fz.gear = inGear ? t.gear : null;
+  fz.tq = t.tq;
+  fz.v = t.speed;
+  fz.starter = !!t.starter;
+  fz.running = !!t.running;
 }
 
 let roT = 0;

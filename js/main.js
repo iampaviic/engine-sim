@@ -20,10 +20,11 @@ import { CAMERAS } from './ui/workshop.js';
 import { drawFollowHud } from './ui/carlink.js';
 import { drawSceneHud } from './ui/scenes.js';
 import { $, app, store } from './app/state.js';
+import { hush, readSystemHaptics } from './platform/haptics.js';
 import { carPanel, controls, garage, schem, scope, selectTab, settings, syncTabs, tach, tickToast, toast, view3d, workshop } from './app/ui.js';
 import { loadEngine } from './app/engine.js';
 import './app/follow.js';
-import { syncGearboxUI, syncUnitsUI } from './app/prefs.js';
+import { syncGearboxUI, syncHaptics, syncUnitsUI } from './app/prefs.js';
 import { initNative, resumeSound, screenAwake } from './app/platform.js';
 import './app/mixer.js';
 import { abSwitch } from './app/ab.js';
@@ -199,12 +200,17 @@ function wire() {
       saveThermal(true);
       app.audio.suspend();
       screenAwake(false);
-    } else resumeSound();
+      hush();
+    } else {
+      readSystemHaptics();
+      resumeSound();
+    }
   });
   scope.mode = store.get('tab', 'wave');
   syncTabs();
   syncUnitsUI();
   syncGearboxUI();
+  syncHaptics();
   holdToRev($('wsRev'));
   holdToRev($('mRev'));
   $('flybyStrip').addEventListener('click', () => {

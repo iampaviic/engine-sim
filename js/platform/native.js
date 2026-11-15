@@ -14,6 +14,7 @@ export const Preferences = plugin('Preferences');
 export const AppPlugin = plugin('App');
 export const StatusBar = plugin('StatusBar');
 export const EngineAudio = plugin('EngineAudio');
+export const Haptics = plugin('Haptics');
 
 // Fire-and-forget native call: a plugin that's missing or fails must never
 // take the app down with it.

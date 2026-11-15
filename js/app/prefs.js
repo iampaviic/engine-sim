@@ -1,12 +1,13 @@
 // Preferences the user sets: camera, environment, quality, volume, units,
-// the gearbox, the weather, sharing the speaker with other apps, keeping the
-// screen awake.
+// the gearbox, the weather, haptics, sharing the speaker with other apps,
+// keeping the screen awake.
 
 import { sprint, units } from '../ui/units.js';
 import { call, EngineAudio } from '../platform/native.js';
 import { $, app, store } from './state.js';
 import { toast } from './ui.js';
 import { weatherAmbient } from '../audio/worklet/sim/weather.js';
+import { readSystemHaptics, reducedMotion, setHapticLevel, tap } from '../platform/haptics.js';
 import { applyAudioSessionType, screenAwake } from './platform.js';
 
 app.setCamera = (c) => {
@@ -63,6 +64,23 @@ app.cycleWeather = () => app.setWeather(WEATHERS[(WEATHERS.indexOf(app.weather) 
 export function weatherText(w) {
   const t = Math.round(weatherAmbient(w) - 273.15);
   return w === 'rain' ? `Rain, ${t} °C: a wet road, less grip` : w === 'damp' ? `Damp road, ${t} °C` : `Dry, ${t} °C`;
+}
+
+// Haptics: 'off', 'low' or 'full', the same for every engine. Until chosen
+// they are off if the system asks for reduced motion, else full.
+const HAPTICS = { off: 0, low: 0.5, full: 1 };
+app.haptics = store.get('haptics', null);
+app.setHaptics = (h) => {
+  app.haptics = h in HAPTICS ? h : 'full';
+  store.set('haptics', app.haptics);
+  setHapticLevel(HAPTICS[app.haptics]);
+  tap(0.6, 9); // so the choice can be felt
+};
+// at boot: the stored choice (or the default), and the system's own switch
+export function syncHaptics() {
+  if (!(app.haptics in HAPTICS)) app.haptics = reducedMotion() ? 'off' : 'full';
+  setHapticLevel(HAPTICS[app.haptics]);
+  readSystemHaptics();
 }
 
 // the third pedal shows only with a manual gearbox
