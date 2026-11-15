@@ -66,6 +66,7 @@ export class EngineProcessor extends AudioWorkletProcessor {
         // the day: dry, damp or rain (sim/weather.js); every engine gets it
         this.weather = m.weather;
         this.sim?.setWeather(m.weather);
+        this.updateScene(0);
         break;
       case 'thermal':
         // the engine's temperatures: a stored state, or forced cold or warm

@@ -359,6 +359,10 @@ export class EngineSim {
     this.rnHl = this.rnHr = 0;
     this.roofBank = null;
     this.rainL = this.rainR = 0;
+    // the road's reflection to the listener: gain, and the corner above
+    // which it loses the highs (camera.js)
+    this.gndG = 0.62;
+    this.gndF = 5200;
     this.setOctane(this.octane);
     this.kF1 = 1.841 / (PI * cfg.bore);
     this.kDecay = Math.exp(-1 / (fs * 0.0015));

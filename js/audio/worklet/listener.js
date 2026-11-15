@@ -1,7 +1,8 @@
 // The listener: per-source delay lines read by two ears, each with a direct
 // and a ground-reflected tap. The taps' delays, gains and filters are set
-// from the camera geometry in camera.js; EngineSim.listen() renders through
-// them every sample.
+// from the camera geometry in camera.js (the ground's, from how wet the road
+// is: sim/weather.js); EngineSim.listen() renders through them every
+// sample. In the cabin, rain on the roof joins in here.
 
 import { N_SRC, SRC_BUF, SRC_MASK } from './constants.js';
 import { ftanh, lpCoef } from './dsp.js';

@@ -22,10 +22,18 @@ import { lpCoef, Struck } from '../dsp.js';
 // rain keeps a few tenths of a millimetre over a dense asphalt's texture, a
 // damp road a tenth of that held in the texture (estimates).
 // rain is what falls, mm/h: 6 is a steady moderate rain.
+//   The road also reflects sound to the listener (camera.js): gnd is that
+// reflection's gain and the corner above which it loses the highs. The dry
+// road's (0.62, 5.2 kHz) stands for the sound its pores take in and the
+// short waves its stones scatter. Water fills the pores and, once it stands
+// over the texture, smooths it: the reflection grows more like a hard flat
+// surface's, nearly whole and specular (0.9, no corner: the film never
+// covers every stone) in the rain; a damp road has its pores filled but its
+// texture bare (0.75, 7 kHz). Estimates.
 const WEATHER = {
-  dry: { T: T_AMB, p: P_AMB, rh: 0.32, grip: 1, wet: 0, film: 0, rain: 0 },
-  damp: { T: 288, p: 101000, rh: 0.88, grip: 0.85, wet: 0.5, film: 0.05, rain: 0 },
-  rain: { T: 285, p: 100200, rh: 0.96, grip: 0.7, wet: 1, film: 0.5, rain: 6 },
+  dry: { T: T_AMB, p: P_AMB, rh: 0.32, grip: 1, wet: 0, film: 0, rain: 0, gnd: [0.62, 5200] },
+  damp: { T: 288, p: 101000, rh: 0.88, grip: 0.85, wet: 0.5, film: 0.05, rain: 0, gnd: [0.75, 7000] },
+  rain: { T: 285, p: 100200, rh: 0.96, grip: 0.7, wet: 1, film: 0.5, rain: 6, gnd: [0.9, 1e9] },
 };
 // On a wet road friction falls as the tyre slides faster: the water has
 // less time to be squeezed out of the contact. The PIARC friction index
@@ -165,6 +173,8 @@ export class WeatherMethods {
     this.sprayK = w.film > 0 ? (SPRAY_PA * Math.sqrt(w.film / SPRAY_FILM)) / Math.pow(SPRAY_V, 1.3) / Math.sqrt(bandGain(this.spHa, this.spLa) / 12) : 0;
     if (!(w.film > 0)) this.sprayA = 0;
     this.setRain(w.rain);
+    this.gndG = w.gnd[0];
+    this.gndF = w.gnd[1];
   }
 
   // The rain's drop classes (per half roof: rate, peak force, decay), and
